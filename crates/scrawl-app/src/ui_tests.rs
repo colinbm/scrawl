@@ -33,6 +33,33 @@ fn select(h: &mut Harness<'_, ScrawlApp>, name: &str) -> LayerId {
     id
 }
 
+/// Clicks at a page-space point on the canvas.
+fn click_page(h: &mut Harness<'_, ScrawlApp>, x: f64, y: f64) {
+    let app = h.state();
+    let s = app.viewport().transform() * scrawl_core::kurbo::Point::new(x, y);
+    let pos = app.canvas.rect.min + egui::vec2(s.x as f32, s.y as f32);
+    h.event(egui::Event::PointerMoved(pos));
+    h.run();
+    for pressed in [true, false] {
+        let button = egui::PointerButton::Primary;
+        h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE });
+        h.run();
+    }
+}
+
+fn text_of(h: &Harness<'_, ScrawlApp>, id: LayerId) -> Option<String> {
+    match &h.state().page().find(id)?.kind {
+        scrawl_core::LayerKind::Text(t) => Some(t.text.clone()),
+        _ => None,
+    }
+}
+
+fn layer_count(h: &Harness<'_, ScrawlApp>) -> usize {
+    let mut n = 0;
+    h.state().page().walk(|_| n += 1);
+    n
+}
+
 fn save(h: &mut Harness<'_, ScrawlApp>, name: &str) {
     if let Some(dir) = std::env::var_os("SCRAWL_UI_SHOTS") {
         let image = h.render().expect("render");
@@ -83,4 +110,64 @@ fn shadow_rows_add_and_edit() {
     let shadows = h.state().page().find(id).unwrap().style.shadows.len();
     assert_eq!(shadows, 1);
     save(&mut h, "shadow_row");
+}
+
+#[test]
+fn text_tool_types_and_finishes() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let before = layer_count(&h);
+    h.key_press(egui::Key::T);
+    click_page(&mut h, 480.0, 100.0);
+    let id = h.state().canvas.text_edit.as_ref().map(|e| e.id).expect("editing new text");
+    h.event(egui::Event::Text("Hello there".into()));
+    h.run();
+    save(&mut h, "text_editing");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().canvas.text_edit.is_none());
+    assert_eq!(text_of(&h, id).as_deref(), Some("Hello there"));
+    let layer = h.state().page().find(id).unwrap().clone();
+    assert_eq!(layer.name, "Hello there");
+    assert!(layer.frame.width > 40.0, "auto width fits text: {:?}", layer.frame);
+    assert_eq!(layer_count(&h), before + 1);
+}
+
+#[test]
+fn empty_text_is_discarded() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let before = layer_count(&h);
+    h.key_press(egui::Key::T);
+    click_page(&mut h, 480.0, 100.0);
+    assert!(h.state().canvas.text_edit.is_some());
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(layer_count(&h), before);
+}
+
+#[test]
+fn edit_existing_text_is_one_undo_step() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let id = select(&mut h, "Good morning");
+    assert!(h.query_by_label("Typeface").is_some());
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().canvas.text_edit.is_some());
+    // Enter selects everything, so typing replaces it.
+    for c in ["H", "e", "y"] {
+        h.event(egui::Event::Text(c.into()));
+        h.run();
+    }
+    // ⌥⇧← selects the word; Backspace deletes it.
+    h.key_press_modifiers(egui::Modifiers::ALT | egui::Modifiers::SHIFT, egui::Key::ArrowLeft);
+    h.event(egui::Event::Text("Yo".into()));
+    h.run();
+    assert_eq!(text_of(&h, id).as_deref(), Some("Yo"));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(text_of(&h, id).as_deref(), Some("Good morning"));
 }

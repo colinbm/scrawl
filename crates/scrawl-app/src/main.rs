@@ -3,6 +3,7 @@ mod canvas;
 mod dev;
 mod gpu;
 mod style;
+mod text_edit;
 mod ui;
 #[cfg(test)]
 mod ui_tests;

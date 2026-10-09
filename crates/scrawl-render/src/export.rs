@@ -9,6 +9,7 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene}
 
 /// A GPU device and Vello renderer for offscreen rendering.
 pub struct Exporter {
+    pub text: crate::TextEngine,
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: Renderer,
@@ -39,7 +40,7 @@ impl Exporter {
             RendererOptions { antialiasing_support: AaSupport::area_only(), num_init_threads: None, ..Default::default() },
         )
         .map_err(|e| format!("failed to create renderer: {e}"))?;
-        Ok(Self { device, queue, renderer })
+        Ok(Self { text: crate::TextEngine::new(), device, queue, renderer })
     }
 
     /// Renders `area` (page space) of `page` at `scale` pixels per unit over `background`.
@@ -48,7 +49,7 @@ impl Exporter {
         let height = (area.height() * scale).ceil().max(1.0) as u32;
         let mut scene = Scene::new();
         let view = Affine::scale(scale) * Affine::translate(-area.origin().to_vec2());
-        crate::render_page(&mut scene, page, view);
+        crate::render_page(&mut scene, page, view, &mut self.text);
         self.render_scene(&scene, width, height, background)
     }
 

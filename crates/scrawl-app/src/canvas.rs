@@ -19,11 +19,21 @@ pub enum Tool {
     Triangle,
     Polygon,
     Star,
+    Text,
 }
 
 impl Tool {
-    pub const INSERT: [Tool; 8] =
-        [Tool::Artboard, Tool::Rectangle, Tool::Oval, Tool::Line, Tool::Pen, Tool::Triangle, Tool::Polygon, Tool::Star];
+    pub const INSERT: [Tool; 9] = [
+        Tool::Artboard,
+        Tool::Rectangle,
+        Tool::Oval,
+        Tool::Line,
+        Tool::Pen,
+        Tool::Text,
+        Tool::Triangle,
+        Tool::Polygon,
+        Tool::Star,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -36,6 +46,7 @@ impl Tool {
             Tool::Triangle => "Triangle",
             Tool::Polygon => "Polygon",
             Tool::Star => "Star",
+            Tool::Text => "Text",
         }
     }
 
@@ -48,6 +59,7 @@ impl Tool {
             Tool::Oval => "O",
             Tool::Line => "L",
             Tool::Pen => "P",
+            Tool::Text => "T",
             Tool::Triangle | Tool::Polygon | Tool::Star => "",
         }
     }
@@ -64,6 +76,7 @@ impl Tool {
             Tool::Triangle => Icon::Triangle,
             Tool::Polygon => Icon::Polygon,
             Tool::Star => Icon::Star,
+            Tool::Text => Icon::Text,
         }
     }
 }
@@ -231,6 +244,8 @@ pub struct CanvasState {
     pub edit: Option<crate::vector::VectorEdit>,
     /// A path being drawn with the pen tool.
     pub pen: Option<crate::vector::PenState>,
+    /// A text layer being edited in place.
+    pub text_edit: Option<crate::text_edit::TextEditing>,
     pub hover: Option<LayerId>,
     /// Canvas rect from the most recent frame.
     pub rect: ERect,
@@ -240,7 +255,7 @@ pub struct CanvasState {
 
 impl Default for CanvasState {
     fn default() -> Self {
-        Self { drag: None, edit: None, pen: None, hover: None, rect: ERect::ZERO, title_hits: vec![] }
+        Self { drag: None, edit: None, pen: None, text_edit: None, hover: None, rect: ERect::ZERO, title_hits: vec![] }
     }
 }
 
@@ -277,7 +292,7 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         app.renaming = None;
     }
     handle_navigation(app, ui, &response, rect);
-    if !handle_pan(app, ui, &response) {
+    if !handle_pan(app, ui, &response) && !crate::text_edit::pointer(app, ui, &response, rect) {
         if app.canvas.edit.is_some() {
             crate::vector::edit_pointer(app, ui, &response, rect);
         } else if app.tool == Tool::Pen {
@@ -292,6 +307,7 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
     paint_overlays(app, &painter, rect);
     crate::vector::paint_edit(app, &painter, rect);
     crate::vector::paint_pen(app, &painter, rect, response.hover_pos());
+    crate::text_edit::paint(app, &painter, rect);
 }
 
 /// Space-drag and middle-drag panning, available in every mode. Returns whether a pan is in
@@ -456,6 +472,13 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
     if response.drag_stopped() {
         match app.canvas.drag.take() {
             Some(Drag::Move { ids, .. }) => ops::reparent_to_artboards(app.page_mut(), &ids),
+            Some(Drag::Create { id, tool: Tool::Text, .. }) => {
+                let narrow = app.page().find(id).is_some_and(|l| l.frame.width < 8.0);
+                if narrow {
+                    set_text_sizing(app, id, scrawl_core::TextSizing::Auto);
+                }
+                crate::text_edit::begin(app, id, false);
+            }
             Some(Drag::Create { .. }) => app.tool = Tool::Select,
             _ => {}
         }
@@ -472,6 +495,11 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
                 // A click without dragging inserts a default-sized shape.
                 let size = if tool == Tool::Artboard { Vec2::new(375.0, 667.0) } else { Vec2::new(100.0, 100.0) };
                 if let Drag::Create { id, tool, origin, parent_origin } = begin_create(app, tool, round(p)) {
+                    if tool == Tool::Text {
+                        set_text_sizing(app, id, scrawl_core::TextSizing::Auto);
+                        crate::text_edit::begin(app, id, false);
+                        return;
+                    }
                     let end = if tool == Tool::Line { origin + Vec2::new(size.x, 0.0) } else { origin + size };
                     update_create(app.page_mut(), id, tool, origin, end, parent_origin, egui::Modifiers::NONE);
                 }
@@ -534,6 +562,12 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
     }
 }
 
+fn set_text_sizing(app: &mut ScrawlApp, id: LayerId, sizing: scrawl_core::TextSizing) {
+    if let Some(LayerKind::Text(t)) = app.page_mut().find_mut(id).map(|l| &mut l.kind) {
+        t.sizing = sizing;
+    }
+}
+
 /// Groups the user has drilled into: ancestors of the current selection.
 fn entered_groups(page: &Page, selection: &[LayerId]) -> Vec<LayerId> {
     selection.iter().filter_map(|&id| page.ancestors(id)).flatten().collect()
@@ -569,6 +603,16 @@ fn begin_select_drag(
                 Drag::Rotate { id, center, start_angle: (p - center).atan2(), start_rotation: layer.rotation }
             }
             HandleHit::Single(id, handle) => {
+                // Resizing text fixes its width (side handles) or its whole frame.
+                if let Some(LayerKind::Text(t)) = page.find(id).map(|l| &l.kind) {
+                    let sizing = match (handle, t.sizing) {
+                        (Handle::Left | Handle::Right, scrawl_core::TextSizing::Auto) => scrawl_core::TextSizing::FixedWidth,
+                        (Handle::Left | Handle::Right, s) => s,
+                        _ => scrawl_core::TextSizing::Fixed,
+                    };
+                    set_text_sizing(app, id, sizing);
+                }
+                let page = app.page();
                 let start = page.find(id)?.clone();
                 Drag::Resize { id, handle, to_local: page.world_transform(id)?.inverse(), start }
             }
@@ -651,6 +695,14 @@ fn begin_create(app: &mut ScrawlApp, tool: Tool, origin: Point) -> Drag {
         Tool::Triangle => Layer::polygon(frame, 3),
         Tool::Polygon => Layer::polygon(frame, 5),
         Tool::Star => Layer::star(frame),
+        Tool::Text => {
+            // Dragging out a text box makes it fixed-width; a plain click switches it to auto.
+            let mut l = Layer::text(origin, "");
+            if let LayerKind::Text(t) = &mut l.kind {
+                t.sizing = scrawl_core::TextSizing::FixedWidth;
+            }
+            l
+        }
         Tool::Select | Tool::Pen => unreachable!("tool doesn't draw by dragging a frame"),
     };
     let page = app.page_mut();
@@ -831,7 +883,7 @@ fn paint_canvas(app: &mut ScrawlApp, ui: &egui::Ui, frame: &mut eframe::Frame, r
     app.scene.reset();
     let view = Affine::scale(ppp as f64) * app.viewport().transform();
     let page = app.doc.page(app.page).unwrap_or(&app.doc.pages[0]);
-    scrawl_render::render_page(&mut app.scene, page, view);
+    scrawl_render::render_page(&mut app.scene, page, view, &mut app.text);
 
     let bg = canvas_background(ui);
     let gpu = app.gpu.as_mut().expect("initialized above");
@@ -914,6 +966,7 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
     };
     let show_handles = app.canvas.edit.is_none()
         && app.canvas.pen.is_none()
+        && app.canvas.text_edit.is_none()
         && !matches!(app.canvas.drag, Some(Drag::Move { .. } | Drag::Rotate { .. }));
     if app.selection.len() > 1
         && let Some(b) = page.selection_bounds(&app.selection)

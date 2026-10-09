@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::path::{CurvePoint, PathShape};
+use crate::text::TextLayer;
 use crate::style::BlendMode;
 use crate::{Color, Frame, Style, geometry::union_rects};
 
@@ -71,6 +72,7 @@ pub enum LayerKind {
     Polygon(Polygon),
     Star(Star),
     Path(PathShape),
+    Text(TextLayer),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -139,6 +141,7 @@ impl LayerKind {
             Self::Polygon(p) if p.sides == 3 => "Triangle",
             Self::Polygon(_) => "Polygon",
             Self::Star(_) => "Star",
+            Self::Text(_) => "Text",
             Self::Path(p) if is_line(p) => "Line",
             Self::Path(_) => "Path",
         }
@@ -205,6 +208,24 @@ impl Layer {
         let mut l = Self::new(if sides == 3 { "Triangle" } else { "Polygon" }, frame, LayerKind::Polygon(Polygon { sides }));
         l.style = Style::default_shape();
         l
+    }
+
+    /// A text layer at `origin` with default styling: black text, no border. Its size is set by
+    /// the text engine.
+    pub fn text(origin: Point, text: impl Into<String>) -> Self {
+        let text = text.into();
+        let name = text.lines().next().unwrap_or("").chars().take(40).collect::<String>();
+        let mut l = Self::new(
+            if name.trim().is_empty() { "Text".to_string() } else { name },
+            Frame::new(origin.x, origin.y, 1.0, 1.0),
+            LayerKind::Text(TextLayer::new(text)),
+        );
+        l.style.fills = vec![crate::Fill::solid(Color::BLACK)];
+        l
+    }
+
+    pub fn is_text(&self) -> bool {
+        matches!(self.kind, LayerKind::Text(_))
     }
 
     pub fn star(frame: Frame) -> Self {
@@ -277,6 +298,8 @@ impl Layer {
                 Some(fitted_polygon(r, &regular_vertices(st.points.max(3) * 2, &[1.0, st.inner_ratio.clamp(0.01, 1.0)])))
             }
             LayerKind::Path(p) => Some(p.to_bez_path(r.width(), r.height())),
+            // A text layer's geometry, for selection and bounds, is its frame.
+            LayerKind::Text(_) => Some(r.to_path(PATH_TOLERANCE)),
         }
     }
 
@@ -367,7 +390,7 @@ impl Layer {
     pub fn editable_path(&self) -> Option<PathShape> {
         match &self.kind {
             LayerKind::Path(p) => Some(p.scaled(self.frame.width, self.frame.height)),
-            LayerKind::Artboard(_) | LayerKind::Group(_) => None,
+            LayerKind::Artboard(_) | LayerKind::Group(_) | LayerKind::Text(_) => None,
             _ => Some(PathShape::from_bez_path(&self.local_path()?)),
         }
     }

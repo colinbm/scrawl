@@ -75,6 +75,7 @@ pub struct ScrawlApp {
     pub gpu: Option<VelloCanvas>,
     pub gpu_error: Option<String>,
     pub scene: vello::Scene,
+    pub text: scrawl_text::TextEngine,
     /// Containers expanded in the layer list.
     pub expanded: HashSet<LayerId>,
     /// Layer or page currently being renamed, with the edit buffer.
@@ -117,6 +118,7 @@ impl ScrawlApp {
             gpu: None,
             gpu_error: None,
             scene: vello::Scene::new(),
+            text: scrawl_text::TextEngine::new(),
             expanded: HashSet::new(),
             renaming: None,
             lock_aspect: false,
@@ -164,7 +166,9 @@ impl ScrawlApp {
         }
     }
 
-    pub fn set_document(&mut self, doc: Document, path: Option<PathBuf>) {
+    pub fn set_document(&mut self, mut doc: Document, path: Option<PathBuf>) {
+        // Text frames depend on installed fonts, so refit them before anything else sees them.
+        self.text.fit_document(&mut doc);
         self.page = doc.pages[0].id;
         self.history = History::new(&doc);
         self.saved = doc.clone();
@@ -276,6 +280,8 @@ impl ScrawlApp {
         self.canvas.cancel();
         self.canvas.edit = None;
         self.canvas.pen = None;
+        self.canvas.text_edit = None;
+        self.text.raw_case = None;
     }
 
     pub fn undo(&mut self) {
@@ -369,6 +375,16 @@ impl ScrawlApp {
 
     pub fn outline_strokes(&mut self) {
         let sel = self.selection.clone();
+        // Text becomes its glyph outlines; other shapes have their borders outlined.
+        for &id in &sel {
+            let Some(layer) = self.page().find(id).filter(|l| l.is_text()).cloned() else { continue };
+            let Some(outline) = self.text.outlines(&layer) else { continue };
+            let mut shape = scrawl_core::PathShape::from_bez_path(&outline);
+            shape.fill_rule = scrawl_core::FillRule::NonZero;
+            if let Some(l) = self.page_mut().find_mut(id) {
+                l.set_local_path(&shape);
+            }
+        }
         if let Err(e) = ops::outline_strokes(self.page_mut(), &sel) {
             self.error = Some(format!("Couldn't convert to outlines: {e}"));
         }
@@ -379,8 +395,13 @@ impl ScrawlApp {
         ops::reverse_paths(self.page_mut(), &sel);
     }
 
-    /// Starts editing the points of a shape, converting it to a path first if needed.
+    /// Starts editing a layer: text in place, or the points of a shape (converting it to a path
+    /// first if needed).
     pub fn enter_vector_edit(&mut self, id: LayerId) {
+        if self.page().find(id).is_some_and(Layer::is_text) {
+            crate::text_edit::begin(self, id, true);
+            return;
+        }
         let page = self.page_mut();
         let Some(layer) = page.find_mut(id) else { return };
         if layer.locked || !layer.convert_to_path() {
@@ -506,6 +527,18 @@ impl ScrawlApp {
         // File and history shortcuts work everywhere except in text fields (which have their own
         // undo); editing shortcuts only when the canvas has keyboard focus.
         if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        // While editing text, keys go to the text (undo ends editing first).
+        if self.canvas.text_edit.is_some() {
+            if ctx.input_mut(|i| i.consume_shortcut(&UNDO)) {
+                crate::text_edit::end(self);
+                self.undo();
+            } else if ctx.input_mut(|i| i.consume_shortcut(&SAVE)) {
+                self.save();
+            } else {
+                crate::text_edit::handle_keys(self, ctx);
+            }
             return;
         }
         let events = ctx.input(|i| i.events.clone());
@@ -640,6 +673,7 @@ impl ScrawlApp {
                 Key::O => self.tool = Tool::Oval,
                 Key::L => self.tool = Tool::Line,
                 Key::P => self.tool = Tool::Pen,
+                Key::T => self.tool = Tool::Text,
                 Key::Enter => {
                     if let [id] = self.selection[..] {
                         self.enter_vector_edit(id);
@@ -687,7 +721,20 @@ impl ScrawlApp {
         }
         // Commit an undo step once an interaction is finished: no pointer button held and no text
         // field being edited. A whole drag or a run of typing becomes a single step.
-        let interacting = ctx.input(|i| i.pointer.any_down()) || ctx.egui_wants_keyboard_input();
+        // Keep text frames fitted to their content.
+        let page_id = self.page;
+        if let Some(page) = self.doc.page_mut(page_id) {
+            self.text.fit_all(&mut page.layers);
+        }
+        if let Some(editing) = &self.canvas.text_edit
+            && self.selection != [editing.id]
+        {
+            crate::text_edit::end(self);
+        }
+        // A whole text-editing session is one undo step.
+        let interacting = ctx.input(|i| i.pointer.any_down())
+            || ctx.egui_wants_keyboard_input()
+            || self.canvas.text_edit.is_some();
         if !interacting {
             self.history.commit(&self.doc);
         }

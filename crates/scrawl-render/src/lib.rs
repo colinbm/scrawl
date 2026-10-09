@@ -9,7 +9,10 @@ use scrawl_core::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, ParamCurve, ParamCurveDeriv, PathSeg, Point, Rect, Shape, Vec2};
-use vello::peniko::{self, BlendMode, Brush, Compose, Fill, Gradient, Mix};
+use vello::peniko::{self, BlendMode, Brush, Compose, Fill, Gradient, Mix, StyleRef};
+
+pub use scrawl_text::TextEngine;
+use scrawl_text::parley::PositionedLayoutItem;
 
 pub fn to_peniko(c: Color) -> peniko::Color {
     peniko::Color::new([c.r, c.g, c.b, c.a])
@@ -67,7 +70,7 @@ fn fill_rule(layer: &Layer) -> Fill {
 }
 
 /// Appends `page` to `scene`, with `view` mapping page space to target pixels.
-pub fn render_page(scene: &mut Scene, page: &Page, view: Affine) {
+pub fn render_page(scene: &mut Scene, page: &Page, view: Affine, text: &mut TextEngine) {
     // Artboard drop shadows go underneath everything.
     for layer in page.layers.iter().filter(|l| l.visible && l.is_artboard()) {
         let t = view * layer.local_transform();
@@ -79,14 +82,14 @@ pub fn render_page(scene: &mut Scene, page: &Page, view: Affine) {
             2.0,
         );
     }
-    render_children(scene, &page.layers, view);
+    render_children(scene, &page.layers, view, text);
 }
 
 /// Renders siblings bottom to top. A mask layer clips everything above it in the same parent.
-fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine) {
+fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, text: &mut TextEngine) {
     let mut clips = 0;
     for child in children {
-        render_layer(scene, child, parent);
+        render_layer(scene, child, parent, text);
         if child.is_mask
             && child.visible
             && let Some(path) = child.local_path()
@@ -100,7 +103,7 @@ fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine) {
     }
 }
 
-fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine) {
+fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, text: &mut TextEngine) {
     if !layer.visible || layer.opacity <= 0.0 {
         return;
     }
@@ -120,12 +123,13 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine) {
             if ab.clip_content {
                 scene.push_clip_layer(Fill::NonZero, t, &rect);
             }
-            render_children(scene, &ab.children, t);
+            render_children(scene, &ab.children, t, text);
             if ab.clip_content {
                 scene.pop_layer();
             }
         }
-        LayerKind::Group(g) => render_children(scene, &g.children, t),
+        LayerKind::Group(g) => render_children(scene, &g.children, t, text),
+        LayerKind::Text(_) => render_text(scene, layer, parent, text),
         _ => {
             if let Some(path) = layer.local_path() {
                 render_shape(scene, layer, &path, parent);
@@ -198,6 +202,86 @@ fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine
         }
         if !layer.is_closed() {
             render_markers(scene, path, t, border.thickness, &brush, bt, opts.start_marker, opts.end_marker);
+        }
+    }
+}
+
+fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, engine: &mut TextEngine) {
+    let style = &layer.style;
+    let t = parent * layer.local_transform();
+    let (w, h) = (layer.frame.width, layer.frame.height);
+
+    // Shadows are cast by the glyph outlines.
+    let wants_outlines = style.shadows.iter().chain(&style.inner_shadows).any(|s| s.enabled);
+    let outlines = if wants_outlines { engine.outlines(layer) } else { None };
+    if let Some(path) = &outlines {
+        for s in style.shadows.iter().filter(|s| s.enabled) {
+            shadow::drop_shadow(scene, layer, path, Fill::NonZero, parent, s);
+        }
+    }
+
+    let Some((layout, dy)) = engine.layer_layout(layer) else { return };
+    let text_t = t * Affine::translate((0.0, dy));
+    for fill in style.fills.iter().filter(|f| f.enabled) {
+        let (brush, bt) = brush(fill.paint(), w, h);
+        // Gradients map onto the frame, not the (vertically offset) text block.
+        let bt = bt.map(|b| Affine::translate((0.0, -dy)) * b);
+        if fill.blend_mode == SBlend::Normal {
+            draw_layout(scene, layout, text_t, &brush, bt, Fill::NonZero.into());
+        } else {
+            let bounds = layer.frame.local_rect().inflate(w.max(h), w.max(h));
+            scene.push_layer(Fill::NonZero, to_mix(fill.blend_mode), 1.0, t, &bounds);
+            draw_layout(scene, layout, text_t, &brush, bt, Fill::NonZero.into());
+            scene.pop_layer();
+        }
+    }
+    if let Some(path) = &outlines {
+        for s in style.inner_shadows.iter().filter(|s| s.enabled) {
+            shadow::inner_shadow(scene, layer, path, Fill::NonZero, parent, s);
+        }
+    }
+    for border in style.borders.iter().filter(|b| b.enabled && b.thickness > 0.0) {
+        let (brush, bt) = brush(border.paint(), w, h);
+        let bt = bt.map(|b| Affine::translate((0.0, -dy)) * b);
+        let stroke = stroke_style(border.thickness, &style.border_options);
+        draw_layout(scene, layout, text_t, &brush, bt, (&stroke).into());
+    }
+}
+
+/// Draws every glyph run of a layout, plus underlines and strikethroughs.
+fn draw_layout(scene: &mut Scene, layout: &scrawl_text::Layout, t: Affine, brush: &Brush, bt: Option<Affine>, style: StyleRef<'_>) {
+    for line in layout.lines() {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(run) = item else { continue };
+            let r = run.run();
+            let coords: Vec<i16> = r.normalized_coords().iter().map(|c| c.to_bits()).collect();
+            let skew = r.synthesis().skew().map(|deg| Affine::skew((deg as f64).to_radians().tan(), 0.0));
+            scene
+                .draw_glyphs(r.font())
+                .font_size(r.font_size())
+                .transform(t)
+                .glyph_transform(skew)
+                .normalized_coords(&coords)
+                .brush(brush)
+                .brush_transform(bt)
+                .hint(false)
+                .draw(style, run.positioned_glyphs().map(|g| vello::Glyph { id: g.id, x: g.x, y: g.y }));
+
+            let m = r.font_metrics();
+            let s = run.style();
+            let (x0, x1) = (run.offset() as f64, (run.offset() + run.advance()) as f64);
+            let base = run.baseline() as f64;
+            for (on, offset, size) in [
+                (s.underline.is_some(), m.underline_offset, m.underline_size),
+                (s.strikethrough.is_some(), m.strikethrough_offset, m.strikethrough_size),
+            ] {
+                if on {
+                    // Offsets are the top of the decoration above the baseline, in y-up units.
+                    let top = base - offset as f64;
+                    let rect = Rect::new(x0, top, x1, top + (size as f64).max(1.0));
+                    scene.fill(Fill::NonZero, t, brush, bt, &rect);
+                }
+            }
         }
     }
 }

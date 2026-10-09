@@ -9,4 +9,5 @@ license.workspace = true
 png = "0.18"
 pollster = "0.4"
 scrawl-core.workspace = true
+scrawl-text.workspace = true
 vello.workspace = true

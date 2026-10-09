@@ -85,11 +85,18 @@ mod tests {
         let a = ops::insert_drawn(page, Layer::rectangle(Frame::new(10.0, 10.0, 50.0, 50.0)));
         let b = ops::insert_drawn(page, Layer::oval(Frame::new(80.0, 10.0, 50.0, 50.0)));
         ops::insert_drawn(page, Layer::line(Point::new(0.0, 100.0), Point::new(100.0, 150.0)));
+        ops::insert_drawn(page, Layer::text(Point::new(5.0, 200.0), "Hello"));
         ops::group(page, &[a, b]);
         page.find_mut(a).unwrap().rotation = 12.5;
 
         let back = from_bytes(&to_bytes(&doc).unwrap()).unwrap();
         assert_eq!(back, doc);
+    }
+
+    #[test]
+    fn sample_document_round_trips() {
+        let doc = crate::sample::sample_document();
+        assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
     }
 
     #[test]

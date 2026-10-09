@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 scrawl-core.workspace = true
+scrawl-text.workspace = true
 scrawl-render.workspace = true
 vello.workspace = true
 eframe.workspace = true

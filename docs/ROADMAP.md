@@ -38,8 +38,15 @@
 - ⬜ Noise fills, pattern fills, gradient interpolation options
 
 ## Milestone 4 — Text
-- ⬜ Text layers via `parley` (shaping, font fallback), Vello glyph rendering
-- ⬜ Fixed/auto width, alignment, line height, letter spacing, decorations, text on path
+- ✅ Text layers (T): parley layout with system fonts and fallback, Vello glyph rendering
+- ✅ Auto / fixed-width / fixed sizing; side handles fix the width, other handles fix the frame
+- ✅ On-canvas editing with parley's `PlainEditor`: caret, selection, word/line navigation, clipboard, IME, click/drag/double-click
+- ✅ Typeface picker with search, weight, italic, size, line height, letter spacing, alignment, vertical alignment
+- ✅ Underline, strikethrough, case transform; fills (incl. gradients), borders, shadows on text
+- ✅ Convert text to outlines (⇧⌘O) via skrifa glyph outlines
+- ⬜ Rich text: per-range styles within one layer
+- ⬜ Text styles (shared), OpenType features, paragraph spacing, lists
+- ⬜ Text on path
 
 ## Milestone 5 — Productivity
 - ⬜ Smart guides & snapping, distance measurements (⌥ hover), rulers & guides, grids/layouts

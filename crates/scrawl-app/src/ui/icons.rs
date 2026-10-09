@@ -11,6 +11,7 @@ pub enum Icon {
     Line,
     Path,
     Pen,
+    Text,
     Triangle,
     Polygon,
     Star,
@@ -72,6 +73,11 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.add(egui::Shape::closed_line(nib, st));
             p.line_segment([at(0.0, -7.0), at(0.0, 1.5)], st);
             p.circle_filled(at(0.0, 1.5), 1.2 * u, color);
+        }
+        Icon::Text => {
+            p.line_segment([at(-5.5, -5.5), at(5.5, -5.5)], Stroke::new(st.width * 1.4, color));
+            p.line_segment([at(0.0, -5.5), at(0.0, 6.0)], Stroke::new(st.width * 1.4, color));
+            p.line_segment([at(-2.0, 6.0), at(2.0, 6.0)], st);
         }
         Icon::Triangle | Icon::Polygon | Icon::Star => {
             let (n, radii): (usize, &[f32]) = match icon {
@@ -256,6 +262,7 @@ pub fn for_layer(kind: &scrawl_core::LayerKind) -> Icon {
         K::Polygon(p) if p.sides == 3 => Icon::Triangle,
         K::Polygon(_) => Icon::Polygon,
         K::Star(_) => Icon::Star,
+        K::Text(_) => Icon::Text,
         K::Path(_) if kind.type_name() == "Line" => Icon::Line,
         K::Path(_) => Icon::Path,
     }

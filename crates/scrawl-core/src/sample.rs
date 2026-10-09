@@ -4,6 +4,7 @@
 use kurbo::Point;
 
 use crate::ops::{self, BooleanOp};
+use crate::text::{TextAlign, TextSizing};
 use crate::{
     BlendMode, Border, BorderPosition, Color, Document, Fill, FillType, Frame, Gradient, GradientKind, GradientStop, Layer,
     LayerKind, Marker, Rectangle, Shadow,
@@ -106,5 +107,65 @@ pub fn sample_document() -> Document {
     ring.style.borders.clear();
     ring.style.shadows = vec![Shadow { blur: 12.0, offset_y: 6.0, color: Color::BLACK.with_alpha(0.35), ..Shadow::drop() }];
 
+    // Text.
+    let mut title = Layer::text(Point::new(24.0, 56.0), "Good morning");
+    title.style.fills = vec![Fill::solid(Color::WHITE)];
+    set_text(&mut title, |t| {
+        t.style.font_size = 32.0;
+        t.style.font_weight = 700;
+    });
+    title.style.shadows = vec![Shadow { color: Color::BLACK.with_alpha(0.3), offset_y: 2.0, blur: 6.0, ..Shadow::drop() }];
+    ops::insert_drawn(page, title);
+
+    let mut body = Layer::text(
+        Point::new(128.0, 200.0),
+        "Scrawl lays out text with parley and renders glyphs with Vello. This paragraph wraps at a fixed width.",
+    );
+    body.frame.width = 130.0;
+    body.style.fills = vec![Fill::solid(hex("444444"))];
+    set_text(&mut body, |t| {
+        t.sizing = TextSizing::FixedWidth;
+        t.style.font_size = 11.0;
+        t.style.line_height = Some(15.0);
+    });
+    body.name = "Body".into();
+    ops::insert_drawn(page, body);
+
+    let mut fancy = Layer::text(Point::new(24.0, 730.0), "Gradient text");
+    fancy.style.fills = vec![gradient(GradientKind::Linear, (0.0, 0.5), (1.0, 0.5), &[("FF3D7F", 0.0), ("7C5CFF", 1.0)])];
+    set_text(&mut fancy, |t| {
+        t.style.font_size = 34.0;
+        t.style.font_weight = 800;
+        t.style.italic = true;
+    });
+    ops::insert_drawn(page, fancy);
+
+    let mut deco = Layer::text(Point::new(24.0, 800.0), "Underlined & spaced");
+    deco.style.fills = vec![Fill::solid(hex("1F8FFF"))];
+    deco.style.borders = vec![];
+    set_text(&mut deco, |t| {
+        t.style.font_size = 14.0;
+        t.style.underline = true;
+        t.style.letter_spacing = 0.5;
+    });
+    ops::insert_drawn(page, deco);
+
+    let mut outlined = Layer::text(Point::new(250.0, 730.0), "Outlined");
+    outlined.style.fills = vec![];
+    outlined.style.borders = vec![Border::solid(hex("2EC4B6"), 1.0)];
+    set_text(&mut outlined, |t| {
+        t.style.font_size = 30.0;
+        t.style.font_weight = 900;
+        t.style.alignment = TextAlign::Center;
+        t.style.strikethrough = true;
+    });
+    ops::insert_drawn(page, outlined);
+
     doc
+}
+
+fn set_text(layer: &mut Layer, f: impl FnOnce(&mut crate::TextLayer)) {
+    if let LayerKind::Text(t) = &mut layer.kind {
+        f(t);
+    }
 }

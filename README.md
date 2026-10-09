@@ -20,6 +20,7 @@ a PNG of each test's final frame. GPU tests skip themselves when no adapter is a
 | Crate | Role |
 |---|---|
 | `scrawl-core` | UI-agnostic document model: layer tree, geometry (kurbo), editing ops, hit testing, snapshot undo, `.scrawl` file format (zip + JSON). |
+| `scrawl-text` | Text layout (parley) with a layout cache, frame fitting, font listing, glyph outlines (skrifa). |
 | `scrawl-render` | Turns a page into a [Vello](https://github.com/linebender/vello) scene (GPU compute 2D renderer). |
 | `scrawl-app` | Desktop shell: eframe/egui (winit + wgpu) for panels; the canvas is Vello rendered to a wgpu texture shown by egui, with selection overlays painted by egui. |
 

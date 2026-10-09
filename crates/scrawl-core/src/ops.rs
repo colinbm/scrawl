@@ -290,6 +290,9 @@ pub fn boolean(page: &mut Page, ids: &[LayerId], op: BooleanOp) -> Result<LayerI
     for &(_, id) in &members {
         let layer = page.find(id).ok_or("Layer not found.")?;
         match layer.local_path() {
+            Some(_) if layer.is_text() => {
+                return Err(format!("“{}” is text; convert it to outlines first.", layer.name));
+            }
             Some(p) if layer.is_closed() && !layer.is_artboard() => paths.push(layer.local_transform() * p),
             _ => return Err(format!("“{}” isn't a closed shape.", layer.name)),
         }
@@ -367,6 +370,10 @@ pub fn convert_to_paths(page: &mut Page, ids: &[LayerId]) -> Vec<LayerId> {
 pub fn outline_strokes(page: &mut Page, ids: &[LayerId]) -> Result<(), String> {
     for id in normalize_selection(page, ids) {
         let Some(layer) = page.find(id) else { continue };
+        // Text outlines need font data; the app converts text via the text engine.
+        if layer.is_text() {
+            continue;
+        }
         let Some(border) = layer.style.borders.iter().find(|b| b.enabled && b.thickness > 0.0).cloned() else {
             continue;
         };

@@ -189,6 +189,7 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                 }
             });
         }
+        LayerKind::Text(text) => text_section(ui, text, &mut app.text),
         LayerKind::Star(star) => {
             section(ui, "Star");
             ui.horizontal(|ui| {
@@ -240,6 +241,7 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
 
 fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
     let closed = layer.is_closed();
+    let text_layer = layer.is_text();
     let id = layer.id;
     let swatches = &mut app.doc.colors;
     let mut gradient_target = None;
@@ -304,7 +306,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                     gradient_target = Some(GradientTarget { layer: id, border: true, index: i });
                 }
                 ui.add(DragValue::new(&mut border.thickness).speed(0.1).range(0.0..=1000.0).max_decimals(2).suffix(" px"));
-                if closed {
+                if closed && !text_layer {
                     egui::ComboBox::from_id_salt("position")
                         .selected_text(border.position.label())
                         .width(70.0)
@@ -564,5 +566,104 @@ fn points_section(app: &mut ScrawlApp, ui: &mut Ui) {
                 crate::vector::set_point_mode(app, mode);
             }
         }
+    });
+}
+
+fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scrawl_text::TextEngine) {
+    use scrawl_core::text::{WEIGHT_NAMES, weight_name};
+    use scrawl_core::{TextAlign, TextSizing, TextTransform, VerticalAlign};
+    let style = &mut text.style;
+    section(ui, "Text");
+
+    // Typeface picker with search.
+    ui.horizontal(|ui| {
+        ui.label("Typeface");
+        let current = if style.font_family.is_empty() { "System".to_owned() } else { style.font_family.clone() };
+        let resp = ui.add(egui::Button::new(current).truncate().min_size(egui::vec2(150.0, 0.0)));
+        let search_id = ui.id().with("font_search");
+        egui::Popup::from_toggle_button_response(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_width(220.0);
+                let mut query: String = ui.data(|d| d.get_temp(search_id)).unwrap_or_default();
+                let edit = ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search fonts"));
+                edit.request_focus();
+                ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
+                let q = query.to_lowercase();
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    if q.is_empty() && ui.selectable_label(style.font_family.is_empty(), "System").clicked() {
+                        style.font_family.clear();
+                        egui::Popup::close_all(ui.ctx());
+                    }
+                    for name in engine.family_names().iter().filter(|n| n.to_lowercase().contains(&q)) {
+                        if ui.selectable_label(&style.font_family == name, name).clicked() {
+                            style.font_family = name.clone();
+                            egui::Popup::close_all(ui.ctx());
+                        }
+                    }
+                });
+            });
+    });
+
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("weight").selected_text(weight_name(style.font_weight)).width(110.0).show_ui(ui, |ui| {
+            for (w, name) in WEIGHT_NAMES {
+                ui.selectable_value(&mut style.font_weight, w, name);
+            }
+        });
+        ui.toggle_value(&mut style.italic, RichText::new("Italic").italics());
+    });
+
+    ui.horizontal(|ui| {
+        num(ui, "Size", &mut style.font_size, 0.25, "");
+        style.font_size = style.font_size.clamp(1.0, 2000.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            let mut lh = style.line_height.unwrap_or(0.0);
+            let drag = DragValue::new(&mut lh)
+                .speed(0.25)
+                .range(0.0..=5000.0)
+                .custom_formatter(|v, _| if v <= 0.0 { "Auto".into() } else { format!("{v:.1}") });
+            if ui.add_sized([FIELD_WIDTH, 20.0], drag).changed() {
+                style.line_height = (lh > 0.0).then_some(lh);
+            }
+            ui.label(RichText::new("Line").small().weak());
+        });
+        num(ui, "Character", &mut style.letter_spacing, 0.05, "");
+    });
+
+    ui.horizontal(|ui| {
+        for (align, label) in [(TextAlign::Left, "Left"), (TextAlign::Center, "Center"), (TextAlign::Right, "Right"), (TextAlign::Justify, "Justify")] {
+            ui.selectable_value(&mut style.alignment, align, label);
+        }
+    });
+    ui.horizontal(|ui| {
+        for sizing in TextSizing::ALL {
+            ui.selectable_value(&mut text.sizing, sizing, sizing.label());
+        }
+    });
+    if text.sizing == TextSizing::Fixed {
+        ui.horizontal(|ui| {
+            ui.label("Vertical");
+            for (v, label) in [(VerticalAlign::Top, "Top"), (VerticalAlign::Middle, "Middle"), (VerticalAlign::Bottom, "Bottom")] {
+                ui.selectable_value(&mut style.vertical_alignment, v, label);
+            }
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.toggle_value(&mut style.underline, RichText::new("Underline").underline());
+        ui.toggle_value(&mut style.strikethrough, RichText::new("Strike").strikethrough());
+        egui::ComboBox::from_id_salt("transform")
+            .selected_text(match style.transform {
+                TextTransform::None => "Aa",
+                TextTransform::Uppercase => "AA",
+                TextTransform::Lowercase => "aa",
+            })
+            .width(48.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut style.transform, TextTransform::None, "None");
+                ui.selectable_value(&mut style.transform, TextTransform::Uppercase, "Uppercase");
+                ui.selectable_value(&mut style.transform, TextTransform::Lowercase, "Lowercase");
+            });
     });
 }
