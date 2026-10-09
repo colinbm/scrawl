@@ -161,7 +161,47 @@ pub fn sample_document() -> Document {
     });
     ops::insert_drawn(page, outlined);
 
+    add_shared_components(&mut doc);
     doc
+}
+
+/// Color variables and shared styles, linked to some of the layers above.
+fn add_shared_components(doc: &mut Document) {
+    let named = |doc: &Document, name: &str| {
+        let mut found = vec![];
+        doc.pages[0].walk(|l| {
+            if l.name == name || l.name.starts_with(&format!("{name} (")) {
+                found.push(l.id);
+            }
+        });
+        found
+    };
+    for (name, hex_color, layers) in [("Sunshine", "FFD23F", &["Stripe"][..]), ("Brand Blue", "1F8FFF", &["Underlined & spaced"][..])] {
+        let id = doc.add_swatch(hex(hex_color));
+        doc.swatches.last_mut().expect("just added").name = name.into();
+        let ids: Vec<_> = layers.iter().flat_map(|n| named(doc, n)).collect();
+        for lid in ids {
+            let fill = &mut doc.pages[0].find_mut(lid).expect("named layer").style.fills[0];
+            fill.color = hex(hex_color);
+            fill.swatch = Some(id);
+        }
+    }
+
+    // Every tile shares a layer style; the title defines a text style.
+    let tiles = named(doc, "Tile");
+    let tile = doc.pages[0].find(tiles[0]).expect("tile").clone();
+    let style = doc.create_shared_style(&tile);
+    let title = named(doc, "Good morning")[0];
+    let title_layer = doc.pages[0].find(title).expect("title").clone();
+    let heading = doc.create_shared_style(&title_layer);
+    for (id, name) in [(style, "Tile"), (heading, "Title")] {
+        let s = doc.layer_styles.iter_mut().chain(&mut doc.text_styles).find(|s| s.id == id).expect("created");
+        s.name = name.into();
+    }
+    for lid in tiles {
+        doc.pages[0].find_mut(lid).expect("tile").shared_style = Some(style);
+    }
+    doc.pages[0].find_mut(title).expect("title").shared_style = Some(heading);
 }
 
 fn set_text(layer: &mut Layer, f: impl FnOnce(&mut crate::TextLayer)) {

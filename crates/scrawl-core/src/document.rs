@@ -2,6 +2,7 @@ use kurbo::{Affine, Rect};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::components::{SharedStyle, Swatch};
 use crate::{Layer, LayerId, geometry::union_rects};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -21,11 +22,20 @@ pub struct Document {
     /// Document color swatches.
     #[serde(default)]
     pub colors: Vec<crate::Color>,
+    /// Shared layer styles.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layer_styles: Vec<SharedStyle>,
+    /// Shared text styles.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_styles: Vec<SharedStyle>,
+    /// Color variables.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub swatches: Vec<Swatch>,
 }
 
 impl Default for Document {
     fn default() -> Self {
-        Self { pages: vec![Page::new("Page 1")], colors: vec![] }
+        Self { pages: vec![Page::new("Page 1")], colors: vec![], layer_styles: vec![], text_styles: vec![], swatches: vec![] }
     }
 }
 
@@ -213,6 +223,13 @@ impl Page {
     pub fn walk<'a>(&'a self, mut f: impl FnMut(&'a Layer)) {
         for l in &self.layers {
             l.walk(&mut f);
+        }
+    }
+
+    /// Visits every layer mutably, parents before children.
+    pub fn walk_mut(&mut self, mut f: impl FnMut(&mut Layer)) {
+        for l in &mut self.layers {
+            l.walk_mut(&mut f);
         }
     }
 

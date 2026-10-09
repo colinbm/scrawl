@@ -4,6 +4,7 @@
 //! hit testing, undo history and the on-disk file format.
 
 pub mod color;
+pub mod components;
 pub mod constraints;
 pub mod document;
 pub mod geometry;
@@ -21,6 +22,7 @@ pub mod style;
 pub mod text;
 
 pub use color::Color;
+pub use components::{SharedStyle, StyleId, Swatch, SwatchId};
 pub use document::{Document, Page, PageId};
 pub use geometry::Frame;
 pub use history::History;

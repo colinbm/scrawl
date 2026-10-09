@@ -10,7 +10,7 @@ use scrawl_core::{
 
 use crate::app::ScrawlApp;
 use crate::canvas::{GradientTarget, Tool};
-use crate::ui::paint::{PaintTarget, paint_button};
+use crate::ui::paint::{PaintTarget, Palette, paint_button};
 use crate::ui::icons::{self, Icon};
 use crate::ui::toolbar::ALIGNMENTS;
 
@@ -57,6 +57,9 @@ pub fn show(app: &mut ScrawlApp, ui: &mut Ui) {
                 let mut layer = original.clone();
                 layer_properties(app, ui, &mut layer);
                 if layer != original {
+                    // A hand-picked color stops following its color variable.
+                    let doc = &app.doc;
+                    scrawl_core::components::unlink_stale_colors(&mut layer.style, |s| doc.swatch(s).map(|s| s.color));
                     let page = app.page_mut();
                     if let Some(l) = page.find_mut(id) {
                         *l = layer;
@@ -220,8 +223,8 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                 ab.background = has_bg.then_some(Color::WHITE);
             }
             if let Some(bg) = &mut ab.background {
-                let target = PaintTarget { fill_type: None, color: bg, gradient: None, blend: None };
-                paint_button(ui, "artboard_bg", target, &mut app.doc.colors);
+                let mut palette = Palette { colors: &mut app.doc.colors, variables: &mut app.doc.swatches };
+                paint_button(ui, "artboard_bg", PaintTarget::color(bg), &mut palette);
             }
         });
         ui.checkbox(&mut ab.clip_content, "Clip content");
@@ -244,7 +247,53 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
     });
     if !layer.is_artboard() && !layer.is_group() {
         ui.checkbox(&mut layer.is_mask, "Use as mask").on_hover_text("Clips the layers above it in the same group");
+        shared_style_row(app, ui, layer);
         style_sections(app, ui, layer);
+    }
+}
+
+/// Picks the shared layer or text style a layer follows, and offers to update or reset it when
+/// the layer has drifted from it.
+fn shared_style_row(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
+    let text = layer.is_text();
+    let linked = layer.shared_style.and_then(|id| app.doc.shared_style(id)).cloned();
+    let none = if text { "No Text Style" } else { "No Layer Style" };
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let selected = linked.as_ref().map_or(none, |s| s.name.as_str());
+        egui::ComboBox::from_id_salt("shared_style").selected_text(selected).width(150.0).show_ui(ui, |ui| {
+            if ui.selectable_label(linked.is_none(), none).clicked() {
+                layer.shared_style = None;
+            }
+            let list = if text { &app.doc.text_styles } else { &app.doc.layer_styles };
+            for s in list {
+                if ui.selectable_label(layer.shared_style == Some(s.id), &s.name).clicked() {
+                    s.apply(layer);
+                }
+            }
+        });
+        if linked.is_none() {
+            let tip = if text { "Create a text style from this layer" } else { "Create a layer style from this layer" };
+            if ui.button("Create").on_hover_text(tip).clicked() {
+                let id = app.doc.create_shared_style(layer);
+                layer.shared_style = Some(id);
+            }
+        } else if ui.button("Detach").on_hover_text("Keep this look but stop following the style").clicked() {
+            layer.shared_style = None;
+        }
+    });
+    if let Some(s) = linked
+        && !s.matches(layer)
+    {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Modified").italics().weak());
+            if ui.button("Update Style").on_hover_text("Apply these changes to every layer using the style").clicked() {
+                app.doc.update_shared_style(s.id, layer);
+            }
+            if ui.button("Reset").on_hover_text("Discard changes and match the style").clicked() {
+                s.apply(layer);
+            }
+        });
     }
 }
 
@@ -252,7 +301,8 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
     let closed = layer.is_closed();
     let text_layer = layer.is_text();
     let id = layer.id;
-    let swatches = &mut app.doc.colors;
+    let mut palette = Palette { colors: &mut app.doc.colors, variables: &mut app.doc.swatches };
+    let swatches = &mut palette;
     let mut gradient_target = None;
 
     if closed {
@@ -267,11 +317,13 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                         color: &mut fill.color,
                         gradient: Some(&mut fill.gradient),
                         blend: Some(&mut fill.blend_mode),
+                        swatch: Some(&mut fill.swatch),
                     };
                     if paint_button(ui, "fill", target, swatches).editing_gradient {
                         gradient_target = Some(GradientTarget { layer: id, border: false, index: i });
                     }
-                    paint_summary(ui, fill.fill_type, &mut fill.color, &fill.gradient);
+                    let var = variable_name(swatches, fill.swatch);
+                    paint_summary(ui, fill.fill_type, &mut fill.color, &fill.gradient, var);
                     if icons::small_button(ui, Icon::Minus, "Remove fill").clicked() {
                         remove = Some(i);
                     }
@@ -310,6 +362,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                     color: &mut border.color,
                     gradient: Some(&mut border.gradient),
                     blend: None,
+                    swatch: Some(&mut border.swatch),
                 };
                 if paint_button(ui, "border", target, swatches).editing_gradient {
                     gradient_target = Some(GradientTarget { layer: id, border: true, index: i });
@@ -349,8 +402,11 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             ui.push_id((title, i), |ui| {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut shadow.enabled, "");
-                    let target = PaintTarget { fill_type: None, color: &mut shadow.color, gradient: None, blend: None };
+                    let target = PaintTarget { swatch: Some(&mut shadow.swatch), ..PaintTarget::color(&mut shadow.color) };
                     paint_button(ui, "shadow", target, swatches);
+                    if let Some(name) = variable_name(swatches, shadow.swatch) {
+                        ui.label(format!("◆ {name}"));
+                    }
                     if icons::small_button(ui, Icon::Minus, "Remove shadow").clicked() {
                         remove = Some(i);
                     }
@@ -380,15 +436,24 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
     }
 }
 
-/// A compact description next to a paint swatch: hex and opacity for colors, the gradient kind
-/// otherwise.
-fn paint_summary(ui: &mut Ui, fill_type: FillType, color: &mut Color, gradient: &scrawl_core::Gradient) {
-    match fill_type {
-        FillType::Color => {
+/// The name of the color variable `link` points to.
+fn variable_name(palette: &Palette<'_>, link: Option<scrawl_core::SwatchId>) -> Option<String> {
+    let id = link?;
+    palette.variables.iter().find(|v| v.id == id).map(|v| v.name.clone())
+}
+
+/// A compact description next to a paint swatch: hex and opacity for colors (or the color
+/// variable's name), the gradient kind otherwise.
+fn paint_summary(ui: &mut Ui, fill_type: FillType, color: &mut Color, gradient: &scrawl_core::Gradient, variable: Option<String>) {
+    match (fill_type, variable) {
+        (FillType::Color, Some(name)) => {
+            ui.add(egui::Label::new(format!("◆ {name}")).truncate()).on_hover_text("Color variable");
+        }
+        (FillType::Color, None) => {
             hex_field(ui, color);
             alpha_field(ui, color);
         }
-        FillType::Gradient => {
+        (FillType::Gradient, _) => {
             ui.label(format!("{} gradient", gradient.kind.label()));
         }
     }

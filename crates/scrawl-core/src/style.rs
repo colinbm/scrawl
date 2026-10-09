@@ -2,6 +2,7 @@ use kurbo::Point;
 use serde::{Deserialize, Serialize};
 
 use crate::Color;
+use crate::components::SwatchId;
 
 /// Visual styling shared by every layer type.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -32,6 +33,13 @@ impl Style {
     /// The default style for lines and open paths, which have no fill.
     pub fn default_line() -> Self {
         Self { borders: vec![Border::solid(Color::DEFAULT_BORDER, 1.0)], ..Default::default() }
+    }
+
+    /// Visits every solid color that can follow a color variable: fills, borders and shadows.
+    pub fn colors_mut(&mut self, mut f: impl FnMut(&mut Color, &mut Option<SwatchId>)) {
+        self.fills.iter_mut().for_each(|x| f(&mut x.color, &mut x.swatch));
+        self.borders.iter_mut().for_each(|x| f(&mut x.color, &mut x.swatch));
+        self.shadows.iter_mut().chain(&mut self.inner_shadows).for_each(|x| f(&mut x.color, &mut x.swatch));
     }
 
     /// Largest distance any enabled border paints outside the geometry.
@@ -83,11 +91,21 @@ pub struct Fill {
     pub gradient: Gradient,
     #[serde(default)]
     pub blend_mode: BlendMode,
+    /// The color variable `color` follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swatch: Option<SwatchId>,
 }
 
 impl Fill {
     pub fn solid(color: Color) -> Self {
-        Self { enabled: true, fill_type: FillType::Color, color, gradient: Gradient::default(), blend_mode: BlendMode::Normal }
+        Self {
+            enabled: true,
+            fill_type: FillType::Color,
+            color,
+            gradient: Gradient::default(),
+            blend_mode: BlendMode::Normal,
+            swatch: None,
+        }
     }
 
     pub fn paint(&self) -> Paint<'_> {
@@ -209,6 +227,9 @@ pub struct Border {
     pub thickness: f64,
     #[serde(default)]
     pub position: BorderPosition,
+    /// The color variable `color` follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swatch: Option<SwatchId>,
 }
 
 impl Border {
@@ -220,6 +241,7 @@ impl Border {
             gradient: Gradient::default(),
             thickness,
             position: BorderPosition::Center,
+            swatch: None,
         }
     }
 
@@ -331,17 +353,20 @@ pub struct Shadow {
     pub blur: f64,
     #[serde(default)]
     pub spread: f64,
+    /// The color variable `color` follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swatch: Option<SwatchId>,
 }
 
 impl Shadow {
     /// The default drop shadow.
     pub fn drop() -> Self {
-        Self { enabled: true, color: Color::BLACK.with_alpha(0.5), offset_x: 0.0, offset_y: 2.0, blur: 4.0, spread: 0.0 }
+        Self { enabled: true, color: Color::BLACK.with_alpha(0.5), offset_x: 0.0, offset_y: 2.0, blur: 4.0, spread: 0.0, swatch: None }
     }
 
     /// The default inner shadow.
     pub fn inner() -> Self {
-        Self { enabled: true, color: Color::BLACK.with_alpha(0.5), offset_x: 0.0, offset_y: 1.0, blur: 3.0, spread: 0.0 }
+        Self { enabled: true, color: Color::BLACK.with_alpha(0.5), offset_x: 0.0, offset_y: 1.0, blur: 3.0, spread: 0.0, swatch: None }
     }
 }
 

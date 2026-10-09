@@ -397,3 +397,90 @@ fn layer_search_filters_and_selects() {
     h.run();
     assert!(h.query_by_label("5 matches").is_some());
 }
+
+fn layer_named(h: &Harness<'_, ScrawlApp>, name: &str) -> scrawl_core::Layer {
+    let mut found = None;
+    h.state().page().walk(|l| {
+        if l.name == name {
+            found = Some(l.clone());
+        }
+    });
+    found.unwrap_or_else(|| panic!("no layer named {name}"))
+}
+
+#[test]
+fn shared_layer_style_update_reaches_other_layers() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    select(&mut h, "Tile (Normal)");
+    assert!(h.query_by_label("Modified").is_none());
+    h.get_by_label("Add shadow").click();
+    h.run();
+    h.run();
+    assert!(h.query_by_label("Modified").is_some());
+    save(&mut h, "shared_style_modified");
+    h.get_by_label("Update Style").click();
+    h.run();
+    let other = layer_named(&h, "Tile (Multiply)");
+    assert_eq!(other.style.shadows.len(), 1, "update pushed to every tile");
+    assert!(h.query_by_label("Modified").is_none());
+
+    // Reset discards a local change.
+    h.get_by_label("Add shadow").click();
+    h.run();
+    h.run();
+    h.get_by_label("Reset").click();
+    h.run();
+    assert_eq!(layer_named(&h, "Tile (Normal)").style.shadows.len(), 1);
+}
+
+#[test]
+fn components_tab_applies_styles_and_variables() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    h.get_by_label("Components").click();
+    h.run();
+    for label in ["TEXT STYLES", "LAYER STYLES", "COLOR VARIABLES", "Title", "Tile", "Sunshine", "Brand Blue"] {
+        assert!(h.query_by_label_contains(label).is_some(), "missing {label}");
+    }
+    save(&mut h, "components_tab");
+
+    select(&mut h, "Card");
+    h.get_by_label_contains("Sunshine").click();
+    h.run();
+    let card = layer_named(&h, "Card");
+    let fill = card.style.fills.last().unwrap();
+    assert_eq!(fill.color.to_hex(), "FFD23F");
+    assert!(fill.swatch.is_some());
+
+    // Editing the variable recolors every linked fill, including the stripe.
+    let id = fill.swatch.unwrap();
+    h.state_mut().doc.set_swatch_color(id, scrawl_core::Color::BLACK);
+    h.run();
+    assert_eq!(layer_named(&h, "Card").style.fills.last().unwrap().color, scrawl_core::Color::BLACK);
+    assert_eq!(layer_named(&h, "Stripe").style.fills[0].color, scrawl_core::Color::BLACK);
+
+    // Text styles apply typography.
+    select(&mut h, "Body");
+    h.get_by_label("Title").click();
+    h.run();
+    let scrawl_core::LayerKind::Text(t) = layer_named(&h, "Body").kind else { panic!() };
+    assert_eq!(t.style.font_size, 32.0);
+}
+
+#[test]
+fn picking_a_color_unlinks_the_variable() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    select(&mut h, "Stripe");
+    assert!(h.query_by_label("◆ Sunshine").is_some());
+    // Simulate a hand edit through the inspector's write-back path.
+    let id = layer_named(&h, "Stripe").id;
+    h.state_mut().page_mut().find_mut(id).unwrap().style.fills[0].color = scrawl_core::Color::WHITE;
+    h.get_by_label("fill paint").click();
+    h.run();
+    h.get_by_label("Linear").click();
+    h.run();
+    let fill = &layer_named(&h, "Stripe").style.fills[0];
+    assert_eq!(fill.swatch, None, "a color that no longer matches its variable is unlinked");
+}

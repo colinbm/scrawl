@@ -1,17 +1,34 @@
 //! The paint popover used by fills, borders and shadows: solid colors and gradients, a color
-//! picker, and document swatches.
+//! picker, color variables and document swatches.
 
 use egui::color_picker::{Alpha, color_picker_hsva_2d};
 use egui::ecolor::Hsva;
 use egui::{Color32, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use scrawl_core::{BlendMode, Color, FillType, Gradient, GradientKind};
+use scrawl_core::{BlendMode, Color, FillType, Gradient, GradientKind, Swatch, SwatchId};
 
-/// What a paint popover edits. Gradients and blend modes are optional (shadows have neither).
+/// What a paint popover edits. Gradients and blend modes are optional (shadows have neither),
+/// as is the color-variable link (artboard backgrounds have none).
 pub struct PaintTarget<'a> {
     pub fill_type: Option<&'a mut FillType>,
     pub color: &'a mut Color,
     pub gradient: Option<&'a mut Gradient>,
     pub blend: Option<&'a mut BlendMode>,
+    pub swatch: Option<&'a mut Option<SwatchId>>,
+}
+
+impl<'a> PaintTarget<'a> {
+    /// A plain color with no gradient, blend mode or variable link.
+    pub fn color(color: &'a mut Color) -> Self {
+        Self { fill_type: None, color, gradient: None, blend: None, swatch: None }
+    }
+}
+
+/// The document's reusable colors, offered in every paint popover.
+pub struct Palette<'a> {
+    /// Document swatches: plain colors.
+    pub colors: &'a mut Vec<Color>,
+    /// Color variables, which colors link to.
+    pub variables: &'a mut Vec<Swatch>,
 }
 
 pub struct PaintResponse {
@@ -19,7 +36,7 @@ pub struct PaintResponse {
     pub editing_gradient: bool,
 }
 
-fn to_color32(c: Color) -> Color32 {
+pub fn to_color32(c: Color) -> Color32 {
     let [r, g, b, a] = c.to_rgba8();
     Color32::from_rgba_unmultiplied(r, g, b, a)
 }
@@ -75,7 +92,7 @@ fn paint_swatch(p: &egui::Painter, rect: Rect, fill_type: FillType, color: Color
 }
 
 /// A swatch button that opens the paint popover.
-pub fn paint_button(ui: &mut Ui, id_salt: &str, target: PaintTarget<'_>, swatches: &mut Vec<Color>) -> PaintResponse {
+pub fn paint_button(ui: &mut Ui, id_salt: &str, target: PaintTarget<'_>, palette: &mut Palette<'_>) -> PaintResponse {
     let fill_type = target.fill_type.as_deref().copied().unwrap_or(FillType::Color);
     let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 20.0), Sense::click());
     let label = format!("{} paint", id_salt);
@@ -88,13 +105,13 @@ pub fn paint_button(ui: &mut Ui, id_salt: &str, target: PaintTarget<'_>, swatche
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_width(232.0);
-            editing_gradient = popover(ui, popup_id, target, swatches);
+            editing_gradient = popover(ui, popup_id, target, palette);
         });
     PaintResponse { editing_gradient }
 }
 
-fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, swatches: &mut Vec<Color>) -> bool {
-    let PaintTarget { mut fill_type, color, mut gradient, blend } = target;
+fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'_>) -> bool {
+    let PaintTarget { mut fill_type, color, mut gradient, blend, mut swatch } = target;
     let stop_id = id.with("stop");
     let mut selected_stop: usize = ui.data(|d| d.get_temp(stop_id)).unwrap_or(0);
 
@@ -119,6 +136,21 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, swatches: &mut Vec<Colo
     }
 
     let is_gradient = fill_type.as_deref() == Some(&FillType::Gradient) && gradient.is_some();
+    // Only solid colors link to variables; gradient stops just take their value.
+    let link = if is_gradient { None } else { swatch.as_deref_mut() };
+    if let Some(link) = link
+        && let Some(var) = link.and_then(|id| palette.variables.iter().find(|v| v.id == id))
+    {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("◆ {}", var.name)).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Detach").on_hover_text("Stop following this color variable").clicked() {
+                    *link = None;
+                }
+            });
+        });
+        ui.separator();
+    }
     let editing: &mut Color = if is_gradient {
         let g = gradient.expect("checked");
         selected_stop = selected_stop.min(g.stops.len().saturating_sub(1));
@@ -150,7 +182,38 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, swatches: &mut Vec<Colo
         });
     }
 
+    // Color variables.
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("COLOR VARIABLES").small().weak());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if crate::ui::icons::small_button(ui, crate::ui::icons::Icon::Plus, "Create color variable").clicked() {
+                let id = Swatch::add_to(palette.variables, *editing);
+                if !is_gradient && let Some(link) = swatch.as_deref_mut() {
+                    *link = Some(id);
+                }
+            }
+        });
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        for v in palette.variables.iter() {
+            let linked = !is_gradient && swatch.as_deref().is_some_and(|l| *l == Some(v.id));
+            let resp = swatch_chip(ui, v.color, linked).on_hover_text(&v.name);
+            if resp.clicked() {
+                *editing = v.color;
+                if !is_gradient && let Some(link) = swatch.as_deref_mut() {
+                    *link = Some(v.id);
+                }
+            }
+        }
+        if palette.variables.is_empty() {
+            ui.weak("None yet");
+        }
+    });
+
     // Document swatches.
+    let swatches = &mut *palette.colors;
     ui.separator();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("DOCUMENT COLORS").small().weak());
@@ -166,10 +229,7 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, swatches: &mut Vec<Colo
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
         let mut remove = None;
         for (i, &c) in swatches.iter().enumerate() {
-            let (rect, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-            checkerboard(ui.painter(), rect);
-            ui.painter().rect_filled(rect, 2.0, to_color32(c));
-            ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, Color32::from_black_alpha(60)), StrokeKind::Inside);
+            let resp = swatch_chip(ui, c, false);
             if resp.clicked() {
                 *editing = c;
             }
@@ -186,6 +246,16 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, swatches: &mut Vec<Colo
 
     ui.data_mut(|d| d.insert_temp(stop_id, selected_stop));
     is_gradient
+}
+
+/// A small clickable color square; `selected` rings it in the accent color.
+pub fn swatch_chip(ui: &mut Ui, c: Color, selected: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+    checkerboard(ui.painter(), rect);
+    ui.painter().rect_filled(rect, 2.0, to_color32(c));
+    let stroke = if selected { Stroke::new(2.0, crate::style::ACCENT) } else { Stroke::new(1.0, Color32::from_black_alpha(60)) };
+    ui.painter().rect_stroke(rect, 2.0, stroke, StrokeKind::Inside);
+    resp
 }
 
 /// The gradient bar with draggable stops. Click empty space on the bar to add a stop.

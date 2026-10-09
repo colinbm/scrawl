@@ -94,6 +94,8 @@ pub struct ScrawlApp {
     pub show_grid: bool,
     pub show_layout: bool,
     pub layer_filter: crate::ui::layers::LayerFilter,
+    /// What the left sidebar shows.
+    pub sidebar: Sidebar,
     /// The gradient whose handles are shown on the canvas.
     pub gradient_edit: Option<crate::canvas::GradientTarget>,
     pub file_path: Option<PathBuf>,
@@ -107,6 +109,12 @@ pub struct ScrawlApp {
     pub fit_pending: bool,
     window_title: String,
     pub dev: crate::dev::DevHooks,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sidebar {
+    Layers,
+    Components,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,6 +148,7 @@ impl ScrawlApp {
             show_grid: false,
             show_layout: false,
             layer_filter: Default::default(),
+            sidebar: Sidebar::Layers,
             gradient_edit: None,
             file_path: None,
             clipboard: vec![],
@@ -630,6 +639,7 @@ impl ScrawlApp {
             self.tidy();
         }
         if pressed(FIND) {
+            self.sidebar = Sidebar::Layers;
             self.layer_filter.focus = true;
         }
         if pressed(CONVERT_TO_PATH) {
@@ -835,7 +845,16 @@ impl eframe::App for ScrawlApp {
         egui::Panel::top("menu_bar").show(ui, |ui| ui::toolbar::menu_bar(self, ui));
         egui::Panel::top("toolbar").show(ui, |ui| ui::toolbar::toolbar(self, ui));
         egui::Panel::left("layers").resizable(true).default_size(240.0).min_size(180.0).show(ui, |ui| {
-            ui::layers::show(self, ui);
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.sidebar, Sidebar::Layers, "Layers");
+                ui.selectable_value(&mut self.sidebar, Sidebar::Components, "Components");
+            });
+            ui.separator();
+            match self.sidebar {
+                Sidebar::Layers => ui::layers::show(self, ui),
+                Sidebar::Components => ui::components::show(self, ui),
+            }
         });
         egui::Panel::right("inspector").resizable(false).exact_size(264.0).show(ui, |ui| {
             ui::inspector::show(self, ui);

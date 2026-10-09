@@ -54,6 +54,10 @@ pub struct Layer {
     pub resizing: Resizing,
     #[serde(default)]
     pub style: Style,
+    /// The shared layer or text style this layer follows. Its `style` is a copy, which may differ
+    /// from the shared one until updated or reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_style: Option<crate::components::StyleId>,
     #[serde(flatten)]
     pub kind: LayerKind,
 }
@@ -202,6 +206,7 @@ impl Layer {
             is_mask: false,
             resizing: Resizing::default(),
             style: Style::default(),
+            shared_style: None,
             kind,
         }
     }
@@ -478,6 +483,14 @@ impl Layer {
         self.id = LayerId::new();
         if let Some(children) = self.children_mut() {
             children.iter_mut().for_each(Layer::regenerate_ids);
+        }
+    }
+
+    /// Depth-first, pre-order traversal of this layer and its descendants, mutably.
+    pub fn walk_mut(&mut self, f: &mut impl FnMut(&mut Layer)) {
+        f(self);
+        if let Some(children) = self.children_mut() {
+            children.iter_mut().for_each(|c| c.walk_mut(f));
         }
     }
 
