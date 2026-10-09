@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/scrawl-core", "crates/scrawl-render", "crates/scrawl-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+scrawl-core = { path = "crates/scrawl-core" }
+scrawl-render = { path = "crates/scrawl-render" }
+kurbo = { version = "0.13.1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+thiserror = "2"
+vello = "0.11.0"
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
+rfd = "0.15"
+log = "0.4"
+png = "0.18"
+env_logger = "0.11"
+
+[profile.dev.package."*"]
+opt-level = 2

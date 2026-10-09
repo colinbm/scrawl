@@ -1,0 +1,10 @@
+[package]
+name = "scrawl-render"
+description = "Renders Scrawl documents into Vello scenes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scrawl-core.workspace = true
+vello.workspace = true

@@ -1,0 +1,596 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use egui::{Key, KeyboardShortcut, Modifiers};
+use scrawl_core::kurbo::Vec2;
+use scrawl_core::ops::{self, Align, Reorder};
+use scrawl_core::{Document, Frame, History, Layer, LayerId, Page, PageId, io};
+use serde_json::json;
+
+use crate::canvas::{CanvasState, Tool};
+use crate::gpu::VelloCanvas;
+use crate::ui;
+use crate::viewport::Viewport;
+
+/// Prefix identifying Scrawl layers on the system clipboard.
+const CLIPBOARD_TAG: &str = "scrawl-layers";
+
+pub mod shortcuts {
+    use super::*;
+    const fn cmd(key: Key) -> KeyboardShortcut {
+        KeyboardShortcut::new(Modifiers::COMMAND, key)
+    }
+    const fn cmd_shift(key: Key) -> KeyboardShortcut {
+        KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), key)
+    }
+    const fn cmd_alt(key: Key) -> KeyboardShortcut {
+        KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), key)
+    }
+    pub const NEW: KeyboardShortcut = cmd(Key::N);
+    pub const OPEN: KeyboardShortcut = cmd(Key::O);
+    pub const SAVE: KeyboardShortcut = cmd(Key::S);
+    pub const SAVE_AS: KeyboardShortcut = cmd_shift(Key::S);
+    pub const UNDO: KeyboardShortcut = cmd(Key::Z);
+    pub const REDO: KeyboardShortcut = cmd_shift(Key::Z);
+    pub const DUPLICATE: KeyboardShortcut = cmd(Key::D);
+    pub const SELECT_ALL: KeyboardShortcut = cmd(Key::A);
+    pub const GROUP: KeyboardShortcut = cmd(Key::G);
+    pub const UNGROUP: KeyboardShortcut = cmd_shift(Key::G);
+    pub const FORWARD: KeyboardShortcut = cmd(Key::CloseBracket);
+    pub const BACKWARD: KeyboardShortcut = cmd(Key::OpenBracket);
+    pub const TO_FRONT: KeyboardShortcut = cmd_alt(Key::CloseBracket);
+    pub const TO_BACK: KeyboardShortcut = cmd_alt(Key::OpenBracket);
+    pub const ZOOM_IN: KeyboardShortcut = cmd(Key::Equals);
+    pub const ZOOM_IN_PLUS: KeyboardShortcut = cmd(Key::Plus);
+    pub const ZOOM_OUT: KeyboardShortcut = cmd(Key::Minus);
+    pub const ACTUAL_SIZE: KeyboardShortcut = cmd(Key::Num0);
+    pub const ZOOM_FIT: KeyboardShortcut = cmd(Key::Num1);
+    pub const ZOOM_SELECTION: KeyboardShortcut = cmd(Key::Num2);
+}
+
+pub struct ScrawlApp {
+    pub doc: Document,
+    pub history: History,
+    pub page: PageId,
+    pub selection: Vec<LayerId>,
+    pub tool: Tool,
+    pub viewports: HashMap<PageId, Viewport>,
+    pub canvas: CanvasState,
+    pub gpu: Option<VelloCanvas>,
+    pub gpu_error: Option<String>,
+    pub scene: vello::Scene,
+    /// Containers expanded in the layer list.
+    pub expanded: HashSet<LayerId>,
+    /// Layer or page currently being renamed, with the edit buffer.
+    pub renaming: Option<(RenameTarget, String)>,
+    pub lock_aspect: bool,
+    pub file_path: Option<PathBuf>,
+    /// Document as last saved/loaded, to detect unsaved changes.
+    saved: Document,
+    /// Layers copied most recently, used when pasting from the menu (which can't read the system
+    /// clipboard through egui).
+    clipboard: Vec<Layer>,
+    pub error: Option<String>,
+    /// Zoom to fit on the next frame (after opening a file, once the canvas size is known).
+    pub fit_pending: bool,
+    window_title: String,
+    pub dev: crate::dev::DevHooks,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenameTarget {
+    Layer(LayerId),
+    Page(PageId),
+}
+
+impl ScrawlApp {
+    pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
+        crate::style::apply(&cc.egui_ctx);
+        let doc = Document::default();
+        let mut app = Self {
+            page: doc.pages[0].id,
+            history: History::new(&doc),
+            saved: doc.clone(),
+            doc,
+            selection: vec![],
+            tool: Tool::Select,
+            viewports: HashMap::new(),
+            canvas: CanvasState::default(),
+            gpu: None,
+            gpu_error: None,
+            scene: vello::Scene::new(),
+            expanded: HashSet::new(),
+            renaming: None,
+            lock_aspect: false,
+            file_path: None,
+            clipboard: vec![],
+            error: None,
+            fit_pending: false,
+            window_title: String::new(),
+            dev: crate::dev::DevHooks::from_env(),
+        };
+        if let Some(path) = path {
+            app.open_path(&path);
+        }
+        app
+    }
+
+    pub fn page(&self) -> &Page {
+        self.doc.page(self.page).unwrap_or(&self.doc.pages[0])
+    }
+
+    pub fn page_mut(&mut self) -> &mut Page {
+        let id = self.page;
+        let i = self.doc.pages.iter().position(|p| p.id == id).unwrap_or(0);
+        &mut self.doc.pages[i]
+    }
+
+    pub fn viewport(&self) -> Viewport {
+        self.viewports.get(&self.page).copied().unwrap_or_default()
+    }
+
+    pub fn viewport_mut(&mut self) -> &mut Viewport {
+        self.viewports.entry(self.page).or_default()
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.doc != self.saved
+    }
+
+    pub fn set_page(&mut self, id: PageId) {
+        if self.page != id {
+            self.page = id;
+            self.selection.clear();
+            self.canvas.cancel();
+        }
+    }
+
+    fn set_document(&mut self, doc: Document, path: Option<PathBuf>) {
+        self.page = doc.pages[0].id;
+        self.history = History::new(&doc);
+        self.saved = doc.clone();
+        self.doc = doc;
+        self.file_path = path;
+        self.selection.clear();
+        self.viewports.clear();
+        self.expanded.clear();
+        self.renaming = None;
+        self.canvas.cancel();
+        self.fit_pending = true;
+    }
+
+    // ---- File --------------------------------------------------------------------------------
+
+    /// Asks whether to save unsaved changes. Returns false if the user cancelled.
+    pub fn confirm_discard(&mut self) -> bool {
+        if !self.is_dirty() {
+            return true;
+        }
+        let answer = rfd::MessageDialog::new()
+            .set_title("Unsaved changes")
+            .set_description("Do you want to save the changes you made to this document?")
+            .set_buttons(rfd::MessageButtons::YesNoCancelCustom("Save".into(), "Don't Save".into(), "Cancel".into()))
+            .show();
+        match answer {
+            rfd::MessageDialogResult::Custom(s) if s == "Save" => self.save(),
+            rfd::MessageDialogResult::Custom(s) if s == "Don't Save" => true,
+            rfd::MessageDialogResult::Yes => self.save(),
+            rfd::MessageDialogResult::No => true,
+            _ => false,
+        }
+    }
+
+    pub fn new_document(&mut self) {
+        if self.confirm_discard() {
+            self.set_document(Document::default(), None);
+        }
+    }
+
+    pub fn open(&mut self) {
+        if !self.confirm_discard() {
+            return;
+        }
+        if let Some(path) = rfd::FileDialog::new().add_filter("Scrawl document", &[io::FILE_EXTENSION]).pick_file() {
+            self.open_path(&path);
+        }
+    }
+
+    pub fn open_path(&mut self, path: &Path) {
+        match io::load(path) {
+            Ok(doc) => self.set_document(doc, Some(path.to_path_buf())),
+            Err(e) => self.error = Some(format!("Couldn't open {}: {e}", path.display())),
+        }
+    }
+
+    /// Returns whether the document was saved.
+    pub fn save(&mut self) -> bool {
+        match self.file_path.clone() {
+            Some(path) => self.save_to(&path),
+            None => self.save_as(),
+        }
+    }
+
+    pub fn save_as(&mut self) -> bool {
+        let name = self
+            .file_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map_or_else(|| format!("Untitled.{}", io::FILE_EXTENSION), |n| n.to_string_lossy().into_owned());
+        let Some(mut path) = rfd::FileDialog::new()
+            .add_filter("Scrawl document", &[io::FILE_EXTENSION])
+            .set_file_name(name)
+            .save_file()
+        else {
+            return false;
+        };
+        if path.extension().is_none() {
+            path.set_extension(io::FILE_EXTENSION);
+        }
+        self.save_to(&path)
+    }
+
+    fn save_to(&mut self, path: &Path) -> bool {
+        self.history.commit(&self.doc);
+        match io::save(&self.doc, path) {
+            Ok(()) => {
+                self.saved = self.doc.clone();
+                self.file_path = Some(path.to_path_buf());
+                true
+            }
+            Err(e) => {
+                self.error = Some(format!("Couldn't save {}: {e}", path.display()));
+                false
+            }
+        }
+    }
+
+    // ---- Edit --------------------------------------------------------------------------------
+
+    pub fn undo(&mut self) {
+        self.canvas.cancel();
+        if self.history.undo(&mut self.doc) {
+            self.after_history_change();
+        }
+    }
+
+    pub fn redo(&mut self) {
+        self.canvas.cancel();
+        if self.history.redo(&mut self.doc) {
+            self.after_history_change();
+        }
+    }
+
+    fn after_history_change(&mut self) {
+        if self.doc.page(self.page).is_none() {
+            self.page = self.doc.pages[0].id;
+        }
+        self.sanitize_selection();
+    }
+
+    pub fn sanitize_selection(&mut self) {
+        let page = self.doc.page(self.page).unwrap_or(&self.doc.pages[0]);
+        let valid: Vec<_> = self.selection.iter().copied().filter(|&id| page.contains(id)).collect();
+        self.selection = valid;
+    }
+
+    pub fn delete_selection(&mut self) {
+        let sel = std::mem::take(&mut self.selection);
+        ops::delete(self.page_mut(), &sel);
+    }
+
+    pub fn duplicate_selection(&mut self) {
+        let sel = self.selection.clone();
+        self.selection = ops::duplicate(self.page_mut(), &sel);
+    }
+
+    pub fn select_all(&mut self) {
+        let page = self.page();
+        // Within the current container if something is selected, otherwise the whole page.
+        let parent = self.selection.first().and_then(|&id| page.parent(id)).flatten();
+        let ids = page.siblings(parent).map(|s| s.iter().filter(|l| l.visible && !l.locked).map(|l| l.id).collect());
+        self.selection = ids.unwrap_or_default();
+    }
+
+    pub fn group_selection(&mut self) {
+        let sel = self.selection.clone();
+        if let Some(g) = ops::group(self.page_mut(), &sel) {
+            self.selection = vec![g];
+        }
+    }
+
+    pub fn ungroup_selection(&mut self) {
+        let sel = self.selection.clone();
+        let mut released = vec![];
+        for id in sel {
+            let out = ops::ungroup(self.page_mut(), id);
+            if out.is_empty() {
+                released.push(id);
+            } else {
+                released.extend(out);
+            }
+        }
+        self.selection = released;
+    }
+
+    pub fn reorder(&mut self, how: Reorder) {
+        let sel = self.selection.clone();
+        ops::reorder(self.page_mut(), &sel, how);
+    }
+
+    pub fn align(&mut self, how: Align) {
+        let sel = self.selection.clone();
+        ops::align(self.page_mut(), &sel, how);
+    }
+
+    pub fn nudge(&mut self, d: Vec2) {
+        let sel = self.selection.clone();
+        ops::move_by(self.page_mut(), &sel, d);
+    }
+
+    /// Copies the selection (in page space) to the internal and system clipboards.
+    pub fn copy(&mut self, ctx: &egui::Context) {
+        let page = self.page();
+        let layers: Vec<Layer> = ops::normalize_selection(page, &self.selection)
+            .into_iter()
+            .filter_map(|id| ops::page_space_copy(page, id))
+            .collect();
+        if layers.is_empty() {
+            return;
+        }
+        ctx.copy_text(json!({ CLIPBOARD_TAG: layers }).to_string());
+        self.clipboard = layers;
+    }
+
+    pub fn cut(&mut self, ctx: &egui::Context) {
+        self.copy(ctx);
+        self.delete_selection();
+    }
+
+    /// Pastes clipboard text if it holds Scrawl layers, otherwise the internal clipboard.
+    pub fn paste(&mut self, text: Option<&str>) {
+        let from_text = text.and_then(|t| {
+            let mut v: serde_json::Value = serde_json::from_str(t).ok()?;
+            serde_json::from_value::<Vec<Layer>>(v.get_mut(CLIPBOARD_TAG)?.take()).ok()
+        });
+        let layers = from_text.unwrap_or_else(|| self.clipboard.clone());
+        if layers.is_empty() {
+            return;
+        }
+        let page = self.page_mut();
+        let ids: Vec<LayerId> = layers.iter().map(|l| ops::insert_root(page, l.duplicate())).collect();
+        ops::reparent_to_artboards(page, &ids);
+        self.selection = ids;
+    }
+
+    pub fn add_page(&mut self) {
+        let page = Page::new(self.doc.next_page_name());
+        let id = page.id;
+        let index = self.doc.pages.iter().position(|p| p.id == self.page).map_or(self.doc.pages.len(), |i| i + 1);
+        self.doc.pages.insert(index, page);
+        self.set_page(id);
+    }
+
+    pub fn delete_page(&mut self, id: PageId) {
+        if self.doc.pages.len() <= 1 {
+            return;
+        }
+        let Some(i) = self.doc.pages.iter().position(|p| p.id == id) else { return };
+        self.doc.pages.remove(i);
+        if self.page == id {
+            let next = self.doc.pages[i.min(self.doc.pages.len() - 1)].id;
+            self.set_page(next);
+        }
+    }
+
+    pub fn insert_artboard_preset(&mut self, name: &str, width: f64, height: f64) {
+        let page = self.page();
+        let x = page.content_bounds().map_or(0.0, |b| (b.x1 + 100.0).round());
+        let y = page.content_bounds().map_or(0.0, |b| b.y0.round());
+        let id = ops::insert_drawn(self.page_mut(), Layer::artboard(name, Frame::new(x, y, width, height)));
+        self.selection = vec![id];
+        self.tool = Tool::Select;
+        self.zoom_to_selection(1.0);
+    }
+
+    // ---- View --------------------------------------------------------------------------------
+
+    pub fn zoom_to_fit(&mut self) {
+        let canvas = self.canvas.rect;
+        match self.page().content_bounds() {
+            Some(b) => self.viewport_mut().fit(canvas, b, 1.0),
+            None => *self.viewport_mut() = Viewport::default(),
+        }
+    }
+
+    pub fn zoom_to_selection(&mut self, max_zoom: f64) {
+        let canvas = self.canvas.rect;
+        if let Some(b) = self.page().selection_bounds(&self.selection) {
+            self.viewport_mut().fit(canvas, b, max_zoom);
+        }
+    }
+
+    pub fn actual_size(&mut self) {
+        let canvas = self.canvas.rect;
+        self.viewport_mut().set_zoom_about(canvas, canvas.center(), 1.0);
+    }
+
+    pub fn step_zoom(&mut self, zoom_in: bool) {
+        let canvas = self.canvas.rect;
+        self.viewport_mut().step_zoom(canvas, zoom_in);
+    }
+
+    // ---- Frame loop --------------------------------------------------------------------------
+
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        use shortcuts::*;
+        // File and history shortcuts work everywhere except in text fields (which have their own
+        // undo); editing shortcuts only when the canvas has keyboard focus.
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let events = ctx.input(|i| i.events.clone());
+        for event in &events {
+            match event {
+                egui::Event::Copy => self.copy(ctx),
+                egui::Event::Cut => self.cut(ctx),
+                egui::Event::Paste(text) => self.paste(Some(text)),
+                _ => {}
+            }
+        }
+        let pressed = |sc: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&sc));
+        if pressed(NEW) {
+            self.new_document();
+        }
+        if pressed(OPEN) {
+            self.open();
+        }
+        if pressed(SAVE_AS) {
+            self.save_as();
+        }
+        if pressed(SAVE) {
+            self.save();
+        }
+        if pressed(REDO) {
+            self.redo();
+        }
+        if pressed(UNDO) {
+            self.undo();
+        }
+        if pressed(DUPLICATE) {
+            self.duplicate_selection();
+        }
+        if pressed(SELECT_ALL) {
+            self.select_all();
+        }
+        if pressed(UNGROUP) {
+            self.ungroup_selection();
+        }
+        if pressed(GROUP) {
+            self.group_selection();
+        }
+        if pressed(TO_FRONT) {
+            self.reorder(Reorder::ToFront);
+        }
+        if pressed(TO_BACK) {
+            self.reorder(Reorder::ToBack);
+        }
+        if pressed(FORWARD) {
+            self.reorder(Reorder::Forward);
+        }
+        if pressed(BACKWARD) {
+            self.reorder(Reorder::Backward);
+        }
+        if pressed(ZOOM_IN) || pressed(ZOOM_IN_PLUS) {
+            self.step_zoom(true);
+        }
+        if pressed(ZOOM_OUT) {
+            self.step_zoom(false);
+        }
+        if pressed(ACTUAL_SIZE) {
+            self.actual_size();
+        }
+        if pressed(ZOOM_FIT) {
+            self.zoom_to_fit();
+        }
+        if pressed(ZOOM_SELECTION) {
+            self.zoom_to_selection(crate::viewport::MAX_ZOOM);
+        }
+
+        // Single-key shortcuts: no command modifier.
+        let (mods, keys) = ctx.input(|i| {
+            let keys: Vec<Key> =
+                i.events.iter().filter_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, .. } => Some(*key),
+                    _ => None,
+                }).collect();
+            (i.modifiers, keys)
+        });
+        if mods.command {
+            return;
+        }
+        for key in keys {
+            let step = if mods.shift { 10.0 } else { 1.0 };
+            match key {
+                Key::V => self.tool = Tool::Select,
+                Key::A => self.tool = Tool::Artboard,
+                Key::R => self.tool = Tool::Rectangle,
+                Key::O => self.tool = Tool::Oval,
+                Key::L => self.tool = Tool::Line,
+                Key::Escape => {
+                    if self.tool != Tool::Select {
+                        self.tool = Tool::Select;
+                    } else if !self.canvas.cancel() {
+                        // Escape walks up to the parent group.
+                        let page = self.page();
+                        let parents: Vec<_> = self.selection.iter().filter_map(|&id| page.parent(id).flatten()).filter(|&p| page.find(p).is_some_and(Layer::is_group)).collect();
+                        self.selection = if parents.is_empty() { vec![] } else { ops::normalize_selection(page, &parents) };
+                    }
+                }
+                Key::Backspace | Key::Delete => self.delete_selection(),
+                Key::ArrowLeft => self.nudge(Vec2::new(-step, 0.0)),
+                Key::ArrowRight => self.nudge(Vec2::new(step, 0.0)),
+                Key::ArrowUp => self.nudge(Vec2::new(0.0, -step)),
+                Key::ArrowDown => self.nudge(Vec2::new(0.0, step)),
+                _ => {}
+            }
+        }
+    }
+
+    fn end_frame(&mut self, ctx: &egui::Context) {
+        self.sanitize_selection();
+        // Commit an undo step once an interaction is finished: no pointer button held and no text
+        // field being edited. A whole drag or a run of typing becomes a single step.
+        let interacting = ctx.input(|i| i.pointer.any_down()) || ctx.egui_wants_keyboard_input();
+        if !interacting {
+            self.history.commit(&self.doc);
+        }
+
+        let name = self
+            .file_path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
+        let title = if self.is_dirty() { format!("{name} — Edited") } else { name };
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
+
+        if ctx.input(|i| i.viewport().close_requested()) && self.is_dirty() && !self.confirm_discard() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+}
+
+impl eframe::App for ScrawlApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.handle_shortcuts(&ctx);
+
+        egui::Panel::top("menu_bar").show(ui, |ui| ui::toolbar::menu_bar(self, ui));
+        egui::Panel::top("toolbar").show(ui, |ui| ui::toolbar::toolbar(self, ui));
+        egui::Panel::left("layers").resizable(true).default_size(240.0).min_size(180.0).show(ui, |ui| {
+            ui::layers::show(self, ui);
+        });
+        egui::Panel::right("inspector").resizable(false).exact_size(264.0).show(ui, |ui| {
+            ui::inspector::show(self, ui);
+        });
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+            crate::canvas::show(self, ui, frame);
+        });
+
+        if let Some(msg) = self.error.clone() {
+            egui::Modal::new(egui::Id::new("error")).show(&ctx, |ui| {
+                ui.set_max_width(360.0);
+                ui.heading("Something went wrong");
+                ui.label(msg);
+                if ui.button("OK").clicked() {
+                    self.error = None;
+                }
+            });
+        }
+
+        self.end_frame(&ctx);
+        crate::dev::DevHooks::on_frame(self, &ctx);
+    }
+}
