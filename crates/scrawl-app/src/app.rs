@@ -52,7 +52,13 @@ pub mod shortcuts {
     pub const DIFFERENCE: KeyboardShortcut = cmd_alt(Key::X);
     pub const CONVERT_TO_PATH: KeyboardShortcut = cmd_alt(Key::F);
     pub const OUTLINE: KeyboardShortcut = cmd_shift(Key::O);
-    pub const MASK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::CTRL), Key::M);
+    const fn cmd_ctrl(key: Key) -> KeyboardShortcut {
+        KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::CTRL), key)
+    }
+    pub const MASK: KeyboardShortcut = cmd_ctrl(Key::M);
+    pub const DISTRIBUTE_H: KeyboardShortcut = cmd_ctrl(Key::H);
+    pub const DISTRIBUTE_V: KeyboardShortcut = cmd_ctrl(Key::V);
+    pub const TIDY: KeyboardShortcut = cmd_ctrl(Key::T);
 
     pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
         match op {
@@ -432,6 +438,24 @@ impl ScrawlApp {
         ops::align(self.page_mut(), &sel, how);
     }
 
+    pub fn distribute(&mut self, axis: scrawl_core::snap::Axis) {
+        let sel = self.selection.clone();
+        scrawl_core::layout::distribute(self.page_mut(), &sel, axis);
+    }
+
+    pub fn tidy(&mut self) {
+        let sel = self.selection.clone();
+        scrawl_core::layout::tidy(self.page_mut(), &sel, None);
+    }
+
+    /// Groups the selection into a stack.
+    pub fn make_stack(&mut self) {
+        let sel = self.selection.clone();
+        if let Some(g) = scrawl_core::layout::make_stack(self.page_mut(), &sel) {
+            self.selection = vec![g];
+        }
+    }
+
     pub fn nudge(&mut self, d: Vec2) {
         let sel = self.selection.clone();
         ops::move_by(self.page_mut(), &sel, d);
@@ -593,6 +617,15 @@ impl ScrawlApp {
                 self.boolean(op);
             }
         }
+        if pressed(DISTRIBUTE_H) {
+            self.distribute(scrawl_core::snap::Axis::X);
+        }
+        if pressed(DISTRIBUTE_V) {
+            self.distribute(scrawl_core::snap::Axis::Y);
+        }
+        if pressed(TIDY) {
+            self.tidy();
+        }
         if pressed(CONVERT_TO_PATH) {
             self.convert_to_paths();
         }
@@ -744,8 +777,15 @@ impl ScrawlApp {
         // field being edited. A whole drag or a run of typing becomes a single step.
         // Keep text frames fitted to their content.
         let page_id = self.page;
+        let dragging = self.canvas.dragging();
         if let Some(page) = self.doc.page_mut(page_id) {
-            self.text.fit_all(&mut page.layers);
+            let fitted = self.text.fit_all(&mut page.layers);
+            // Stacks re-flow after their contents change, except while a child is dragged.
+            let flowed = scrawl_core::layout::apply_stacks(page, &dragging);
+            // This frame was drawn before these changes; draw another.
+            if fitted || flowed {
+                ctx.request_repaint();
+            }
         }
         if let Some(editing) = &self.canvas.text_edit
             && self.selection != [editing.id]

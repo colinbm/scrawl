@@ -292,6 +292,14 @@ impl Default for CanvasState {
 }
 
 impl CanvasState {
+    /// Layers being moved by the current drag.
+    pub fn dragging(&self) -> Vec<LayerId> {
+        match &self.drag {
+            Some(Drag::Move { ids, .. }) => ids.clone(),
+            _ => vec![],
+        }
+    }
+
     /// Abandons any in-progress drag. Returns whether there was one.
     pub fn cancel(&mut self) -> bool {
         self.snap = None;
@@ -566,7 +574,17 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
         app.canvas.snap = None;
         app.canvas.feedback = Feedback::default();
         match app.canvas.drag.take() {
-            Some(Drag::Move { ids, .. }) => ops::reparent_to_artboards(app.page_mut(), &ids),
+            Some(Drag::Move { ids, .. }) => {
+                // Dropping a stack's child moves it in the flow.
+                let page = app.page_mut();
+                let stacks: Vec<LayerId> = ids
+                    .iter()
+                    .filter_map(|&id| page.parent(id).flatten())
+                    .filter(|&p| page.find(p).is_some_and(|l| l.stack().is_some()))
+                    .collect();
+                stacks.into_iter().for_each(|s| scrawl_core::layout::order_stack_by_position(page, s));
+                ops::reparent_to_artboards(page, &ids);
+            }
             Some(Drag::Create { id, tool: Tool::Text, .. }) => {
                 let narrow = app.page().find(id).is_some_and(|l| l.frame.width < 8.0);
                 if narrow {

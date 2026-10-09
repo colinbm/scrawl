@@ -125,6 +125,9 @@ impl Default for Artboard {
 pub struct Group {
     #[serde(default)]
     pub children: Vec<Layer>,
+    /// Lays the children out in a row or column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<crate::layout::Stack>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -271,7 +274,7 @@ impl Layer {
     }
 
     pub fn group(children: Vec<Layer>, frame: Frame) -> Self {
-        Self::new("Group", frame, LayerKind::Group(Group { children }))
+        Self::new("Group", frame, LayerKind::Group(Group { children, stack: None }))
     }
 
     pub fn children(&self) -> Option<&Vec<Layer>> {
@@ -413,10 +416,13 @@ impl Layer {
     }
 
     /// Shrinks or grows a group's frame to tightly enclose its children, without moving them on
-    /// screen. No-op for other layer types.
+    /// screen. No-op for other layer types, and for stacks, which size themselves.
     pub fn fit_to_children(&mut self) {
         let transform = self.local_transform();
         let LayerKind::Group(g) = &mut self.kind else { return };
+        if g.stack.is_some() {
+            return;
+        }
         let Some(r) = union_rects(g.children.iter().filter_map(|c| c.bounds_in(Affine::IDENTITY))) else {
             return;
         };

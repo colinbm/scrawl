@@ -195,6 +195,7 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             });
         }
         LayerKind::Text(text) => text_section(ui, text, &mut app.text),
+        LayerKind::Group(g) => stack_section(ui, g),
         LayerKind::Star(star) => {
             section(ui, "Star");
             ui.horizontal(|ui| {
@@ -476,6 +477,24 @@ pub fn alpha_field(ui: &mut Ui, color: &mut Color) {
 fn multi_selection(app: &mut ScrawlApp, ui: &mut Ui) {
     ui.add_space(4.0);
     ui.strong(format!("{} layers selected", app.selection.len()));
+    section(ui, "Arrange");
+    ui.horizontal(|ui| {
+        let three = app.selection.len() >= 3;
+        if ui.add_enabled(three, egui::Button::new("Distribute ↔")).on_hover_text("Distribute Horizontally").clicked() {
+            app.distribute(scrawl_core::snap::Axis::X);
+        }
+        if ui.add_enabled(three, egui::Button::new("Distribute ↕")).on_hover_text("Distribute Vertically").clicked() {
+            app.distribute(scrawl_core::snap::Axis::Y);
+        }
+    });
+    ui.horizontal(|ui| {
+        if ui.button("Tidy").on_hover_text("Arrange into rows with even spacing").clicked() {
+            app.tidy();
+        }
+        if ui.button("Create Stack").clicked() {
+            app.make_stack();
+        }
+    });
     section(ui, "Appearance");
     let page = app.page();
     let first = app.selection.iter().find_map(|&id| page.find(id)).map_or(1.0, |l| l.opacity);
@@ -778,6 +797,34 @@ fn resizing_widget(ui: &mut Ui, r: &mut scrawl_core::constraints::Resizing) {
             if !r.is_default() && ui.small_button("Reset").clicked() {
                 *r = Default::default();
             }
+        });
+    });
+}
+
+fn stack_section(ui: &mut Ui, g: &mut scrawl_core::Group) {
+    use scrawl_core::layout::{Stack, StackAlign};
+    use scrawl_core::snap::Axis;
+    section(ui, "Stack");
+    let mut on = g.stack.is_some();
+    if ui.checkbox(&mut on, "Stack layout").on_hover_text("Lay out the children in the layer list's order").changed() {
+        g.stack = on.then(Stack::default);
+    }
+    let Some(stack) = &mut g.stack else { return };
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut stack.direction, Axis::Y, "Vertical");
+        ui.selectable_value(&mut stack.direction, Axis::X, "Horizontal");
+    });
+    ui.horizontal(|ui| {
+        num(ui, "Spacing", &mut stack.spacing, 0.5, "");
+        let (start, end) = if stack.direction == Axis::Y { ("Left", "Right") } else { ("Top", "Bottom") };
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut stack.align, StackAlign::Start, start);
+                ui.selectable_value(&mut stack.align, StackAlign::Center, "Center");
+                ui.selectable_value(&mut stack.align, StackAlign::End, end);
+            });
+            ui.label(RichText::new("Align").small().weak());
         });
     });
 }

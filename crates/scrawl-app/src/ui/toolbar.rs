@@ -105,6 +105,20 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                     }
                 }
             });
+            let three = app.selection.len() >= 3;
+            if item(ui, "Distribute Horizontally", Some(shortcuts::DISTRIBUTE_H), three) {
+                app.distribute(scrawl_core::snap::Axis::X);
+            }
+            if item(ui, "Distribute Vertically", Some(shortcuts::DISTRIBUTE_V), three) {
+                app.distribute(scrawl_core::snap::Axis::Y);
+            }
+            if item(ui, "Tidy", Some(shortcuts::TIDY), app.selection.len() >= 2) {
+                app.tidy();
+            }
+            ui.separator();
+            if item(ui, "Create Stack", None, has_sel) {
+                app.make_stack();
+            }
         });
         ui.menu_button("Layer", |ui| {
             let multi = app.selection.len() > 1;

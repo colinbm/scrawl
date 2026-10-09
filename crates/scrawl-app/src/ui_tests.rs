@@ -341,3 +341,31 @@ fn resizing_section_for_contained_layers() {
     assert!(h.query_by_label("RESIZING").is_none());
     assert!(h.query_by_label("Adjust content on resize").is_some());
 }
+
+#[test]
+fn create_stack_from_selection() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let ids: Vec<LayerId> = ["Tile (Normal)", "Tile (Multiply)", "Tile (Difference)"].iter().map(|n| select(&mut h, n)).collect();
+    h.state_mut().selection = ids.clone();
+    h.run();
+    h.get_by_label("Create Stack").click();
+    h.run();
+    h.run();
+    let [gid] = h.state().selection[..] else { panic!("stack selected") };
+    let stack = *h.state().page().find(gid).and_then(|l| l.stack()).expect("is a stack");
+    assert_eq!(stack.direction, scrawl_core::snap::Axis::X);
+    assert!(h.query_by_label("Stack layout").is_some());
+
+    // Tighten the spacing: the tiles re-flow left to right, keeping the stack's left edge.
+    let left = frame_of(&h, gid).x;
+    if let Some(scrawl_core::LayerKind::Group(g)) = h.state_mut().page_mut().find_mut(gid).map(|l| &mut l.kind) {
+        g.stack.as_mut().unwrap().spacing = 4.0;
+    }
+    h.run();
+    let xs: Vec<f64> = ids.iter().map(|&id| frame_of(&h, id).x).collect();
+    let w = frame_of(&h, ids[0]).width;
+    assert_eq!(frame_of(&h, gid).x, left);
+    assert_eq!(xs, vec![0.0, w + 4.0, 2.0 * (w + 4.0)]);
+    save(&mut h, "stack");
+}

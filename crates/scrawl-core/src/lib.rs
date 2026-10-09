@@ -11,6 +11,7 @@ pub mod grid;
 pub mod hit;
 pub mod history;
 pub mod io;
+pub mod layout;
 pub mod layer;
 pub mod ops;
 pub mod path;
