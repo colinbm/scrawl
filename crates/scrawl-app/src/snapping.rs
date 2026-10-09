@@ -36,7 +36,9 @@ pub fn targets(app: &ScrawlApp, moving: &[LayerId], at: Option<Point>) -> Target
             l.walk(&mut |d| skip.push(d.id));
         }
     }
-    let candidates: Vec<LayerId> = match scope(page, moving, at) {
+    let scope = scope(page, moving, at);
+    crate::rulers::add_targets(app, scope, &mut t);
+    let candidates: Vec<LayerId> = match scope {
         Some(ab) => {
             if let Some(b) = page.world_bounds(ab) {
                 t.add_edges(b);

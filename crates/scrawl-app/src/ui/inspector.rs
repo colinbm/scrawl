@@ -219,6 +219,7 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             }
         });
         ui.checkbox(&mut ab.clip_content, "Clip content");
+        grid_settings(app, ui, ab);
     }
 
     section(ui, "Appearance");
@@ -666,4 +667,55 @@ fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scr
                 ui.selectable_value(&mut style.transform, TextTransform::Lowercase, "Lowercase");
             });
     });
+}
+
+fn grid_settings(app: &mut ScrawlApp, ui: &mut Ui, ab: &mut scrawl_core::Artboard) {
+    use scrawl_core::grid::{Columns, Rows};
+    section(ui, "Layout");
+    ui.horizontal(|ui| {
+        let mut on = ab.layout.columns.is_some();
+        if ui.checkbox(&mut on, "Columns").changed() {
+            ab.layout.columns = on.then(Columns::default);
+            app.show_layout |= on;
+        }
+    });
+    if let Some(c) = &mut ab.layout.columns {
+        ui.horizontal(|ui| {
+            let mut count = c.count as f64;
+            if num(ui, "Count", &mut count, 0.1, "") {
+                c.count = count.clamp(1.0, 100.0).round() as u32;
+            }
+            num(ui, "Gutter", &mut c.gutter, 0.5, "");
+            num(ui, "Margin", &mut c.margin, 0.5, "");
+            c.gutter = c.gutter.max(0.0);
+            c.margin = c.margin.max(0.0);
+        });
+    }
+    ui.horizontal(|ui| {
+        let mut on = ab.layout.rows.is_some();
+        if ui.checkbox(&mut on, "Rows").changed() {
+            ab.layout.rows = on.then(Rows::default);
+            app.show_layout |= on;
+        }
+    });
+    if let Some(r) = &mut ab.layout.rows {
+        ui.horizontal(|ui| {
+            num(ui, "Height", &mut r.height, 0.5, "");
+            num(ui, "Gutter", &mut r.gutter, 0.5, "");
+            r.height = r.height.max(1.0);
+            r.gutter = r.gutter.max(0.0);
+        });
+    }
+    section(ui, "Grid");
+    ui.horizontal(|ui| {
+        num(ui, "Size", &mut ab.grid.size, 0.5, "");
+        ab.grid.size = ab.grid.size.max(1.0);
+        let mut every = ab.grid.thick_every as f64;
+        if num(ui, "Thick every", &mut every, 0.1, "") {
+            ab.grid.thick_every = every.clamp(0.0, 100.0).round() as u32;
+        }
+    });
+    if !app.show_grid || !app.show_layout {
+        ui.weak("⌃G shows the grid, ⌃L the layout");
+    }
 }

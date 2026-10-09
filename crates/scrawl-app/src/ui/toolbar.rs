@@ -155,6 +155,9 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                 app.zoom_to_selection(crate::viewport::MAX_ZOOM);
             }
             ui.separator();
+            ui.add(egui::Checkbox::new(&mut app.show_rulers, "Show Rulers")).on_hover_text("⌃R");
+            ui.add(egui::Checkbox::new(&mut app.show_grid, "Show Grid")).on_hover_text("⌃G");
+            ui.add(egui::Checkbox::new(&mut app.show_layout, "Show Layout")).on_hover_text("⌃L");
             ui.checkbox(&mut app.snap_to_layers, "Snap to Layers")
                 .on_hover_text("Hold ⌃ while dragging to snap temporarily off");
         });

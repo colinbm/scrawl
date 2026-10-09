@@ -61,11 +61,14 @@ pub struct Page {
     pub name: String,
     #[serde(default)]
     pub layers: Vec<Layer>,
+    /// Ruler guides outside artboards, in page space.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<crate::grid::Guide>,
 }
 
 impl Page {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { id: PageId::new(), name: name.into(), layers: vec![] }
+        Self { id: PageId::new(), name: name.into(), layers: vec![], guides: vec![] }
     }
 
     pub fn find(&self, id: LayerId) -> Option<&Layer> {

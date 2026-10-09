@@ -6,6 +6,7 @@
 pub mod color;
 pub mod document;
 pub mod geometry;
+pub mod grid;
 pub mod hit;
 pub mod history;
 pub mod io;

@@ -6,7 +6,8 @@ use kurbo::{Point, Rect, Vec2};
 /// Positions closer than this are considered aligned when drawing guide lines.
 const ALIGNED: f64 = 0.01;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Axis {
     X,
     Y,

@@ -2,6 +2,7 @@ mod app;
 mod canvas;
 mod dev;
 mod gpu;
+mod rulers;
 mod snapping;
 mod style;
 mod text_edit;

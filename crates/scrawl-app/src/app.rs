@@ -83,6 +83,9 @@ pub struct ScrawlApp {
     pub lock_aspect: bool,
     /// Snap drags to other layers, guides and grids.
     pub snap_to_layers: bool,
+    pub show_rulers: bool,
+    pub show_grid: bool,
+    pub show_layout: bool,
     /// The gradient whose handles are shown on the canvas.
     pub gradient_edit: Option<crate::canvas::GradientTarget>,
     pub file_path: Option<PathBuf>,
@@ -125,6 +128,9 @@ impl ScrawlApp {
             renaming: None,
             lock_aspect: false,
             snap_to_layers: true,
+            show_rulers: false,
+            show_grid: false,
+            show_layout: false,
             gradient_edit: None,
             file_path: None,
             clipboard: vec![],
@@ -640,6 +646,18 @@ impl ScrawlApp {
             (i.modifiers, keys)
         });
         if mods.command {
+            return;
+        }
+        // ⌃R, ⌃G and ⌃L toggle rulers, grid and layout.
+        if mods.ctrl {
+            for key in keys {
+                match key {
+                    Key::R => self.show_rulers ^= true,
+                    Key::G => self.show_grid ^= true,
+                    Key::L => self.show_layout ^= true,
+                    _ => {}
+                }
+            }
             return;
         }
         let step = if mods.shift { 10.0 } else { 1.0 };

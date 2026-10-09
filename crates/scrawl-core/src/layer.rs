@@ -84,6 +84,32 @@ pub struct Artboard {
     pub background: Option<Color>,
     #[serde(default = "default_true")]
     pub clip_content: bool,
+    /// Ruler guides, in artboard space.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<crate::grid::Guide>,
+    #[serde(default)]
+    pub grid: crate::grid::SquareGrid,
+    #[serde(default)]
+    pub layout: crate::grid::LayoutGrid,
+}
+
+impl Artboard {
+    pub fn new() -> Self {
+        Self {
+            children: vec![],
+            background: None,
+            clip_content: true,
+            guides: vec![],
+            grid: Default::default(),
+            layout: Default::default(),
+        }
+    }
+}
+
+impl Default for Artboard {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -171,7 +197,7 @@ impl Layer {
         Self::new(
             name,
             frame,
-            LayerKind::Artboard(Artboard { children: vec![], background: None, clip_content: true }),
+            LayerKind::Artboard(Artboard::new()),
         )
     }
 

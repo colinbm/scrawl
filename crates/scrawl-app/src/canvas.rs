@@ -270,6 +270,8 @@ pub struct CanvasState {
     snap: Option<Targets>,
     /// Smart guides to show for the current drag.
     feedback: Feedback,
+    /// A ruler guide being dragged.
+    pub guide_drag: Option<crate::rulers::GuideDrag>,
 }
 
 impl Default for CanvasState {
@@ -284,6 +286,7 @@ impl Default for CanvasState {
             title_hits: vec![],
             snap: None,
             feedback: Feedback::default(),
+            guide_drag: None,
         }
     }
 }
@@ -322,6 +325,7 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         });
         app.renaming = None;
     }
+    crate::rulers::interact(app, ui, rect);
     handle_navigation(app, ui, &response, rect);
     if !handle_pan(app, ui, &response) && !crate::text_edit::pointer(app, ui, &response, rect) {
         if app.canvas.edit.is_some() {
@@ -339,6 +343,7 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
     crate::vector::paint_edit(app, &painter, rect);
     crate::vector::paint_pen(app, &painter, rect, response.hover_pos());
     crate::text_edit::paint(app, &painter, rect);
+    crate::rulers::paint(app, &painter, rect);
 }
 
 /// Space-drag and middle-drag panning, available in every mode. Returns whether a pan is in
@@ -1028,6 +1033,7 @@ pub(crate) fn paint_polylines(p: &Painter, path: &BezPath, t: Affine, stroke: St
 }
 
 fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
+    crate::rulers::paint_grids(app, p, rect);
     let to_screen = screen_transform(app, rect);
     let page = app.doc.page(app.page).unwrap_or(&app.doc.pages[0]);
     let text_color = p.ctx().style_of(p.ctx().theme()).visuals.weak_text_color();

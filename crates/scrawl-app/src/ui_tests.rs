@@ -267,3 +267,59 @@ fn option_shows_measurements() {
     h.run();
     save(&mut h, "measurements");
 }
+
+fn artboard_guides(h: &Harness<'_, ScrawlApp>) -> Vec<scrawl_core::grid::Guide> {
+    match &h.state().page().layers[0].kind {
+        scrawl_core::LayerKind::Artboard(a) => a.guides.clone(),
+        _ => panic!("first layer is the artboard"),
+    }
+}
+
+#[test]
+fn ruler_guides_add_snap_and_remove() {
+    let Some(mut h) = harness() else { return };
+    let (a, b) = two_rects(&mut h);
+    h.state_mut().show_rulers = true;
+    h.state_mut().selection = vec![a];
+    h.run();
+
+    // Clicking the top ruler at x = 250 adds a vertical guide to the artboard.
+    let ruler_y = h.state().canvas.rect.min.y + crate::rulers::RULER / 2.0;
+    let x = page_to_screen(&h, 250.0, 0.0).x;
+    h.event(egui::Event::PointerMoved(egui::pos2(x, ruler_y)));
+    h.run();
+    for pressed in [true, false] {
+        let button = egui::PointerButton::Primary;
+        h.event(egui::Event::PointerButton { pos: egui::pos2(x, ruler_y), button, pressed, modifiers: egui::Modifiers::NONE });
+        h.run();
+    }
+    let guides = artboard_guides(&h);
+    assert_eq!(guides.len(), 1);
+    assert_eq!((guides[0].axis, guides[0].pos), (scrawl_core::snap::Axis::X, 250.0));
+
+    // B's left edge dragged to 253 snaps to the guide.
+    h.state_mut().selection = vec![b];
+    h.run();
+    drag_page(&mut h, (325.0, 275.0), (278.0, 275.0), egui::Modifiers::NONE, true);
+    assert_eq!(frame_of(&h, b).x, 250.0);
+
+    h.state_mut().show_grid = true;
+    h.state_mut().show_layout = true;
+    h.run();
+    save(&mut h, "rulers_grid_layout");
+
+    // Dragging the guide's marker down off the ruler removes it.
+    let (from, to) = (egui::pos2(x, ruler_y), egui::pos2(x, ruler_y + 200.0));
+    let button = egui::PointerButton::Primary;
+    h.event(egui::Event::PointerMoved(from));
+    h.run();
+    h.event(egui::Event::PointerButton { pos: from, button, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    for i in 1..=6 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 6.0)));
+        h.run();
+    }
+    h.event(egui::Event::PointerButton { pos: to, button, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(artboard_guides(&h).is_empty());
+}
