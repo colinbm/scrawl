@@ -2,7 +2,7 @@
 
 ✅ done · 🟡 partial · ⬜ not started
 
-## Milestone 1 — Core editor (current)
+## Milestone 1 — Core editor
 - ✅ Infinite canvas: scroll pan, pinch / ⌘-scroll zoom, space-drag & middle-drag pan, zoom presets (⌘0/1/2, ⌘±)
 - ✅ Pages (add, rename, delete, switch)
 - ✅ Artboards: draw, presets, background, clip content, drag-into/out-of artboard, title click-select
@@ -15,11 +15,15 @@
 - ✅ Undo/redo, `.scrawl` save/open, unsaved-changes prompts
 
 ## Milestone 2 — Vector editing
-- ⬜ Pen tool & vector point editing (corner/mirrored/asymmetric/disconnected points)
-- ⬜ Boolean ops (union, subtract, intersect, difference) — e.g. `linesweeper` / `flo_curves`
-- ⬜ Flatten, outline stroke, reverse path, scissors, rotate-copies
-- ⬜ Per-corner radius, polygon/star/triangle shapes
-- ⬜ Rotate handles on canvas; multi-selection resize
+- ✅ Multi-subpath paths with fill rule; Point types (straight/mirrored/disconnected/asymmetric, keys 1–4)
+- ✅ Pen tool (P): click for corners, drag for curves, click first point to close, Enter/Esc to finish
+- ✅ Point editing (double-click / Enter): drag points & handles, click segment to add, double-click to toggle curve, delete, marquee, nudge, inspector X/Y & type
+- ✅ Boolean ops via `linesweeper`: union ⌥⌘U, subtract ⌥⌘S, intersect ⌥⌘I, difference ⌥⌘X (destructive)
+- ✅ Convert to path ⌥⌘F, convert to outlines ⇧⌘O (respects border position), reverse path
+- ✅ Triangle / polygon / star shapes with editable sides, points, radius; independent corner radii
+- ✅ ⌘-drag corner to rotate (⇧ snaps 15°); multi-selection resize
+- ⬜ Non-destructive boolean groups (live booleans)
+- ⬜ Scissors, rotate copies, per-point corner radius, vector point snapping
 
 ## Milestone 3 — Styling
 - ⬜ Gradients (linear, radial, angular), image fills, fill blend modes

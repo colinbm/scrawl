@@ -11,13 +11,15 @@ pub mod history;
 pub mod io;
 pub mod layer;
 pub mod ops;
+pub mod path;
 pub mod style;
 
 pub use color::Color;
 pub use document::{Document, Page, PageId};
 pub use geometry::Frame;
 pub use history::History;
-pub use layer::{Artboard, CurvePoint, Group, Layer, LayerId, LayerKind, PathShape, Rectangle};
+pub use layer::{Artboard, Group, Layer, LayerId, LayerKind, Polygon, Rectangle, Star};
+pub use path::{CurvePoint, FillRule, PathShape, PointMode, PointRef, Subpath};
 pub use style::{Border, BorderPosition, Fill, Style};
 
 pub use kurbo;

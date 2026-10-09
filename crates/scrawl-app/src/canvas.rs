@@ -15,10 +15,15 @@ pub enum Tool {
     Rectangle,
     Oval,
     Line,
+    Pen,
+    Triangle,
+    Polygon,
+    Star,
 }
 
 impl Tool {
-    pub const INSERT: [Tool; 4] = [Tool::Artboard, Tool::Rectangle, Tool::Oval, Tool::Line];
+    pub const INSERT: [Tool; 8] =
+        [Tool::Artboard, Tool::Rectangle, Tool::Oval, Tool::Line, Tool::Pen, Tool::Triangle, Tool::Polygon, Tool::Star];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -27,9 +32,14 @@ impl Tool {
             Tool::Rectangle => "Rectangle",
             Tool::Oval => "Oval",
             Tool::Line => "Line",
+            Tool::Pen => "Vector",
+            Tool::Triangle => "Triangle",
+            Tool::Polygon => "Polygon",
+            Tool::Star => "Star",
         }
     }
 
+    /// Single-key shortcut, or "" if none (the extra shapes have none).
     pub fn key(self) -> &'static str {
         match self {
             Tool::Select => "V",
@@ -37,6 +47,8 @@ impl Tool {
             Tool::Rectangle => "R",
             Tool::Oval => "O",
             Tool::Line => "L",
+            Tool::Pen => "P",
+            Tool::Triangle | Tool::Polygon | Tool::Star => "",
         }
     }
 
@@ -48,6 +60,10 @@ impl Tool {
             Tool::Rectangle => Icon::Rectangle,
             Tool::Oval => Icon::Oval,
             Tool::Line => Icon::Line,
+            Tool::Pen => Icon::Pen,
+            Tool::Triangle => Icon::Triangle,
+            Tool::Polygon => Icon::Polygon,
+            Tool::Star => Icon::Star,
         }
     }
 }
@@ -112,6 +128,18 @@ impl Handle {
 
 enum Drag {
     Pan,
+    Rotate {
+        id: LayerId,
+        center: Point,
+        start_angle: f64,
+        start_rotation: f64,
+    },
+    ResizeMany {
+        handle: Handle,
+        bounds: Rect,
+        /// Each layer at drag start with its local → page transform.
+        starts: Vec<(Layer, Affine)>,
+    },
     Move {
         origin: Point,
         applied: Vec2,
@@ -148,6 +176,10 @@ enum Drag {
 
 pub struct CanvasState {
     drag: Option<Drag>,
+    /// Point-editing mode for a path layer.
+    pub edit: Option<crate::vector::VectorEdit>,
+    /// A path being drawn with the pen tool.
+    pub pen: Option<crate::vector::PenState>,
     pub hover: Option<LayerId>,
     /// Canvas rect from the most recent frame.
     pub rect: ERect,
@@ -157,7 +189,7 @@ pub struct CanvasState {
 
 impl Default for CanvasState {
     fn default() -> Self {
-        Self { drag: None, hover: None, rect: ERect::ZERO, title_hits: vec![] }
+        Self { drag: None, edit: None, pen: None, hover: None, rect: ERect::ZERO, title_hits: vec![] }
     }
 }
 
@@ -184,15 +216,53 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
     }
 
     if response.clicked() || response.drag_started() {
-        // Take focus away from inspector fields so keyboard shortcuts reach the canvas.
-        ui.ctx().memory_mut(|m| m.request_focus(response.id));
+        // Take focus away from inspector fields so keyboard shortcuts reach the canvas. (Focusing
+        // the canvas itself would count as "egui wants keyboard input" and block shortcuts.)
+        ui.ctx().memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
         app.renaming = None;
     }
     handle_navigation(app, ui, &response, rect);
-    handle_pointer(app, ui, &response, rect);
+    if !handle_pan(app, ui, &response) {
+        if app.canvas.edit.is_some() {
+            crate::vector::edit_pointer(app, ui, &response, rect);
+        } else if app.tool == Tool::Pen {
+            crate::vector::pen_pointer(app, ui, &response, rect);
+        } else {
+            handle_pointer(app, ui, &response, rect);
+        }
+    }
 
     paint_canvas(app, ui, frame, rect);
-    paint_overlays(app, &ui.painter_at(rect), rect);
+    let painter = ui.painter_at(rect);
+    paint_overlays(app, &painter, rect);
+    crate::vector::paint_edit(app, &painter, rect);
+    crate::vector::paint_pen(app, &painter, rect, response.hover_pos());
+}
+
+/// Space-drag and middle-drag panning, available in every mode. Returns whether a pan is in
+/// progress (so other handlers should ignore the pointer).
+fn handle_pan(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response) -> bool {
+    let start = response.drag_started_by(PointerButton::Middle)
+        || (response.drag_started_by(PointerButton::Primary) && space_held(ui));
+    if start {
+        app.canvas.drag = Some(Drag::Pan);
+    }
+    if !matches!(app.canvas.drag, Some(Drag::Pan)) {
+        return false;
+    }
+    if response.dragged() {
+        let d = response.drag_delta();
+        app.viewport_mut().pan_by(d);
+    }
+    if response.drag_stopped() {
+        app.canvas.drag = None;
+    }
+    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    true
 }
 
 fn handle_navigation(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response, rect: ERect) {
@@ -219,10 +289,7 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
     let entered = entered_groups(app.page(), &app.selection);
 
     // --- Drag start ---------------------------------------------------------------------------
-    let middle = response.drag_started_by(PointerButton::Middle);
-    if middle || (response.drag_started_by(PointerButton::Primary) && space_held(ui)) {
-        app.canvas.drag = Some(Drag::Pan);
-    } else if response.drag_started_by(PointerButton::Primary)
+    if response.drag_started_by(PointerButton::Primary)
         && let Some(screen) = press_origin
     {
         let p = vp.to_page(rect, screen);
@@ -237,12 +304,39 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
         && response.dragged()
     {
         let p = vp.to_page(rect, pos);
-        let page_id = app.page;
-        let page = app.doc.page_mut(page_id).expect("current page exists");
+        let page = app.doc.page_mut(app.page).expect("current page exists");
         match drag {
-            Drag::Pan => {
-                let d = response.drag_delta();
-                app.viewports.entry(page_id).or_default().pan_by(d);
+            Drag::Pan => {}
+            Drag::Rotate { id, center, start_angle, start_rotation } => {
+                let mut delta = ((p - *center).atan2() - *start_angle).to_degrees();
+                if mods.shift {
+                    delta = (delta / 15.0).round() * 15.0;
+                }
+                if let Some(l) = page.find_mut(*id) {
+                    l.rotation = (*start_rotation + delta).rem_euclid(360.0);
+                }
+                page.refit_ancestor_groups(*id);
+            }
+            Drag::ResizeMany { handle, bounds, starts } => {
+                let nb = resized_rect(*bounds, *handle, p, mods.shift || app.lock_aspect, mods.alt);
+                let sx = if bounds.width() > 0.0 { nb.width() / bounds.width() } else { 1.0 };
+                let sy = if bounds.height() > 0.0 { nb.height() / bounds.height() } else { 1.0 };
+                let scale = Affine::translate(nb.origin().to_vec2())
+                    * Affine::scale_non_uniform(sx, sy)
+                    * Affine::translate(-bounds.origin().to_vec2());
+                for (start, world) in starts.iter() {
+                    // Map the layer's local rect through the scale and back into local space.
+                    let back = world.inverse() * scale * *world;
+                    let r = (back * start.frame.local_rect().to_path(0.1)).bounding_box();
+                    let mut layer = start.clone();
+                    layer.reframe(r);
+                    if let Some(l) = page.find_mut(start.id) {
+                        *l = layer;
+                    }
+                }
+                if let Some((first, _)) = starts.first() {
+                    page.refit_ancestor_groups(first.id);
+                }
             }
             Drag::Move { origin, applied, ids } => {
                 let mut total = round_vec(p - *origin);
@@ -308,7 +402,7 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
 
     // --- Clicks -------------------------------------------------------------------------------
     if response.clicked_by(PointerButton::Primary)
-        && let Some(screen) = press_origin
+        && let Some(screen) = response.interact_pointer_pos()
     {
         let p = vp.to_page(rect, screen);
         match app.tool {
@@ -326,33 +420,42 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
     }
     if response.double_clicked_by(PointerButton::Primary)
         && app.tool == Tool::Select
-        && let Some(screen) = press_origin
+        && let Some(screen) = response.interact_pointer_pos()
     {
         // Double-click drills into the clicked group.
         let p = vp.to_page(rect, screen);
         let mut deeper = entered.clone();
         deeper.extend(app.selection.iter().copied());
         if let Hit::Layer(id) = hit::hit_test(app.page(), p, tolerance, false, &deeper) {
-            app.selection = vec![id];
+            let is_shape = app.page().find(id).is_some_and(|l| l.children().is_none());
+            if app.selection == [id] && is_shape {
+                app.enter_vector_edit(id);
+            } else {
+                app.selection = vec![id];
+            }
         }
     }
 
     // --- Hover & cursor -----------------------------------------------------------------------
     app.canvas.hover = None;
     let hover_pos = response.hover_pos();
-    let cursor = if matches!(app.canvas.drag, Some(Drag::Pan)) {
-        Some(CursorIcon::Grabbing)
-    } else if space_held(ui) && response.hovered() {
+    let cursor = if space_held(ui) && response.hovered() {
         Some(CursorIcon::Grab)
     } else if app.tool != Tool::Select && response.hovered() {
         Some(CursorIcon::Crosshair)
-    } else if let Some(Drag::Resize { handle, .. }) = &app.canvas.drag {
+    } else if let Some(Drag::Resize { handle, .. } | Drag::ResizeMany { handle, .. }) = &app.canvas.drag {
         Some(handle.cursor())
+    } else if let Some(Drag::Rotate { .. }) = &app.canvas.drag {
+        Some(CursorIcon::Alias)
     } else if app.canvas.drag.is_none()
         && let Some(pos) = hover_pos
     {
-        if let Some((_, handle)) = handle_at(app, pos, rect) {
-            Some(handle.map_or(CursorIcon::Crosshair, Handle::cursor))
+        if let Some(hit) = handle_at(app, pos, rect) {
+            Some(match hit {
+                HandleHit::LineEnd(_) => CursorIcon::Crosshair,
+                HandleHit::Single(_, h) if mods.command && !h.is_edge() => CursorIcon::Alias,
+                HandleHit::Single(_, h) | HandleHit::Multi(h) => h.cursor(),
+            })
         } else {
             if let Hit::Layer(id) = hit::hit_test(app.page(), vp.to_page(rect, pos), tolerance, mods.command, &entered) {
                 app.canvas.hover = Some(id);
@@ -385,21 +488,33 @@ fn begin_select_drag(
     entered: &[LayerId],
     rect: ERect,
 ) -> Option<Drag> {
-    // Handles of a single selected layer take priority.
-    if let Some((id, handle)) = handle_at(app, screen, rect) {
+    // Selection handles take priority.
+    if let Some(hit) = handle_at(app, screen, rect) {
         let page = app.page();
-        let start = page.find(id)?.clone();
-        return Some(match handle {
-            Some(handle) => {
+        return Some(match hit {
+            HandleHit::Single(id, handle) if mods.command && !handle.is_edge() => {
+                // ⌘-drag on a corner rotates.
+                let layer = page.find(id)?;
+                let center = page.world_transform(id)? * layer.frame.local_rect().center();
+                Drag::Rotate { id, center, start_angle: (p - center).atan2(), start_rotation: layer.rotation }
+            }
+            HandleHit::Single(id, handle) => {
+                let start = page.find(id)?.clone();
                 Drag::Resize { id, handle, to_local: page.world_transform(id)?.inverse(), start }
             }
-            None => {
+            HandleHit::LineEnd(id) => {
+                let start = page.find(id)?.clone();
                 let end = line_endpoints(&start).map_or(0, |[a, b]| {
                     let t = page.parent_transform(id).unwrap_or_default();
-                    let q = app.viewport().to_page(rect, screen);
-                    usize::from((t * b - q).hypot() < (t * a - q).hypot())
+                    usize::from((t * b - p).hypot() < (t * a - p).hypot())
                 });
                 Drag::LineEnd { id, end, parent_to_page: page.parent_transform(id)?, start }
+            }
+            HandleHit::Multi(handle) => {
+                let ids = ops::normalize_selection(page, &app.selection);
+                let starts =
+                    ids.iter().filter_map(|&id| Some((page.find(id)?.clone(), page.world_transform(id)?))).collect();
+                Drag::ResizeMany { handle, bounds: page.selection_bounds(&ids)?, starts }
             }
         });
     }
@@ -463,7 +578,10 @@ fn begin_create(app: &mut ScrawlApp, tool: Tool, origin: Point) -> Drag {
         Tool::Rectangle => Layer::rectangle(frame),
         Tool::Oval => Layer::oval(frame),
         Tool::Line => Layer::line(origin, origin),
-        Tool::Select => unreachable!("select tool doesn't create layers"),
+        Tool::Triangle => Layer::polygon(frame, 3),
+        Tool::Polygon => Layer::polygon(frame, 5),
+        Tool::Star => Layer::star(frame),
+        Tool::Select | Tool::Pen => unreachable!("tool doesn't draw by dragging a frame"),
     };
     let page = app.page_mut();
     let id = ops::insert_drawn(page, layer);
@@ -525,9 +643,10 @@ fn resized_rect(r0: Rect, handle: Handle, q: Point, keep_aspect: bool, from_cent
 /// The two endpoints, in parent space, of a straight two-point path (a "line").
 fn line_endpoints(layer: &Layer) -> Option<[Point; 2]> {
     let LayerKind::Path(p) = &layer.kind else { return None };
-    if p.closed || p.points.len() != 2 || layer.kind.type_name() != "Line" {
+    if layer.kind.type_name() != "Line" {
         return None;
     }
+    let p = &p.subpaths[0];
     let t = layer.local_transform();
     let s = |q: Point| t * Point::new(q.x * layer.frame.width, q.y * layer.frame.height);
     Some([s(p.points[0].point), s(p.points[1].point)])
@@ -539,7 +658,7 @@ fn rebuild_line(like: &Layer, a: Point, b: Point) -> Layer {
     Layer { frame: fresh.frame, kind: fresh.kind, rotation: 0.0, flip_horizontal: false, flip_vertical: false, ..like.clone() }
 }
 
-fn snap_angle(from: Point, to: Point) -> Point {
+pub(crate) fn snap_angle(from: Point, to: Point) -> Point {
     let d = to - from;
     let step = std::f64::consts::FRAC_PI_4;
     let angle = (d.atan2() / step).round() * step;
@@ -559,25 +678,40 @@ fn round_frame(f: Frame) -> Frame {
     Frame::from_rect(Rect::new(r.x0.round(), r.y0.round(), r.x1.round(), r.y1.round()))
 }
 
-/// The handle under `screen` for a single, unlocked selected layer. `Some(None)` means a line
-/// endpoint.
-fn handle_at(app: &ScrawlApp, screen: Pos2, rect: ERect) -> Option<(LayerId, Option<Handle>)> {
-    let [id] = app.selection[..] else { return None };
+enum HandleHit {
+    /// A resize handle of the single selected layer.
+    Single(LayerId, Handle),
+    /// An endpoint of a selected line.
+    LineEnd(LayerId),
+    /// A handle on the bounds of a multi-layer selection.
+    Multi(Handle),
+}
+
+/// The selection handle under `screen`, if any.
+fn handle_at(app: &ScrawlApp, screen: Pos2, rect: ERect) -> Option<HandleHit> {
     let page = app.page();
+    let to_screen = screen_transform(app, rect);
+    let near = |p: Point| to_pos(p).distance(screen) <= HANDLE_GRAB;
+    if app.selection.len() > 1 {
+        let ids = ops::normalize_selection(page, &app.selection);
+        if ids.iter().any(|&id| page.find(id).is_none_or(|l| l.locked)) {
+            return None;
+        }
+        let b = page.selection_bounds(&ids)?;
+        return visible_handles(to_screen, b).find(|&h| near(to_screen * h.position(b))).map(HandleHit::Multi);
+    }
+    let [id] = app.selection[..] else { return None };
     let layer = page.find(id)?;
     if layer.locked {
         return None;
     }
-    let to_screen = screen_transform(app, rect);
     if let Some(ends) = line_endpoints(layer) {
         let t = to_screen * page.parent_transform(id)?;
-        return ends.iter().any(|&e| to_pos(t * e).distance(screen) <= HANDLE_GRAB).then_some((id, None));
+        return ends.iter().any(|&e| near(t * e)).then_some(HandleHit::LineEnd(id));
     }
     let t = to_screen * page.world_transform(id)?;
     let local = layer.frame.local_rect();
-    visible_handles(t, local)
-        .find(|&h| to_pos(t * h.position(local)).distance(screen) <= HANDLE_GRAB)
-        .map(|h| (id, Some(h)))
+    visible_handles(t, local).find(|&h| near(t * h.position(local))).map(|h| HandleHit::Single(id, h))
 }
 
 /// Edge handles are hidden when the layer is too small on screen to fit them.
@@ -588,11 +722,11 @@ fn visible_handles(t: Affine, local: Rect) -> impl Iterator<Item = Handle> {
 }
 
 /// Page space → absolute screen points.
-fn screen_transform(app: &ScrawlApp, rect: ERect) -> Affine {
+pub(crate) fn screen_transform(app: &ScrawlApp, rect: ERect) -> Affine {
     Affine::translate((rect.min.x as f64, rect.min.y as f64)) * app.viewport().transform()
 }
 
-fn to_pos(p: Point) -> Pos2 {
+pub(crate) fn to_pos(p: Point) -> Pos2 {
     Pos2::new(p.x as f32, p.y as f32)
 }
 
@@ -665,7 +799,12 @@ fn paint_outline(p: &Painter, page: &Page, id: LayerId, to_screen: Affine, strok
         Some(path) if !layer.is_artboard() => path,
         _ => layer.frame.local_rect().to_path(0.1),
     };
-    for (pts, closed) in polylines(&path, t) {
+    paint_polylines(p, &path, t, stroke);
+}
+
+/// Strokes `path` mapped through `t` (into screen space).
+pub(crate) fn paint_polylines(p: &Painter, path: &BezPath, t: Affine, stroke: Stroke) {
+    for (pts, closed) in polylines(path, t) {
         if closed {
             p.add(egui::Shape::closed_line(pts, stroke));
         } else {
@@ -698,22 +837,28 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
     for &id in &app.selection {
         paint_outline(p, page, id, to_screen, thin);
     }
+    let handle = |center: Pos2, round: bool| {
+        let r = ERect::from_center_size(center, egui::Vec2::splat(HANDLE_SIZE));
+        let corner = if round { HANDLE_SIZE / 2.0 } else { 1.0 };
+        p.rect(r, corner, Color32::WHITE, Stroke::new(1.0, ACCENT), StrokeKind::Inside);
+    };
+    let show_handles = app.canvas.edit.is_none()
+        && app.canvas.pen.is_none()
+        && !matches!(app.canvas.drag, Some(Drag::Move { .. } | Drag::Rotate { .. }));
     if app.selection.len() > 1
         && let Some(b) = page.selection_bounds(&app.selection)
     {
         let r = ERect::from_two_pos(to_pos(to_screen * b.origin()), to_pos(to_screen * Point::new(b.x1, b.y1)));
         p.rect_stroke(r, 0.0, thin, StrokeKind::Middle);
+        if show_handles {
+            visible_handles(to_screen, b).for_each(|h| handle(to_pos(to_screen * h.position(b)), false));
+        }
     }
     if let [id] = app.selection[..]
         && let Some(layer) = page.find(id)
         && !layer.locked
-        && !matches!(app.canvas.drag, Some(Drag::Move { .. }))
+        && show_handles
     {
-        let handle = |center: Pos2, round: bool| {
-            let r = ERect::from_center_size(center, egui::Vec2::splat(HANDLE_SIZE));
-            let corner = if round { HANDLE_SIZE / 2.0 } else { 1.0 };
-            p.rect(r, corner, Color32::WHITE, Stroke::new(1.0, ACCENT), StrokeKind::Inside);
-        };
         if let Some(ends) = line_endpoints(layer) {
             let t = to_screen * page.parent_transform(id).unwrap_or_default();
             ends.iter().for_each(|&e| handle(to_pos(t * e), true));
@@ -730,7 +875,12 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
         p.rect(r, 0.0, ACCENT.gamma_multiply(0.08), thin, StrokeKind::Inside);
     }
 
-    // Size readout while drawing or resizing.
+    // Readouts while drawing, resizing or rotating.
+    if let Some(Drag::Rotate { id, .. }) = &app.canvas.drag
+        && let (Some(layer), Some(b)) = (page.find(*id), page.world_bounds(*id))
+    {
+        pill(p, to_pos(to_screen * Point::new(b.center().x, b.y1)), format!("{:.0}°", layer.rotation));
+    }
     let sizing = match &app.canvas.drag {
         Some(Drag::Resize { id, .. } | Drag::Create { id, .. } | Drag::LineEnd { id, .. }) => Some(*id),
         _ => None,
@@ -742,12 +892,17 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
             Some([a, b]) => format!("{:.0}", (b - a).hypot()),
             None => format!("{:.0} × {:.0}", layer.frame.width, layer.frame.height),
         };
-        let anchor = to_pos(to_screen * Point::new(b.center().x, b.y1)) + vec2(0.0, 10.0);
-        let galley = p.layout_no_wrap(label, egui::FontId::proportional(11.0), Color32::WHITE);
-        let bg = ERect::from_center_size(anchor + vec2(0.0, galley.size().y / 2.0), galley.size() + vec2(10.0, 4.0));
-        p.rect_filled(bg, 3.0, ACCENT);
-        p.galley(bg.center() - galley.size() / 2.0, galley, Color32::WHITE);
+        pill(p, to_pos(to_screen * Point::new(b.center().x, b.y1)), label);
     }
+}
+
+/// A small accent label centered below `anchor`.
+fn pill(p: &Painter, anchor: Pos2, label: String) {
+    let anchor = anchor + vec2(0.0, 10.0);
+    let galley = p.layout_no_wrap(label, egui::FontId::proportional(11.0), Color32::WHITE);
+    let bg = ERect::from_center_size(anchor + vec2(0.0, galley.size().y / 2.0), galley.size() + vec2(10.0, 4.0));
+    p.rect_filled(bg, 3.0, ACCENT);
+    p.galley(bg.center() - galley.size() / 2.0, galley, Color32::WHITE);
 }
 
 #[cfg(test)]

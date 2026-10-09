@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use scrawl_core::kurbo::Vec2;
-use scrawl_core::ops::{self, Align, Reorder};
-use scrawl_core::{Document, Frame, History, Layer, LayerId, Page, PageId, io};
+use scrawl_core::ops::{self, Align, BooleanOp, Reorder};
+use scrawl_core::{Document, Frame, History, Layer, LayerId, Page, PageId, PointMode, io};
 use serde_json::json;
 
 use crate::canvas::{CanvasState, Tool};
@@ -46,6 +46,21 @@ pub mod shortcuts {
     pub const ACTUAL_SIZE: KeyboardShortcut = cmd(Key::Num0);
     pub const ZOOM_FIT: KeyboardShortcut = cmd(Key::Num1);
     pub const ZOOM_SELECTION: KeyboardShortcut = cmd(Key::Num2);
+    pub const UNION: KeyboardShortcut = cmd_alt(Key::U);
+    pub const SUBTRACT: KeyboardShortcut = cmd_alt(Key::S);
+    pub const INTERSECT: KeyboardShortcut = cmd_alt(Key::I);
+    pub const DIFFERENCE: KeyboardShortcut = cmd_alt(Key::X);
+    pub const CONVERT_TO_PATH: KeyboardShortcut = cmd_alt(Key::F);
+    pub const OUTLINE: KeyboardShortcut = cmd_shift(Key::O);
+
+    pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
+        match op {
+            BooleanOp::Union => UNION,
+            BooleanOp::Subtract => SUBTRACT,
+            BooleanOp::Intersect => INTERSECT,
+            BooleanOp::Difference => DIFFERENCE,
+        }
+    }
 }
 
 pub struct ScrawlApp {
@@ -155,7 +170,7 @@ impl ScrawlApp {
         self.viewports.clear();
         self.expanded.clear();
         self.renaming = None;
-        self.canvas.cancel();
+        self.reset_modes();
         self.fit_pending = true;
     }
 
@@ -246,15 +261,22 @@ impl ScrawlApp {
 
     // ---- Edit --------------------------------------------------------------------------------
 
-    pub fn undo(&mut self) {
+    /// Leaves point editing and abandons any pen path, e.g. before the document is replaced.
+    fn reset_modes(&mut self) {
         self.canvas.cancel();
+        self.canvas.edit = None;
+        self.canvas.pen = None;
+    }
+
+    pub fn undo(&mut self) {
+        self.reset_modes();
         if self.history.undo(&mut self.doc) {
             self.after_history_change();
         }
     }
 
     pub fn redo(&mut self) {
-        self.canvas.cancel();
+        self.reset_modes();
         if self.history.redo(&mut self.doc) {
             self.after_history_change();
         }
@@ -315,6 +337,49 @@ impl ScrawlApp {
     pub fn reorder(&mut self, how: Reorder) {
         let sel = self.selection.clone();
         ops::reorder(self.page_mut(), &sel, how);
+    }
+
+    pub fn boolean(&mut self, op: BooleanOp) {
+        let sel = self.selection.clone();
+        match ops::boolean(self.page_mut(), &sel, op) {
+            Ok(id) => self.selection = vec![id],
+            Err(e) => self.error = Some(format!("Couldn't {}: {e}", op.label().to_lowercase())),
+        }
+    }
+
+    pub fn convert_to_paths(&mut self) {
+        let sel = self.selection.clone();
+        ops::convert_to_paths(self.page_mut(), &sel);
+    }
+
+    pub fn outline_strokes(&mut self) {
+        let sel = self.selection.clone();
+        if let Err(e) = ops::outline_strokes(self.page_mut(), &sel) {
+            self.error = Some(format!("Couldn't convert to outlines: {e}"));
+        }
+    }
+
+    pub fn reverse_paths(&mut self) {
+        let sel = self.selection.clone();
+        ops::reverse_paths(self.page_mut(), &sel);
+    }
+
+    /// Starts editing the points of a shape, converting it to a path first if needed.
+    pub fn enter_vector_edit(&mut self, id: LayerId) {
+        let page = self.page_mut();
+        let Some(layer) = page.find_mut(id) else { return };
+        if layer.locked || !layer.convert_to_path() {
+            return;
+        }
+        page.refit_ancestor_groups(id);
+        self.selection = vec![id];
+        self.tool = Tool::Select;
+        self.canvas.cancel();
+        self.canvas.edit = Some(crate::vector::VectorEdit::new(id));
+    }
+
+    pub fn exit_vector_edit(&mut self) {
+        self.canvas.edit = None;
     }
 
     pub fn align(&mut self, how: Align) {
@@ -460,7 +525,22 @@ impl ScrawlApp {
             self.duplicate_selection();
         }
         if pressed(SELECT_ALL) {
-            self.select_all();
+            if self.canvas.edit.is_some() {
+                crate::vector::select_all_points(self);
+            } else {
+                self.select_all();
+            }
+        }
+        for op in BooleanOp::ALL {
+            if pressed(boolean(op)) {
+                self.boolean(op);
+            }
+        }
+        if pressed(CONVERT_TO_PATH) {
+            self.convert_to_paths();
+        }
+        if pressed(OUTLINE) {
+            self.outline_strokes();
         }
         if pressed(UNGROUP) {
             self.ungroup_selection();
@@ -508,14 +588,45 @@ impl ScrawlApp {
         if mods.command {
             return;
         }
+        let step = if mods.shift { 10.0 } else { 1.0 };
+        if self.canvas.edit.is_some() {
+            for key in keys {
+                match key {
+                    Key::Escape | Key::Enter => self.exit_vector_edit(),
+                    Key::Backspace | Key::Delete => crate::vector::delete_points(self),
+                    Key::ArrowLeft => crate::vector::nudge_points(self, Vec2::new(-step, 0.0)),
+                    Key::ArrowRight => crate::vector::nudge_points(self, Vec2::new(step, 0.0)),
+                    Key::ArrowUp => crate::vector::nudge_points(self, Vec2::new(0.0, -step)),
+                    Key::ArrowDown => crate::vector::nudge_points(self, Vec2::new(0.0, step)),
+                    // Point-type keys.
+                    Key::Num1 => crate::vector::set_point_mode(self, PointMode::Straight),
+                    Key::Num2 => crate::vector::set_point_mode(self, PointMode::Mirrored),
+                    Key::Num3 => crate::vector::set_point_mode(self, PointMode::Disconnected),
+                    Key::Num4 => crate::vector::set_point_mode(self, PointMode::Asymmetric),
+                    _ => {}
+                }
+            }
+            return;
+        }
+        if crate::vector::pen_active(self) {
+            if keys.iter().any(|k| matches!(k, Key::Escape | Key::Enter)) {
+                crate::vector::finish_pen(self, false);
+            }
+            return;
+        }
         for key in keys {
-            let step = if mods.shift { 10.0 } else { 1.0 };
             match key {
                 Key::V => self.tool = Tool::Select,
                 Key::A => self.tool = Tool::Artboard,
                 Key::R => self.tool = Tool::Rectangle,
                 Key::O => self.tool = Tool::Oval,
                 Key::L => self.tool = Tool::Line,
+                Key::P => self.tool = Tool::Pen,
+                Key::Enter => {
+                    if let [id] = self.selection[..] {
+                        self.enter_vector_edit(id);
+                    }
+                }
                 Key::Escape => {
                     if self.tool != Tool::Select {
                         self.tool = Tool::Select;
@@ -538,6 +649,17 @@ impl ScrawlApp {
 
     fn end_frame(&mut self, ctx: &egui::Context) {
         self.sanitize_selection();
+        // Switching tools ends a pen path; changing the selection ends point editing.
+        if crate::vector::pen_active(self) && self.tool != Tool::Pen {
+            let tool = self.tool;
+            crate::vector::finish_pen(self, false);
+            self.tool = tool;
+        }
+        if let Some(edit) = &self.canvas.edit
+            && (self.selection != [edit.id] || self.tool != Tool::Select)
+        {
+            self.canvas.edit = None;
+        }
         // Commit an undo step once an interaction is finished: no pointer button held and no text
         // field being edited. A whole drag or a run of typing becomes a single step.
         let interacting = ctx.input(|i| i.pointer.any_down()) || ctx.egui_wants_keyboard_input();
@@ -556,13 +678,17 @@ impl ScrawlApp {
             self.window_title = title;
         }
 
-        if ctx.input(|i| i.viewport().close_requested()) && self.is_dirty() && !self.confirm_discard() {
+        if ctx.input(|i| i.viewport().close_requested()) && self.is_dirty() && !self.dev.active() && !self.confirm_discard() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
     }
 }
 
 impl eframe::App for ScrawlApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        crate::dev::DevHooks::inject(self, raw_input);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_shortcuts(&ctx);

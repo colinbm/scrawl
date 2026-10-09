@@ -15,7 +15,7 @@ fn main() {
     ops::insert_drawn(page, header);
 
     let mut card = Layer::rectangle(Frame::new(24.0, 150.0, 345.0, 200.0));
-    card.kind = LayerKind::Rectangle(Rectangle { corner_radius: 16.0 });
+    card.kind = LayerKind::Rectangle(Rectangle { corner_radius: 16.0, corner_radii: None });
     card.style.fills = vec![Fill::solid(Color::from_hex("F3F0FF").unwrap())];
     card.style.borders = vec![Border { position: BorderPosition::Inside, ..Border::solid(Color::from_hex("7C5CFF").unwrap(), 2.0) }];
     card.name = "Card".into();
@@ -40,7 +40,7 @@ fn main() {
 
     for i in 0..3 {
         let mut tile = Layer::rectangle(Frame::new(24.0 + i as f64 * 119.0, 430.0, 107.0, 107.0));
-        tile.kind = LayerKind::Rectangle(Rectangle { corner_radius: 12.0 });
+        tile.kind = LayerKind::Rectangle(Rectangle { corner_radius: 12.0, corner_radii: None });
         tile.rotation = i as f64 * 8.0;
         tile.opacity = 1.0 - i as f64 * 0.25;
         tile.style.fills = vec![Fill::solid(Color::from_hex("2EC4B6").unwrap())];

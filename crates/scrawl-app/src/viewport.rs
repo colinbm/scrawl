@@ -27,12 +27,12 @@ impl Viewport {
     }
 
     #[cfg(test)]
-    pub fn to_screen(&self, canvas: ERect, p: Point) -> Pos2 {
+    pub fn to_screen(self, canvas: ERect, p: Point) -> Pos2 {
         let s = self.transform() * p;
         canvas.min + EVec2::new(s.x as f32, s.y as f32)
     }
 
-    pub fn to_page(&self, canvas: ERect, pos: Pos2) -> Point {
+    pub fn to_page(self, canvas: ERect, pos: Pos2) -> Point {
         let local = pos - canvas.min;
         self.transform().inverse() * Point::new(local.x as f64, local.y as f64)
     }

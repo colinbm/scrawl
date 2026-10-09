@@ -4,6 +4,7 @@ mod dev;
 mod gpu;
 mod style;
 mod ui;
+mod vector;
 mod viewport;
 
 fn main() -> eframe::Result {

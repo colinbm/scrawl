@@ -1,5 +1,5 @@
 use egui::{KeyboardShortcut, Ui};
-use scrawl_core::ops::{Align, Reorder};
+use scrawl_core::ops::{Align, BooleanOp, Reorder};
 
 use crate::app::{ScrawlApp, shortcuts};
 use crate::canvas::Tool;
@@ -15,6 +15,15 @@ fn item(ui: &mut Ui, label: &str, shortcut: Option<KeyboardShortcut>, enabled: b
 
 fn key_item(ui: &mut Ui, label: &str, key: &str) -> bool {
     ui.add(egui::Button::new(label).shortcut_text(key)).clicked()
+}
+
+pub fn boolean_icon(op: BooleanOp) -> Icon {
+    match op {
+        BooleanOp::Union => Icon::Union,
+        BooleanOp::Subtract => Icon::Subtract,
+        BooleanOp::Intersect => Icon::Intersect,
+        BooleanOp::Difference => Icon::Difference,
+    }
 }
 
 pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
@@ -97,6 +106,30 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                 }
             });
         });
+        ui.menu_button("Layer", |ui| {
+            let multi = app.selection.len() > 1;
+            ui.menu_button("Combine", |ui| {
+                for op in BooleanOp::ALL {
+                    if item(ui, op.label(), Some(shortcuts::boolean(op)), multi) {
+                        app.boolean(op);
+                    }
+                }
+            });
+            ui.menu_button("Path", |ui| {
+                if item(ui, "Edit Points", None, app.selection.len() == 1) {
+                    app.enter_vector_edit(app.selection[0]);
+                }
+                if item(ui, "Convert to Path", Some(shortcuts::CONVERT_TO_PATH), has_sel) {
+                    app.convert_to_paths();
+                }
+                if item(ui, "Convert to Outlines", Some(shortcuts::OUTLINE), has_sel) {
+                    app.outline_strokes();
+                }
+                if item(ui, "Reverse Path Direction", None, has_sel) {
+                    app.reverse_paths();
+                }
+            });
+        });
         ui.menu_button("View", |ui| {
             if item(ui, "Zoom In", Some(shortcuts::ZOOM_IN), true) {
                 app.step_zoom(true);
@@ -130,7 +163,7 @@ pub fn toolbar(app: &mut ScrawlApp, ui: &mut Ui) {
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         for tool in [Tool::Select].into_iter().chain(Tool::INSERT) {
-            let tip = format!("{} ({})", tool.label(), tool.key());
+            let tip = if tool.key().is_empty() { tool.label().to_owned() } else { format!("{} ({})", tool.label(), tool.key()) };
             if icons::button(ui, tool.icon(), app.tool == tool, &tip).clicked() {
                 app.tool = tool;
             }
@@ -150,6 +183,15 @@ pub fn toolbar(app: &mut ScrawlApp, ui: &mut Ui) {
             }
             if icons::button(ui, Icon::Backward, false, "Send Backward (⌘[)").clicked() {
                 app.reorder(Reorder::Backward);
+            }
+        });
+        ui.separator();
+        ui.add_enabled_ui(app.selection.len() > 1, |ui| {
+            for op in BooleanOp::ALL {
+                let tip = format!("{} ({})", op.label(), ui.ctx().format_shortcut(&shortcuts::boolean(op)));
+                if icons::button(ui, boolean_icon(op), false, &tip).clicked() {
+                    app.boolean(op);
+                }
             }
         });
 

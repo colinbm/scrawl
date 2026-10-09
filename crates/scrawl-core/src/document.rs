@@ -183,14 +183,14 @@ impl Page {
 
     /// Inserts `layer` at `loc`, clamping the index. Returns the layer back if `loc.parent` isn't
     /// a container on this page.
-    pub fn insert(&mut self, loc: Location, layer: Layer) -> Result<(), Layer> {
+    pub fn insert(&mut self, loc: Location, layer: Layer) -> Result<(), Box<Layer>> {
         match self.siblings_mut(loc.parent) {
             Some(siblings) => {
                 let i = loc.index.min(siblings.len());
                 siblings.insert(i, layer);
                 Ok(())
             }
-            None => Err(layer),
+            None => Err(Box::new(layer)),
         }
     }
 

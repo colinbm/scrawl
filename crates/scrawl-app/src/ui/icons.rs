@@ -10,6 +10,14 @@ pub enum Icon {
     Oval,
     Line,
     Path,
+    Pen,
+    Triangle,
+    Polygon,
+    Star,
+    Union,
+    Subtract,
+    Intersect,
+    Difference,
     Group,
     Ungroup,
     Eye,
@@ -57,6 +65,48 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::Path => {
             p.add(egui::Shape::line(vec![at(-6.0, 4.0), at(-2.0, -5.0), at(2.0, 3.0), at(6.0, -4.0)], st));
+        }
+        Icon::Pen => {
+            let nib = vec![at(0.0, -7.0), at(4.5, 1.0), at(0.0, 6.0), at(-4.5, 1.0)];
+            p.add(egui::Shape::closed_line(nib, st));
+            p.line_segment([at(0.0, -7.0), at(0.0, 1.5)], st);
+            p.circle_filled(at(0.0, 1.5), 1.2 * u, color);
+        }
+        Icon::Triangle | Icon::Polygon | Icon::Star => {
+            let (n, radii): (usize, &[f32]) = match icon {
+                Icon::Triangle => (3, &[6.5]),
+                Icon::Polygon => (5, &[6.5]),
+                _ => (10, &[7.0, 3.0]),
+            };
+            let pts = (0..n)
+                .map(|i| {
+                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::TAU / n as f32;
+                    let r = radii[i % radii.len()];
+                    at(r * a.cos(), r * a.sin() + 0.5)
+                })
+                .collect();
+            p.add(egui::Shape::closed_line(pts, st));
+        }
+        Icon::Union | Icon::Subtract | Icon::Intersect | Icon::Difference => {
+            let a = r(-6.5, -6.5, 2.5, 2.5);
+            let b = r(-2.5, -2.5, 6.5, 6.5);
+            let overlap = r(-2.5, -2.5, 2.5, 2.5);
+            let faint = color.gamma_multiply(0.35);
+            let (fa, fb, fo) = match icon {
+                Icon::Union => (color, color, color),
+                Icon::Subtract => (color, Color32::TRANSPARENT, Color32::TRANSPARENT),
+                Icon::Intersect => (Color32::TRANSPARENT, Color32::TRANSPARENT, color),
+                _ => (color, color, Color32::TRANSPARENT),
+            };
+            p.rect_filled(a, 0.0, fa);
+            p.rect_filled(b, 0.0, fb);
+            if fo == Color32::TRANSPARENT {
+                p.rect_filled(overlap, 0.0, ui_bg(p));
+            } else {
+                p.rect_filled(overlap, 0.0, fo);
+            }
+            p.rect_stroke(a, 0.0, Stroke::new(1.0, faint), StrokeKind::Middle);
+            p.rect_stroke(b, 0.0, Stroke::new(1.0, faint), StrokeKind::Middle);
         }
         Icon::Group => {
             p.rect_stroke(r(-6.0, -4.0, 6.0, 5.5), 1.0, st, StrokeKind::Middle);
@@ -156,6 +206,11 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
     }
 }
 
+/// The panel background, used to "cut out" shapes in icons.
+fn ui_bg(p: &Painter) -> Color32 {
+    p.ctx().style_of(p.ctx().theme()).visuals.panel_fill
+}
+
 /// A square, frameless icon button with hover/selected highlight.
 pub fn button(ui: &mut egui::Ui, icon: Icon, selected: bool, tooltip: &str) -> egui::Response {
     icon_button_sized(ui, icon, selected, tooltip, 26.0)
@@ -186,6 +241,9 @@ pub fn for_layer(kind: &scrawl_core::LayerKind) -> Icon {
         K::Group(_) => Icon::Group,
         K::Rectangle(_) => Icon::Rectangle,
         K::Oval => Icon::Oval,
+        K::Polygon(p) if p.sides == 3 => Icon::Triangle,
+        K::Polygon(_) => Icon::Polygon,
+        K::Star(_) => Icon::Star,
         K::Path(_) if kind.type_name() == "Line" => Icon::Line,
         K::Path(_) => Icon::Path,
     }

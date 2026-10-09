@@ -2,7 +2,8 @@
 
 use egui::{DragValue, Id, RichText, Ui};
 use scrawl_core::kurbo::Rect;
-use scrawl_core::{Border, BorderPosition, Color, Fill, Layer, LayerKind};
+use scrawl_core::kurbo::Point;
+use scrawl_core::{Border, BorderPosition, Color, Fill, FillRule, Layer, LayerKind, PointMode};
 
 use crate::app::ScrawlApp;
 use crate::canvas::Tool;
@@ -11,7 +12,10 @@ use crate::ui::toolbar::ALIGNMENTS;
 
 const FIELD_WIDTH: f32 = 64.0;
 
-const ARTBOARD_PRESETS: &[(&str, &[(&str, f64, f64)])] = &[
+/// (name, width, height)
+type Preset = (&'static str, f64, f64);
+
+const ARTBOARD_PRESETS: &[(&str, &[Preset])] = &[
     ("Apple", &[
         ("iPhone 16", 393.0, 852.0),
         ("iPhone 16 Pro Max", 440.0, 956.0),
@@ -33,6 +37,10 @@ pub fn show(app: &mut ScrawlApp, ui: &mut Ui) {
 
         if app.tool == Tool::Artboard {
             artboard_presets(app, ui);
+            return;
+        }
+        if app.canvas.edit.is_some() {
+            points_section(app, ui);
             return;
         }
         match app.selection[..] {
@@ -148,12 +156,49 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         });
     }
 
-    if let LayerKind::Rectangle(rect) = &mut layer.kind {
-        section(ui, "Corners");
-        ui.horizontal(|ui| {
-            num(ui, "Radius", &mut rect.corner_radius, 0.5, "");
-            rect.corner_radius = rect.corner_radius.max(0.0);
-        });
+    match &mut layer.kind {
+        LayerKind::Rectangle(rect) => {
+            section(ui, "Corners");
+            let mut independent = rect.corner_radii.is_some();
+            if ui.checkbox(&mut independent, "Independent corners").changed() {
+                rect.corner_radii = independent.then_some([rect.corner_radius; 4]);
+            }
+            ui.horizontal(|ui| match &mut rect.corner_radii {
+                Some(radii) => {
+                    for (r, label) in radii.iter_mut().zip(["TL", "TR", "BR", "BL"]) {
+                        num(ui, label, r, 0.5, "");
+                        *r = r.max(0.0);
+                    }
+                }
+                None => {
+                    num(ui, "Radius", &mut rect.corner_radius, 0.5, "");
+                    rect.corner_radius = rect.corner_radius.max(0.0);
+                }
+            });
+        }
+        LayerKind::Polygon(poly) => {
+            section(ui, "Polygon");
+            ui.horizontal(|ui| {
+                let mut sides = poly.sides as f64;
+                if num(ui, "Sides", &mut sides, 0.1, "") {
+                    poly.sides = sides.round().clamp(3.0, 100.0) as u32;
+                }
+            });
+        }
+        LayerKind::Star(star) => {
+            section(ui, "Star");
+            ui.horizontal(|ui| {
+                let mut points = star.points as f64;
+                if num(ui, "Points", &mut points, 0.1, "") {
+                    star.points = points.round().clamp(3.0, 100.0) as u32;
+                }
+                let mut pct = star.inner_ratio * 100.0;
+                if num(ui, "Radius", &mut pct, 0.5, "%") {
+                    star.inner_ratio = (pct / 100.0).clamp(0.01, 1.0);
+                }
+            });
+        }
+        _ => {}
     }
 
     if let LayerKind::Artboard(ab) = &mut layer.kind {
@@ -204,6 +249,22 @@ fn style_sections(ui: &mut Ui, layer: &mut Layer) {
         }
         if let Some(i) = remove {
             layer.style.fills.remove(i);
+        }
+        if let LayerKind::Path(p) = &mut layer.kind
+            && p.subpaths.len() > 1
+        {
+            ui.horizontal(|ui| {
+                ui.label("Fill rule");
+                egui::ComboBox::from_id_salt("fill_rule")
+                    .selected_text(match p.fill_rule {
+                        FillRule::NonZero => "Non-Zero",
+                        FillRule::EvenOdd => "Even-Odd",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut p.fill_rule, FillRule::NonZero, "Non-Zero");
+                        ui.selectable_value(&mut p.fill_rule, FillRule::EvenOdd, "Even-Odd");
+                    });
+            });
         }
     }
 
@@ -321,4 +382,53 @@ fn artboard_presets(app: &mut ScrawlApp, ui: &mut Ui) {
             }
         });
     }
+}
+
+fn points_section(app: &mut ScrawlApp, ui: &mut Ui) {
+    let Some(edit) = app.canvas.edit.as_ref() else { return };
+    let (id, selected) = (edit.id, edit.selected.clone());
+    let page = app.page();
+    let shape = page.find(id).and_then(Layer::editable_path);
+    let origin = page.parent_transform(id).map_or(Point::ORIGIN, |t| t * Point::ORIGIN);
+
+    ui.horizontal(|ui| {
+        ui.strong("Editing points");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Done").clicked() {
+                app.exit_vector_edit();
+            }
+        });
+    });
+    ui.weak("Click a segment to add a point. Double-click a point to toggle curve. Keys 1–4 set the point type.");
+    if selected.is_empty() {
+        ui.add_space(8.0);
+        ui.weak("No points selected");
+        return;
+    }
+
+    section(ui, "Point");
+    if let Some(b) = crate::vector::selected_points_page(app) {
+        ui.horizontal(|ui| {
+            let (mut x, mut y) = (b.x0 - origin.x, b.y0 - origin.y);
+            let cx = num(ui, "X", &mut x, 1.0, "");
+            let cy = num(ui, "Y", &mut y, 1.0, "");
+            if cx || cy {
+                crate::vector::move_selected_points_to(app, Point::new(x + origin.x, y + origin.y));
+            }
+        });
+    }
+
+    section(ui, "Point Type");
+    let current: Option<PointMode> = shape.as_ref().and_then(|s| {
+        let modes: Vec<_> = selected.iter().filter_map(|&r| s.point(r).map(|p| p.mode)).collect();
+        modes.first().copied().filter(|m| modes.iter().all(|x| x == m))
+    });
+    ui.horizontal_wrapped(|ui| {
+        for (i, mode) in [PointMode::Straight, PointMode::Mirrored, PointMode::Disconnected, PointMode::Asymmetric].into_iter().enumerate() {
+            let resp = ui.selectable_label(current == Some(mode), mode.label()).on_hover_text(format!("Key {}", i + 1));
+            if resp.clicked() {
+                crate::vector::set_point_mode(app, mode);
+            }
+        }
+    });
 }

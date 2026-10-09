@@ -67,6 +67,12 @@ impl Border {
     }
 }
 
+/// The stroke geometry used for borders of the given width: butt caps and miter joins, matching
+/// The usual defaults.
+pub fn stroke_style(width: f64) -> kurbo::Stroke {
+    kurbo::Stroke::new(width).with_caps(kurbo::Cap::Butt).with_join(kurbo::Join::Miter)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BorderPosition {

@@ -1,9 +1,9 @@
 //! Editing operations on a page. Each takes the ids it acts on and leaves the tree valid.
 
-use kurbo::{Affine, Point, Vec2};
+use kurbo::{Affine, BezPath, Point, Vec2};
 
 use crate::{
-    Frame, Layer, LayerId, LayerKind, Page,
+    BorderPosition, Fill, FillRule, Frame, Layer, LayerId, LayerKind, Page, PathShape,
     document::Location,
 };
 
@@ -229,6 +229,158 @@ pub fn insert_drawn(page: &mut Page, mut layer: Layer) -> LayerId {
     id
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BooleanOp {
+    Union,
+    /// The bottom shape minus everything above it.
+    Subtract,
+    Intersect,
+    /// Areas covered an odd number of times ("Difference").
+    Difference,
+}
+
+impl BooleanOp {
+    pub const ALL: [Self; 4] = [Self::Union, Self::Subtract, Self::Intersect, Self::Difference];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Union => "Union",
+            Self::Subtract => "Subtract",
+            Self::Intersect => "Intersect",
+            Self::Difference => "Difference",
+        }
+    }
+
+    fn sweep_op(self) -> linesweeper::BinaryOp {
+        match self {
+            Self::Union => linesweeper::BinaryOp::Union,
+            Self::Subtract => linesweeper::BinaryOp::Difference,
+            Self::Intersect => linesweeper::BinaryOp::Intersection,
+            Self::Difference => linesweeper::BinaryOp::Xor,
+        }
+    }
+}
+
+/// Applies `op` to two paths. Inputs are interpreted with the even-odd rule, which matches
+/// non-zero for the simple shapes Scrawl produces and is exact for nested boolean results.
+fn path_boolean(a: &BezPath, b: &BezPath, op: linesweeper::BinaryOp) -> Result<BezPath, String> {
+    let contours = linesweeper::binary_op(a, b, linesweeper::FillRule::EvenOdd, op).map_err(|e| e.to_string())?;
+    let mut out = BezPath::new();
+    for c in contours.contours() {
+        out.extend(c.path.iter());
+    }
+    Ok(out)
+}
+
+/// Combines closed shapes sharing a parent into a single path, applied bottom to top, as
+/// usual. The result takes the bottom shape's style and the topmost shape's place.
+pub fn boolean(page: &mut Page, ids: &[LayerId], op: BooleanOp) -> Result<LayerId, String> {
+    let ids = normalize_selection(page, ids);
+    if ids.len() < 2 {
+        return Err("Select at least two shapes.".into());
+    }
+    let parent = page.parent(ids[0]).ok_or("Layer not found.")?;
+    if ids.iter().any(|&id| page.parent(id) != Some(parent)) {
+        return Err("Shapes must share the same group or artboard.".into());
+    }
+    let mut members: Vec<(usize, LayerId)> =
+        ids.iter().filter_map(|&id| Some((page.location(id)?.index, id))).collect();
+    members.sort();
+    let mut paths = vec![];
+    for &(_, id) in &members {
+        let layer = page.find(id).ok_or("Layer not found.")?;
+        match layer.local_path() {
+            Some(p) if layer.is_closed() && !layer.is_artboard() => paths.push(layer.local_transform() * p),
+            _ => return Err(format!("“{}” isn't a closed shape.", layer.name)),
+        }
+    }
+    let mut acc = paths[0].clone();
+    for p in &paths[1..] {
+        acc = path_boolean(&acc, p, op.sweep_op())?;
+    }
+    if acc.elements().is_empty() {
+        return Err("The result would be empty.".into());
+    }
+
+    let bottom = page.find(members[0].1).ok_or("Layer not found.")?.clone();
+    let mut shape = PathShape::from_bez_path(&acc);
+    shape.fill_rule = FillRule::EvenOdd;
+    let mut layer = Layer::path(&shape);
+    layer.name = op.label().into();
+    layer.style = bottom.style;
+    layer.opacity = bottom.opacity;
+    let id = layer.id;
+    let insert_at = members.last().map_or(0, |m| m.0) + 1 - members.len();
+    for &(_, m) in &members {
+        page.remove(m);
+    }
+    page.insert(Location { parent, index: insert_at }, layer).map_err(|_| "Couldn't insert result.")?;
+    if let Some(p) = parent {
+        page.refit_ancestor_groups(p);
+    }
+    Ok(id)
+}
+
+/// Converts shapes into editable paths ("Convert to Path"). Returns the ids converted.
+pub fn convert_to_paths(page: &mut Page, ids: &[LayerId]) -> Vec<LayerId> {
+    let mut out = vec![];
+    for id in normalize_selection(page, ids) {
+        if let Some(l) = page.find_mut(id)
+            && l.convert_to_path()
+        {
+            out.push(id);
+        }
+        refit_parent(page, id);
+    }
+    out
+}
+
+/// Turns each shape's first enabled border into a filled outline shape, replacing the layer's
+/// geometry ("Convert to Outlines").
+pub fn outline_strokes(page: &mut Page, ids: &[LayerId]) -> Result<(), String> {
+    for id in normalize_selection(page, ids) {
+        let Some(layer) = page.find(id) else { continue };
+        let Some(border) = layer.style.borders.iter().find(|b| b.enabled && b.thickness > 0.0).cloned() else {
+            continue;
+        };
+        let Some(path) = layer.local_path() else { continue };
+        let closed = layer.is_closed();
+        let position = if closed { border.position } else { BorderPosition::Center };
+        let width = if position == BorderPosition::Center { border.thickness } else { border.thickness * 2.0 };
+        let style = crate::style::stroke_style(width);
+        let stroked = kurbo::stroke(path.elements().iter().copied(), &style, &kurbo::StrokeOpts::default(), 0.01);
+        // Normalize self-overlapping stroke output into simple contours.
+        let mut outline = path_boolean(&stroked, &BezPath::new(), linesweeper::BinaryOp::Union)
+            .or_else(|_| Ok::<_, String>(stroked.clone()))?;
+        if closed && position != BorderPosition::Center {
+            let op = if position == BorderPosition::Inside {
+                linesweeper::BinaryOp::Intersection
+            } else {
+                linesweeper::BinaryOp::Difference
+            };
+            outline = path_boolean(&outline, &path, op)?;
+        }
+        let mut shape = PathShape::from_bez_path(&outline);
+        shape.fill_rule = FillRule::EvenOdd;
+        if let Some(l) = page.find_mut(id) {
+            l.set_local_path(&shape);
+            l.style.fills = vec![Fill::solid(border.color)];
+            l.style.borders.clear();
+        }
+        refit_parent(page, id);
+    }
+    Ok(())
+}
+
+/// Reverses the direction of every subpath of path layers.
+pub fn reverse_paths(page: &mut Page, ids: &[LayerId]) {
+    for id in ids {
+        if let Some(Layer { kind: LayerKind::Path(p), .. }) = page.find_mut(*id) {
+            p.subpaths.iter_mut().for_each(crate::Subpath::reverse);
+        }
+    }
+}
+
 /// Adds a layer, whose frame is in page space, on top of the page root.
 pub fn insert_root(page: &mut Page, layer: Layer) -> LayerId {
     let id = layer.id;
@@ -314,7 +466,7 @@ pub fn reparent_to_artboards(page: &mut Page, ids: &[LayerId]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kurbo::Rect;
+    use kurbo::{Rect, Shape};
 
     fn page_with_rects(n: usize) -> (Page, Vec<LayerId>) {
         let mut page = Page::new("P");
@@ -403,6 +555,72 @@ mod tests {
         insert_drawn(&mut page, Layer::artboard("A", Frame::new(100.0, 100.0, 200.0, 200.0)));
         let r = insert_drawn(&mut page, Layer::rectangle(Frame::new(150.0, 150.0, 10.0, 10.0)));
         assert_eq!(page_space_copy(&page, r).unwrap().frame, Frame::new(150.0, 150.0, 10.0, 10.0));
+    }
+
+    fn area_of(page: &Page, id: LayerId) -> f64 {
+        let l = page.find(id).unwrap();
+        // Even-odd results: sum signed contour areas with consistent sign per nesting depth is
+        // tricky, so sample instead.
+        let path = page.world_transform(id).unwrap() * l.local_path().unwrap();
+        let b = path.bounding_box();
+        let n = 200;
+        let mut inside = 0;
+        for i in 0..n {
+            for j in 0..n {
+                let p = Point::new(
+                    b.x0 + (i as f64 + 0.5) / n as f64 * b.width(),
+                    b.y0 + (j as f64 + 0.5) / n as f64 * b.height(),
+                );
+                let w = path.winding(p);
+                let hit = if l.fill_rule() == FillRule::EvenOdd { w % 2 != 0 } else { w != 0 };
+                inside += hit as usize;
+            }
+        }
+        inside as f64 / (n * n) as f64 * b.area()
+    }
+
+    #[test]
+    fn boolean_ops_areas() {
+        // Two 10x10 squares overlapping by 5x10.
+        for (op, expected) in [
+            (BooleanOp::Union, 150.0),
+            (BooleanOp::Subtract, 50.0),
+            (BooleanOp::Intersect, 50.0),
+            (BooleanOp::Difference, 100.0),
+        ] {
+            let mut page = Page::new("P");
+            let a = insert_drawn(&mut page, Layer::rectangle(Frame::new(0.0, 0.0, 10.0, 10.0)));
+            let b = insert_drawn(&mut page, Layer::rectangle(Frame::new(5.0, 0.0, 10.0, 10.0)));
+            let r = boolean(&mut page, &[a, b], op).unwrap();
+            assert_eq!(page.layers.len(), 1, "{op:?}");
+            let area = area_of(&page, r);
+            assert!((area - expected).abs() < 2.0, "{op:?}: {area}");
+        }
+    }
+
+    #[test]
+    fn boolean_subtract_makes_hole() {
+        let mut page = Page::new("P");
+        let a = insert_drawn(&mut page, Layer::rectangle(Frame::new(0.0, 0.0, 100.0, 100.0)));
+        let b = insert_drawn(&mut page, Layer::oval(Frame::new(25.0, 25.0, 50.0, 50.0)));
+        let r = boolean(&mut page, &[a, b], BooleanOp::Subtract).unwrap();
+        let LayerKind::Path(p) = &page.find(r).unwrap().kind else { panic!() };
+        assert_eq!(p.subpaths.len(), 2);
+        let hole = std::f64::consts::PI * 25.0 * 25.0;
+        assert!((area_of(&page, r) - (10_000.0 - hole)).abs() < 60.0);
+        assert!(boolean(&mut page, &[r], BooleanOp::Union).is_err());
+    }
+
+    #[test]
+    fn outline_stroke_of_line() {
+        let mut page = Page::new("P");
+        let l = insert_drawn(&mut page, Layer::line(Point::new(0.0, 0.0), Point::new(100.0, 0.0)));
+        page.find_mut(l).unwrap().style.borders[0].thickness = 4.0;
+        outline_strokes(&mut page, &[l]).unwrap();
+        let layer = page.find(l).unwrap();
+        assert!(layer.is_closed());
+        assert!(layer.style.borders.is_empty());
+        assert!((area_of(&page, l) - 400.0).abs() < 8.0);
     }
 
     #[test]

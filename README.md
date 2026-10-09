@@ -29,5 +29,8 @@ Key conventions:
 
 - `SCRAWL_SCREENSHOT=out.png` saves the window's framebuffer after a few frames, then quits.
 - `SCRAWL_SELECT=Name1,Name2` selects layers by name at startup.
+- `SCRAWL_SCRIPT="key P; click 100 100; drag 300 100 380 160; shot out.png"` injects real input
+  events (page coordinates). Commands: `click`, `dblclick`, `drag`, `key NAME [mods]`, `wait N`,
+  `shot PATH`; modifiers like `shift+cmd`. See `crates/scrawl-app/src/dev.rs`.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the feature map.

@@ -2,7 +2,7 @@
 
 use kurbo::{Affine, ParamCurveNearest, Point, Rect, Shape};
 
-use crate::{Layer, LayerId, Page};
+use crate::{FillRule, Layer, LayerId, Page};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
@@ -64,7 +64,12 @@ fn hit_layer(
     let path = layer.local_path()?;
     // Borders widen the hit area.
     let tol = tolerance + layer.style.border_outset();
-    if layer.is_closed() && path.contains(local) {
+    let winding = path.winding(local);
+    let inside = match layer.fill_rule() {
+        FillRule::NonZero => winding != 0,
+        FillRule::EvenOdd => winding % 2 != 0,
+    };
+    if layer.is_closed() && inside {
         return Some(layer.id);
     }
     path.segments()

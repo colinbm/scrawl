@@ -1,7 +1,8 @@
-use kurbo::{Affine, BezPath, Ellipse, Point, Rect, RoundedRect, Shape, Vec2};
+use kurbo::{Affine, BezPath, Ellipse, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::path::{CurvePoint, PathShape};
 use crate::{Color, Frame, Style, geometry::union_rects};
 
 /// Tolerance used when flattening analytic shapes to Béziers.
@@ -61,6 +62,8 @@ pub enum LayerKind {
     Group(Group),
     Rectangle(Rectangle),
     Oval,
+    Polygon(Polygon),
+    Star(Star),
     Path(PathShape),
 }
 
@@ -85,31 +88,39 @@ pub struct Group {
 pub struct Rectangle {
     #[serde(default)]
     pub corner_radius: f64,
-}
-
-/// A vector path whose points are normalized to the layer frame (`0..=1`), like
-/// shape paths, so resizing the frame scales the path.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PathShape {
-    pub points: Vec<CurvePoint>,
-    pub closed: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CurvePoint {
-    pub point: Point,
-    /// Outgoing control point (towards the next point), if curved.
+    /// Per-corner radii (top-left, top-right, bottom-right, bottom-left), overriding
+    /// `corner_radius` when set.
     #[serde(default)]
-    pub curve_from: Option<Point>,
-    /// Incoming control point (from the previous point), if curved.
-    #[serde(default)]
-    pub curve_to: Option<Point>,
+    pub corner_radii: Option<[f64; 4]>,
 }
 
-impl CurvePoint {
-    pub fn corner(point: Point) -> Self {
-        Self { point, curve_from: None, curve_to: None }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Polygon {
+    pub sides: u32,
+}
+
+impl Default for Polygon {
+    fn default() -> Self {
+        Self { sides: 5 }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Star {
+    pub points: u32,
+    /// Inner radius as a fraction of the outer radius.
+    pub inner_ratio: f64,
+}
+
+impl Default for Star {
+    fn default() -> Self {
+        Self { points: 5, inner_ratio: 0.5 }
+    }
+}
+
+/// A single open segment between two corner points.
+fn is_line(p: &PathShape) -> bool {
+    matches!(&p.subpaths[..], [sp] if !sp.closed && sp.points.len() == 2 && sp.points.iter().all(|q| q.curve_from.is_none() && q.curve_to.is_none()))
 }
 
 impl LayerKind {
@@ -119,7 +130,10 @@ impl LayerKind {
             Self::Group(_) => "Group",
             Self::Rectangle(_) => "Rectangle",
             Self::Oval => "Oval",
-            Self::Path(p) if p.points.len() == 2 && !p.closed => "Line",
+            Self::Polygon(p) if p.sides == 3 => "Triangle",
+            Self::Polygon(_) => "Polygon",
+            Self::Star(_) => "Star",
+            Self::Path(p) if is_line(p) => "Line",
             Self::Path(_) => "Path",
         }
     }
@@ -164,17 +178,30 @@ impl Layer {
 
     /// A straight line between two points in parent coordinates.
     pub fn line(a: Point, b: Point) -> Self {
-        let frame = Frame::from_rect(Rect::from_points(a, b));
-        let norm = |p: Point| {
-            Point::new(
-                if frame.width > 0.0 { (p.x - frame.x) / frame.width } else { 0.0 },
-                if frame.height > 0.0 { (p.y - frame.y) / frame.height } else { 0.0 },
-            )
-        };
-        let shape =
-            PathShape { points: vec![CurvePoint::corner(norm(a)), CurvePoint::corner(norm(b))], closed: false };
-        let mut l = Self::new("Line", frame, LayerKind::Path(shape));
-        l.style = Style::default_line();
+        let mut l = Self::path(&PathShape::single(vec![CurvePoint::corner(a), CurvePoint::corner(b)], false));
+        l.name = "Line".into();
+        l
+    }
+
+    /// A path layer from a shape in parent coordinates. Closed paths get the default shape
+    /// style, open ones the line style.
+    pub fn path(shape: &PathShape) -> Self {
+        let (bounds, norm) = shape.fit();
+        let closed = norm.is_closed();
+        let mut l = Self::new("Path", Frame::from_rect(bounds), LayerKind::Path(norm));
+        l.style = if closed { Style::default_shape() } else { Style::default_line() };
+        l
+    }
+
+    pub fn polygon(frame: Frame, sides: u32) -> Self {
+        let mut l = Self::new(if sides == 3 { "Triangle" } else { "Polygon" }, frame, LayerKind::Polygon(Polygon { sides }));
+        l.style = Style::default_shape();
+        l
+    }
+
+    pub fn star(frame: Frame) -> Self {
+        let mut l = Self::new("Star", frame, LayerKind::Star(Star::default()));
+        l.style = Style::default_shape();
         l
     }
 
@@ -226,17 +253,36 @@ impl Layer {
             LayerKind::Group(_) => None,
             LayerKind::Rectangle(rect) => {
                 let max_r = r.width().min(r.height()) / 2.0;
-                Some(RoundedRect::from_rect(r, rect.corner_radius.clamp(0.0, max_r)).to_path(PATH_TOLERANCE))
+                let c = |v: f64| v.clamp(0.0, max_r);
+                let [tl, tr, br, bl] = rect.corner_radii.unwrap_or([rect.corner_radius; 4]);
+                let radii = RoundedRectRadii::new(c(tl), c(tr), c(br), c(bl));
+                Some(RoundedRect::from_rect(r, radii).to_path(PATH_TOLERANCE))
             }
-            LayerKind::Oval => Some(Ellipse::from_rect(r).to_path(PATH_TOLERANCE)),
+            LayerKind::Oval => {
+                let mut path = Ellipse::from_rect(r).to_path(PATH_TOLERANCE);
+                // kurbo leaves ellipses unclosed, which would show as a seam in strokes.
+                path.close_path();
+                Some(path)
+            }
+            LayerKind::Polygon(p) => Some(fitted_polygon(r, &regular_vertices(p.sides.max(3), &[1.0]))),
+            LayerKind::Star(st) => {
+                Some(fitted_polygon(r, &regular_vertices(st.points.max(3) * 2, &[1.0, st.inner_ratio.clamp(0.01, 1.0)])))
+            }
             LayerKind::Path(p) => Some(p.to_bez_path(r.width(), r.height())),
+        }
+    }
+
+    pub fn fill_rule(&self) -> crate::FillRule {
+        match &self.kind {
+            LayerKind::Path(p) => p.fill_rule,
+            _ => crate::FillRule::NonZero,
         }
     }
 
     /// Whether the geometry encloses an area that can be filled.
     pub fn is_closed(&self) -> bool {
         match &self.kind {
-            LayerKind::Path(p) => p.closed,
+            LayerKind::Path(p) => p.is_closed(),
             LayerKind::Group(_) => false,
             _ => true,
         }
@@ -309,6 +355,35 @@ impl Layer {
         }
     }
 
+    /// The geometry as an editable path in absolute local coordinates. `None` for containers.
+    pub fn editable_path(&self) -> Option<PathShape> {
+        match &self.kind {
+            LayerKind::Path(p) => Some(p.scaled(self.frame.width, self.frame.height)),
+            LayerKind::Artboard(_) | LayerKind::Group(_) => None,
+            _ => Some(PathShape::from_bez_path(&self.local_path()?)),
+        }
+    }
+
+    /// Replaces the geometry with `shape`, given in absolute local coordinates. The frame is
+    /// refit to the path's tight bounds without moving anything on screen.
+    pub fn set_local_path(&mut self, shape: &PathShape) {
+        let (bounds, norm) = shape.fit();
+        self.kind = LayerKind::Path(PathShape::default());
+        self.reframe(bounds);
+        self.kind = LayerKind::Path(norm);
+    }
+
+    /// Converts a shape (rectangle, oval, polygon…) into an equivalent editable path in place.
+    /// Returns false for containers.
+    pub fn convert_to_path(&mut self) -> bool {
+        if matches!(self.kind, LayerKind::Path(_)) {
+            return true;
+        }
+        let Some(shape) = self.editable_path() else { return false };
+        self.set_local_path(&shape);
+        true
+    }
+
     /// Deep copy with fresh ids for this layer and all descendants.
     pub fn duplicate(&self) -> Layer {
         let mut l = self.clone();
@@ -332,31 +407,29 @@ impl Layer {
     }
 }
 
-impl PathShape {
-    pub fn to_bez_path(&self, width: f64, height: f64) -> BezPath {
-        let scale = |p: Point| Point::new(p.x * width, p.y * height);
-        let mut path = BezPath::new();
-        let Some(first) = self.points.first() else { return path };
-        path.move_to(scale(first.point));
-        let n = self.points.len();
-        let segments = if self.closed { n } else { n.saturating_sub(1) };
-        for i in 0..segments {
-            let a = &self.points[i];
-            let b = &self.points[(i + 1) % n];
-            match (a.curve_from, b.curve_to) {
-                (None, None) => path.line_to(scale(b.point)),
-                (c1, c2) => path.curve_to(
-                    scale(c1.unwrap_or(a.point)),
-                    scale(c2.unwrap_or(b.point)),
-                    scale(b.point),
-                ),
-            }
-        }
-        if self.closed {
-            path.close_path();
-        }
-        path
-    }
+/// Vertices of a regular polygon on the unit circle, starting at the top, cycling through
+/// `radii` (for stars).
+fn regular_vertices(n: u32, radii: &[f64]) -> Vec<Point> {
+    (0..n)
+        .map(|i| {
+            let a = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::TAU / n as f64;
+            let r = radii[i as usize % radii.len()];
+            Point::new(r * a.cos(), r * a.sin())
+        })
+        .collect()
+}
+
+/// Closes `pts` into a path stretched to fill `r`, like shape layers.
+fn fitted_polygon(r: Rect, pts: &[Point]) -> BezPath {
+    let b = pts.iter().fold(Rect::from_points(pts[0], pts[0]), |b, &p| b.union_pt(p));
+    let map = |p: Point| {
+        Point::new(r.x0 + (p.x - b.x0) / b.width() * r.width(), r.y0 + (p.y - b.y0) / b.height() * r.height())
+    };
+    let mut path = BezPath::new();
+    path.move_to(map(pts[0]));
+    pts[1..].iter().for_each(|&p| path.line_to(map(p)));
+    path.close_path();
+    path
 }
 
 #[cfg(test)]
@@ -396,7 +469,28 @@ mod tests {
         let l = Layer::line(Point::new(10.0, 10.0), Point::new(110.0, 10.0));
         assert_eq!(l.frame, Frame::new(10.0, 10.0, 100.0, 0.0));
         let LayerKind::Path(p) = &l.kind else { panic!() };
-        assert_eq!(p.points[1].point, Point::new(1.0, 0.0));
+        assert_eq!(p.subpaths[0].points[1].point, Point::new(1.0, 0.0));
         assert_eq!(l.kind.type_name(), "Line");
+    }
+
+    #[test]
+    fn convert_to_path_keeps_geometry() {
+        let mut l = Layer::oval(Frame::new(10.0, 20.0, 100.0, 50.0));
+        l.rotation = 30.0;
+        let before = l.bounds_in(Affine::IDENTITY).unwrap();
+        assert!(l.convert_to_path());
+        assert_eq!(l.kind.type_name(), "Path");
+        let after = l.bounds_in(Affine::IDENTITY).unwrap();
+        assert!((before.center() - after.center()).hypot() < 1e-6);
+        assert!((before.area() - after.area()).abs() < 1e-3);
+    }
+
+    #[test]
+    fn polygons_fill_their_frame() {
+        let l = Layer::polygon(Frame::new(0.0, 0.0, 100.0, 80.0), 3);
+        assert_eq!(l.bounds_in(Affine::IDENTITY).unwrap(), Rect::new(0.0, 0.0, 100.0, 80.0));
+        let s = Layer::star(Frame::new(0.0, 0.0, 100.0, 100.0));
+        let b = s.bounds_in(Affine::IDENTITY).unwrap();
+        assert!((b.width() - 100.0).abs() < 1e-9 && (b.height() - 100.0).abs() < 1e-9);
     }
 }

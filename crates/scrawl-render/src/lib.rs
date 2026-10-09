@@ -1,7 +1,8 @@
 //! Builds Vello scenes from Scrawl documents.
 
-use scrawl_core::{BorderPosition, Color, Layer, LayerKind, Page};
-use vello::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
+use scrawl_core::style::stroke_style;
+use scrawl_core::{BorderPosition, Color, FillRule, Layer, LayerKind, Page};
+use vello::kurbo::{Affine, BezPath, Rect, Shape};
 use vello::peniko::{self, BlendMode, Compose, Fill, Mix};
 use vello::Scene;
 
@@ -73,9 +74,13 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine) {
 }
 
 fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, t: Affine) {
+    let rule = match layer.fill_rule() {
+        FillRule::NonZero => Fill::NonZero,
+        FillRule::EvenOdd => Fill::EvenOdd,
+    };
     if layer.is_closed() {
         for fill in layer.style.fills.iter().filter(|f| f.enabled) {
-            scene.fill(Fill::NonZero, t, to_peniko(fill.color), None, path);
+            scene.fill(rule, t, to_peniko(fill.color), None, path);
         }
     }
     for border in layer.style.borders.iter().filter(|b| b.enabled && b.thickness > 0.0) {
@@ -84,21 +89,21 @@ fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, t: Affine) {
         let position = if layer.is_closed() { border.position } else { BorderPosition::Center };
         match position {
             BorderPosition::Center => {
-                scene.stroke(&Stroke::new(border.thickness), t, color, None, path);
+                scene.stroke(&stroke_style(border.thickness), t, color, None, path);
             }
             BorderPosition::Inside => {
                 // A double-width stroke clipped to the shape leaves exactly the inner half.
-                scene.push_clip_layer(Fill::NonZero, t, path);
-                scene.stroke(&Stroke::new(border.thickness * 2.0), t, color, None, path);
+                scene.push_clip_layer(rule, t, path);
+                scene.stroke(&stroke_style(border.thickness * 2.0), t, color, None, path);
                 scene.pop_layer();
             }
             BorderPosition::Outside => {
                 // A double-width stroke with the shape's interior knocked out.
                 let bounds: Rect = path.bounding_box().inflate(border.thickness + 1.0, border.thickness + 1.0);
                 scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, t, &bounds);
-                scene.stroke(&Stroke::new(border.thickness * 2.0), t, color, None, path);
-                scene.push_layer(Fill::NonZero, BlendMode::new(Mix::Normal, Compose::DestOut), 1.0, t, path);
-                scene.fill(Fill::NonZero, t, peniko::Color::BLACK, None, path);
+                scene.stroke(&stroke_style(border.thickness * 2.0), t, color, None, path);
+                scene.push_layer(rule, BlendMode::new(Mix::Normal, Compose::DestOut), 1.0, t, path);
+                scene.fill(rule, t, peniko::Color::BLACK, None, path);
                 scene.pop_layer();
                 scene.pop_layer();
             }

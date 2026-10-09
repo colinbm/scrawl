@@ -12,3 +12,4 @@ serde_json.workspace = true
 uuid.workspace = true
 zip.workspace = true
 thiserror.workspace = true
+linesweeper = "0.5.0"
