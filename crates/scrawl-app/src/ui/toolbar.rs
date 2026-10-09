@@ -45,6 +45,10 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
             }
         });
         ui.menu_button("Edit", |ui| {
+            if item(ui, "Find Layer…", Some(shortcuts::FIND), true) {
+                app.layer_filter.focus = true;
+            }
+            ui.separator();
             if item(ui, "Undo", Some(shortcuts::UNDO), app.history.can_undo() || app.history.is_dirty(&app.doc)) {
                 app.undo();
             }

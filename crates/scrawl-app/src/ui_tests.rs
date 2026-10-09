@@ -369,3 +369,31 @@ fn create_stack_from_selection() {
     assert_eq!(xs, vec![0.0, w + 4.0, 2.0 * (w + 4.0)]);
     save(&mut h, "stack");
 }
+
+#[test]
+fn layer_search_filters_and_selects() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    // ⌘F focused the field, so typing goes there.
+    h.event(egui::Event::Text("tile".into()));
+    h.run();
+    h.run();
+    assert_eq!(h.state().layer_filter.query, "tile");
+    assert!(h.query_by_label("3 matches").is_some());
+    // Non-matching layers are hidden; the artboard stays as context.
+    assert!(h.query_by_label("Avatar").is_none());
+    save(&mut h, "layer_search");
+    h.get_by_label("Select All").click();
+    h.run();
+    let names: Vec<String> = h.state().selection.iter().map(|&id| h.state().page().find(id).unwrap().name.clone()).collect();
+    assert_eq!(names.len(), 3);
+    assert!(names.iter().all(|n| n.starts_with("Tile")));
+
+    // Type filter only.
+    h.state_mut().layer_filter = Default::default();
+    h.state_mut().layer_filter.kind = crate::ui::layers::KindFilter::Text;
+    h.run();
+    assert!(h.query_by_label("5 matches").is_some());
+}

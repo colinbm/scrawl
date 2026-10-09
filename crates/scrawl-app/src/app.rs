@@ -59,6 +59,7 @@ pub mod shortcuts {
     pub const DISTRIBUTE_H: KeyboardShortcut = cmd_ctrl(Key::H);
     pub const DISTRIBUTE_V: KeyboardShortcut = cmd_ctrl(Key::V);
     pub const TIDY: KeyboardShortcut = cmd_ctrl(Key::T);
+    pub const FIND: KeyboardShortcut = cmd(Key::F);
 
     pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
         match op {
@@ -92,6 +93,7 @@ pub struct ScrawlApp {
     pub show_rulers: bool,
     pub show_grid: bool,
     pub show_layout: bool,
+    pub layer_filter: crate::ui::layers::LayerFilter,
     /// The gradient whose handles are shown on the canvas.
     pub gradient_edit: Option<crate::canvas::GradientTarget>,
     pub file_path: Option<PathBuf>,
@@ -137,6 +139,7 @@ impl ScrawlApp {
             show_rulers: false,
             show_grid: false,
             show_layout: false,
+            layer_filter: Default::default(),
             gradient_edit: None,
             file_path: None,
             clipboard: vec![],
@@ -625,6 +628,9 @@ impl ScrawlApp {
         }
         if pressed(TIDY) {
             self.tidy();
+        }
+        if pressed(FIND) {
+            self.layer_filter.focus = true;
         }
         if pressed(CONVERT_TO_PATH) {
             self.convert_to_paths();

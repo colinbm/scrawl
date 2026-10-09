@@ -1,7 +1,7 @@
 //! Left sidebar: pages and the layer tree.
 
 use egui::{FontId, Id, Rect, Sense, Stroke, Ui, pos2, vec2};
-use scrawl_core::{Layer, LayerId, PageId, ops};
+use scrawl_core::{Layer, LayerId, LayerKind, PageId, ops};
 
 use crate::app::{RenameTarget, ScrawlApp};
 use crate::style::ACCENT;
@@ -19,6 +19,68 @@ struct Row {
     expanded: bool,
     visible: bool,
     locked: bool,
+    /// Shown only as the ancestor of a search match.
+    dim: bool,
+}
+
+/// Which layer types the layer search shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KindFilter {
+    #[default]
+    All,
+    Text,
+    Shapes,
+    Groups,
+    Artboards,
+}
+
+impl KindFilter {
+    const ALL: [KindFilter; 5] = [KindFilter::All, KindFilter::Text, KindFilter::Shapes, KindFilter::Groups, KindFilter::Artboards];
+
+    fn label(self) -> &'static str {
+        match self {
+            KindFilter::All => "All",
+            KindFilter::Text => "Text",
+            KindFilter::Shapes => "Shapes",
+            KindFilter::Groups => "Groups",
+            KindFilter::Artboards => "Artboards",
+        }
+    }
+
+    fn accepts(self, kind: &LayerKind) -> bool {
+        match self {
+            KindFilter::All => true,
+            KindFilter::Text => matches!(kind, LayerKind::Text(_)),
+            KindFilter::Groups => matches!(kind, LayerKind::Group(_)),
+            KindFilter::Artboards => matches!(kind, LayerKind::Artboard(_)),
+            KindFilter::Shapes => !matches!(kind, LayerKind::Text(_) | LayerKind::Group(_) | LayerKind::Artboard(_)),
+        }
+    }
+}
+
+/// The layer list's search state.
+#[derive(Clone, Debug, Default)]
+pub struct LayerFilter {
+    pub query: String,
+    pub kind: KindFilter,
+    /// Focus the search field on the next frame (⌘F).
+    pub focus: bool,
+}
+
+impl LayerFilter {
+    pub fn active(&self) -> bool {
+        !self.query.trim().is_empty() || self.kind != KindFilter::All
+    }
+
+    /// Whether `l` matches by name (or text content) and type.
+    pub fn matches(&self, l: &Layer) -> bool {
+        let q = self.query.trim().to_lowercase();
+        let text = match &l.kind {
+            LayerKind::Text(t) => t.text.to_lowercase().contains(&q),
+            _ => false,
+        };
+        self.kind.accepts(&l.kind) && (q.is_empty() || l.name.to_lowercase().contains(&q) || text)
+    }
 }
 
 enum Action {
@@ -47,6 +109,7 @@ pub fn show(app: &mut ScrawlApp, ui: &mut Ui) {
         ui.add_space(4.0);
         ui.label(egui::RichText::new("LAYERS").small().strong().weak());
     });
+    search_bar(app, ui);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| layer_tree(app, ui));
 }
 
@@ -114,6 +177,76 @@ fn rename_field(ui: &mut Ui, buf: &mut String) -> Option<Option<String>> {
     None
 }
 
+fn search_bar(app: &mut ScrawlApp, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        let f = &mut app.layer_filter;
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut f.query).hint_text("Search layers").desired_width(ui.available_width() - 70.0),
+        );
+        if std::mem::take(&mut f.focus) {
+            resp.request_focus();
+        }
+        if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            f.query.clear();
+            resp.surrender_focus();
+        }
+        egui::ComboBox::from_id_salt("layer_kind_filter").selected_text(f.kind.label()).width(60.0).show_ui(ui, |ui| {
+            for k in KindFilter::ALL {
+                ui.selectable_value(&mut f.kind, k, k.label());
+            }
+        });
+    });
+    if app.layer_filter.active() {
+        let mut matches = vec![];
+        app.page().walk(|l| {
+            if app.layer_filter.matches(l) {
+                matches.push(l.id);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.weak(match matches.len() {
+                1 => "1 match".to_owned(),
+                n => format!("{n} matches"),
+            });
+            if !matches.is_empty() && ui.small_button("Select All").clicked() {
+                app.selection = ops::normalize_selection(app.page(), &matches);
+            }
+            if ui.small_button("Clear").clicked() {
+                app.layer_filter = LayerFilter::default();
+            }
+        });
+    }
+}
+
+/// Rows for layers matching the search, with their ancestors (dimmed) for context. Returns
+/// whether anything in `layers` matched.
+fn collect_filtered(layers: &[Layer], depth: usize, filter: &LayerFilter, out: &mut Vec<Row>) -> bool {
+    let mut any = false;
+    for l in layers.iter().rev() {
+        let mut below = vec![];
+        let inner = l.children().is_some_and(|c| collect_filtered(c, depth + 1, filter, &mut below));
+        let hit = filter.matches(l);
+        if hit || inner {
+            out.push(Row {
+                id: l.id,
+                depth,
+                name: l.name.clone(),
+                icon: if l.is_mask { Icon::Mask } else { icons::for_layer(&l.kind) },
+                container: inner,
+                expanded: inner,
+                visible: l.visible,
+                locked: l.locked,
+                dim: !hit,
+            });
+            out.append(&mut below);
+            any = true;
+        }
+    }
+    any
+}
+
 fn collect_rows(layers: &[Layer], depth: usize, app: &ScrawlApp, out: &mut Vec<Row>) {
     for l in layers.iter().rev() {
         let container = l.children().is_some_and(|c| !c.is_empty());
@@ -127,6 +260,7 @@ fn collect_rows(layers: &[Layer], depth: usize, app: &ScrawlApp, out: &mut Vec<R
             expanded,
             visible: l.visible,
             locked: l.locked,
+            dim: false,
         });
         if expanded {
             collect_rows(l.children().expect("container"), depth + 1, app, out);
@@ -146,7 +280,17 @@ fn layer_tree(app: &mut ScrawlApp, ui: &mut Ui) {
     }
 
     let mut rows = vec![];
-    collect_rows(&app.page().layers, 0, app, &mut rows);
+    let filtering = app.layer_filter.active();
+    if filtering {
+        collect_filtered(&app.page().layers, 0, &app.layer_filter, &mut rows);
+        if rows.is_empty() {
+            ui.add_space(8.0);
+            ui.vertical_centered(|ui| ui.weak("No matching layers"));
+            return;
+        }
+    } else {
+        collect_rows(&app.page().layers, 0, app, &mut rows);
+    }
     if rows.is_empty() {
         ui.add_space(8.0);
         ui.vertical_centered(|ui| ui.weak("Press A to draw an artboard,\nor R for a rectangle."));
@@ -172,7 +316,7 @@ fn layer_tree(app: &mut ScrawlApp, ui: &mut Ui) {
         } else if resp.hovered() || hovered_canvas {
             p.rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, ACCENT.gamma_multiply(0.6)), egui::StrokeKind::Inside);
         }
-        let text_color = if !row.visible { visuals.weak_text_color() } else if selected { visuals.selection.stroke.color } else { visuals.text_color() };
+        let text_color = if !row.visible || row.dim { visuals.weak_text_color() } else if selected { visuals.selection.stroke.color } else { visuals.text_color() };
 
         let x = rect.left() + 6.0 + row.depth as f32 * INDENT;
         let disclosure = Rect::from_min_size(pos2(x, rect.top()), vec2(12.0, ROW_HEIGHT));
@@ -226,7 +370,7 @@ fn layer_tree(app: &mut ScrawlApp, ui: &mut Ui) {
                 actions.push(Action::ToggleVisible(row.id));
             } else if lock.contains(pos) {
                 actions.push(Action::ToggleLocked(row.id));
-            } else if row.container && disclosure.expand2(vec2(4.0, 0.0)).contains(pos) {
+            } else if row.container && !filtering && disclosure.expand2(vec2(4.0, 0.0)).contains(pos) {
                 actions.push(Action::ToggleExpanded(row.id));
             } else {
                 actions.push(Action::Select { id: row.id, toggle: mods.shift || mods.command });
@@ -235,7 +379,8 @@ fn layer_tree(app: &mut ScrawlApp, ui: &mut Ui) {
         if resp.double_clicked() {
             actions.push(Action::StartRename(row.id));
         }
-        if resp.drag_started() {
+        // Reordering needs the full tree, so it's off while searching.
+        if resp.drag_started() && !filtering {
             ui.data_mut(|d| d.insert_temp(drag_id, row.id));
         }
 

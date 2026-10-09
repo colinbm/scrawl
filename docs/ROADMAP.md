@@ -49,10 +49,14 @@
 - ⬜ Text on path
 
 ## Milestone 5 — Productivity
-- ⬜ Smart guides & snapping, distance measurements (⌥ hover), rulers & guides, grids/layouts
-- ⬜ Smart distribute, tidy, Smart Layout / stacks
-- ⬜ Resizing constraints (pin edges, fix size)
-- ⬜ Find/filter layers, layer search
+- ✅ Smart guides: edge/center alignment and equal-spacing snaps while moving, resizing and drawing (⌃ suspends; View > Snap to Layers)
+- ✅ ⌥ hover distance measurements to the hovered layer or parent container
+- ✅ Rulers (⌃R) with per-artboard and page guides; square grid (⌃G) and column/row layout (⌃L); all snappable
+- ✅ Resizing constraints (pin edges, fix size); artboards can adjust content on resize
+- ✅ Stacks (auto-flowing groups, reorder by dragging), distribute (⌃⌘H/⌃⌘V), tidy (⌃⌘T)
+- ✅ Layer search (⌘F) by name or text, with a type filter and Select All
+- ⬜ Smart distribute handles (drag spacing directly on canvas)
+- ⬜ Stack padding, wrapping and per-item sizing; constraints for rotated layers
 
 ## Milestone 6 — Components
 - ⬜ Shared layer & text styles
