@@ -149,6 +149,11 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             layer.reframe(Rect::new(0.0, 0.0, w.max(0.0), h.max(0.0)));
         }
     });
+    // Constraints matter for anything inside a group or artboard.
+    if app.page().parent(layer.id).flatten().is_some() {
+        section(ui, "Resizing");
+        resizing_widget(ui, &mut layer.resizing);
+    }
     if !layer.is_artboard() {
         ui.horizontal(|ui| {
             if icons::button(ui, Icon::FlipH, layer.flip_horizontal, "Flip Horizontal").clicked() {
@@ -219,6 +224,8 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             }
         });
         ui.checkbox(&mut ab.clip_content, "Clip content");
+        ui.checkbox(&mut ab.resizes_content, "Adjust content on resize")
+            .on_hover_text("Resize children by their constraints when the artboard is resized");
         grid_settings(app, ui, ab);
     }
 
@@ -718,4 +725,59 @@ fn grid_settings(app: &mut ScrawlApp, ui: &mut Ui, ab: &mut scrawl_core::Artboar
     if !app.show_grid || !app.show_layout {
         ui.weak("⌃G shows the grid, ⌃L the layout");
     }
+}
+
+/// The constraint control: click the edges to pin, the inner lines to fix the size.
+fn resizing_widget(ui: &mut Ui, r: &mut scrawl_core::constraints::Resizing) {
+    use egui::{Pos2, Rect as ERect, Sense, Stroke, vec2};
+    ui.horizontal(|ui| {
+        let (outer, _) = ui.allocate_exact_size(vec2(80.0, 80.0), Sense::hover());
+        let inner = outer.shrink(19.0);
+        let weak = ui.visuals().weak_text_color();
+        let p = ui.painter();
+        p.rect_stroke(outer, 3.0, Stroke::new(1.0, weak.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+        p.rect_stroke(inner, 2.0, Stroke::new(1.0, weak), egui::StrokeKind::Inside);
+        let c = outer.center();
+        let toggles: [(&mut bool, [Pos2; 2], &str); 6] = [
+            (&mut r.top, [Pos2::new(c.x, outer.top() + 4.0), Pos2::new(c.x, inner.top() - 3.0)], "Pin to top edge"),
+            (&mut r.bottom, [Pos2::new(c.x, inner.bottom() + 3.0), Pos2::new(c.x, outer.bottom() - 4.0)], "Pin to bottom edge"),
+            (&mut r.left, [Pos2::new(outer.left() + 4.0, c.y), Pos2::new(inner.left() - 3.0, c.y)], "Pin to left edge"),
+            (&mut r.right, [Pos2::new(inner.right() + 3.0, c.y), Pos2::new(outer.right() - 4.0, c.y)], "Pin to right edge"),
+            (&mut r.fix_width, [Pos2::new(inner.left() + 4.0, c.y), Pos2::new(inner.right() - 4.0, c.y)], "Fix width"),
+            (&mut r.fix_height, [Pos2::new(c.x, inner.top() + 4.0), Pos2::new(c.x, inner.bottom() - 4.0)], "Fix height"),
+        ];
+        for (i, (on, [a, b], tip)) in toggles.into_iter().enumerate() {
+            let hit = ERect::from_two_pos(a, b).expand(5.0);
+            let resp = ui.interact(hit, ui.id().with(("resizing", i)), Sense::click()).on_hover_text(tip);
+            if resp.clicked() {
+                *on = !*on;
+            }
+            let color = if *on { crate::style::ACCENT } else if resp.hovered() { ui.visuals().text_color() } else { weak.gamma_multiply(0.6) };
+            let width = if *on { 2.0 } else { 1.0 };
+            ui.painter().line_segment([a, b], Stroke::new(width, color));
+            // Arrowheads on the size lines.
+            if i >= 4 {
+                let d = (b - a).normalized() * 3.0;
+                let n = vec2(-d.y, d.x);
+                for (end, dir) in [(a, d), (b, -d)] {
+                    ui.painter().line_segment([end, end + dir + n], Stroke::new(width, color));
+                    ui.painter().line_segment([end, end + dir - n], Stroke::new(width, color));
+                }
+            }
+        }
+        ui.vertical(|ui| {
+            let summary = |pins: (bool, bool), fix: bool| match (pins, fix) {
+                ((true, true), false) => "Stretch",
+                ((true, _), _) => "Pinned start",
+                ((false, true), _) => "Pinned end",
+                ((false, false), true) => "Fixed, centered",
+                ((false, false), false) => "Scale",
+            };
+            ui.weak(format!("H: {}", summary((r.left, r.right), r.fix_width)));
+            ui.weak(format!("V: {}", summary((r.top, r.bottom), r.fix_height)));
+            if !r.is_default() && ui.small_button("Reset").clicked() {
+                *r = Default::default();
+            }
+        });
+    });
 }

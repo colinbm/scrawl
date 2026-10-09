@@ -4,6 +4,7 @@
 //! hit testing, undo history and the on-disk file format.
 
 pub mod color;
+pub mod constraints;
 pub mod document;
 pub mod geometry;
 pub mod grid;

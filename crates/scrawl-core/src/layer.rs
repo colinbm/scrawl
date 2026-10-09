@@ -2,6 +2,7 @@ use kurbo::{Affine, BezPath, Ellipse, Point, Rect, RoundedRect, RoundedRectRadii
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::constraints::Resizing;
 use crate::path::{CurvePoint, PathShape};
 use crate::text::TextLayer;
 use crate::style::BlendMode;
@@ -48,6 +49,9 @@ pub struct Layer {
     /// Clips the layers above it within the same parent ("Use as Mask").
     #[serde(default)]
     pub is_mask: bool,
+    /// How the layer responds when its parent is resized.
+    #[serde(default, skip_serializing_if = "Resizing::is_default")]
+    pub resizing: Resizing,
     #[serde(default)]
     pub style: Style,
     #[serde(flatten)]
@@ -84,6 +88,10 @@ pub struct Artboard {
     pub background: Option<Color>,
     #[serde(default = "default_true")]
     pub clip_content: bool,
+    /// Apply children's resizing constraints when the artboard is resized. Off, children keep
+    /// their position on the page.
+    #[serde(default)]
+    pub resizes_content: bool,
     /// Ruler guides, in artboard space.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guides: Vec<crate::grid::Guide>,
@@ -99,6 +107,7 @@ impl Artboard {
             children: vec![],
             background: None,
             clip_content: true,
+            resizes_content: false,
             guides: vec![],
             grid: Default::default(),
             layout: Default::default(),
@@ -188,6 +197,7 @@ impl Layer {
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
             is_mask: false,
+            resizing: Resizing::default(),
             style: Style::default(),
             kind,
         }
@@ -356,40 +366,50 @@ impl Layer {
     }
 
     /// Moves the frame so the layer occupies `r`, given in the layer's *current* local space,
-    /// while keeping its rotation and flips. Group children are scaled to fit; artboard
-    /// children keep their positions relative to the artboard's top-left.
+    /// while keeping its rotation and flips. Group children follow their resizing constraints
+    /// (scaling by default); artboard children keep their place on the page unless the artboard
+    /// adjusts content on resize.
     pub fn reframe(&mut self, r: Rect) {
         let r = r.abs();
-        let old = self.frame;
         let center_in_parent = self.local_transform() * r.center();
         let size = r.size();
-        self.frame = Frame::new(
+        let frame = Frame::new(
             center_in_parent.x - size.width / 2.0,
             center_in_parent.y - size.height / 2.0,
             size.width,
             size.height,
         );
+        self.set_frame(frame, r.origin().to_vec2());
+    }
+
+    /// Replaces the frame and resizes the contents. `shift` is the new top-left in the old local
+    /// space, for artboards whose children stay put.
+    fn set_frame(&mut self, frame: Frame, shift: Vec2) {
+        let old = self.frame;
+        self.frame = frame;
+        let (old, new) = ((old.width, old.height), (frame.width, frame.height));
         match &mut self.kind {
-            LayerKind::Group(g) => {
-                let sx = if old.width > 0.0 { size.width / old.width } else { 1.0 };
-                let sy = if old.height > 0.0 { size.height / old.height } else { 1.0 };
-                for c in &mut g.children {
-                    c.frame.x = (c.frame.x - r.x0) * sx;
-                    c.frame.y = (c.frame.y - r.y0) * sy;
-                    c.frame.width *= sx;
-                    c.frame.height *= sy;
-                    if let LayerKind::Rectangle(rect) = &mut c.kind {
-                        rect.corner_radius *= sx.min(sy);
-                    }
-                }
-            }
-            LayerKind::Artboard(a) => {
-                for c in &mut a.children {
-                    c.frame.translate(-r.origin().to_vec2());
-                }
-            }
+            LayerKind::Group(g) => g.children.iter_mut().for_each(|c| c.fit_to_parent(old, new)),
+            LayerKind::Artboard(a) if a.resizes_content => a.children.iter_mut().for_each(|c| c.fit_to_parent(old, new)),
+            LayerKind::Artboard(a) => a.children.iter_mut().for_each(|c| c.frame.translate(-shift)),
             _ => {}
         }
+    }
+
+    /// Applies resizing constraints after the parent's size changed from `old` to `new`.
+    fn fit_to_parent(&mut self, old: (f64, f64), new: (f64, f64)) {
+        let rs = self.resizing;
+        let f = self.frame;
+        let (x, w) = Resizing::axis(f.x, f.width, old.0, new.0, rs.left, rs.right, rs.fix_width);
+        let (y, h) = Resizing::axis(f.y, f.height, old.1, new.1, rs.top, rs.bottom, rs.fix_height);
+        if rs.is_default()
+            && let LayerKind::Rectangle(rect) = &mut self.kind
+        {
+            let sx = if old.0 > 0.0 { new.0 / old.0 } else { 1.0 };
+            let sy = if old.1 > 0.0 { new.1 / old.1 } else { 1.0 };
+            rect.corner_radius *= sx.min(sy);
+        }
+        self.set_frame(Frame::new(x, y, w, h), Vec2::ZERO);
     }
 
     /// Shrinks or grows a group's frame to tightly enclose its children, without moving them on

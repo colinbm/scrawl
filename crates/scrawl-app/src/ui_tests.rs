@@ -323,3 +323,21 @@ fn ruler_guides_add_snap_and_remove() {
     h.run();
     assert!(artboard_guides(&h).is_empty());
 }
+
+#[test]
+fn resizing_section_for_contained_layers() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let id = select(&mut h, "Avatar");
+    assert!(h.query_by_label("RESIZING").is_some());
+    if let Some(l) = h.state_mut().page_mut().find_mut(id) {
+        l.resizing = scrawl_core::constraints::Resizing { left: true, top: true, fix_width: true, ..Default::default() };
+    }
+    h.run();
+    assert!(h.query_by_label("H: Pinned start").is_some());
+    save(&mut h, "resizing_widget");
+    // Artboards themselves have no parent, so no constraints.
+    select(&mut h, "iPhone 16");
+    assert!(h.query_by_label("RESIZING").is_none());
+    assert!(h.query_by_label("Adjust content on resize").is_some());
+}
