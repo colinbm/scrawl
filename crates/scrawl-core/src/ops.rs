@@ -321,6 +321,33 @@ pub fn boolean(page: &mut Page, ids: &[LayerId], op: BooleanOp) -> Result<LayerI
     Ok(id)
 }
 
+/// "Use as Mask": with one layer, toggles its mask flag; with several sharing a parent,
+/// groups them and makes the bottom-most the mask. Returns the ids to select afterwards.
+pub fn use_as_mask(page: &mut Page, ids: &[LayerId]) -> Vec<LayerId> {
+    let ids = normalize_selection(page, ids);
+    match ids[..] {
+        [] => vec![],
+        [id] => {
+            if let Some(l) = page.find_mut(id)
+                && !l.is_artboard()
+            {
+                l.is_mask = !l.is_mask;
+            }
+            vec![id]
+        }
+        _ => {
+            let Some(g) = group(page, &ids) else { return ids };
+            if let Some(bottom) = page.find_mut(g).and_then(|l| l.children_mut()).and_then(|c| c.first_mut()) {
+                bottom.is_mask = true;
+            }
+            if let Some(l) = page.find_mut(g) {
+                l.name = "Mask Group".into();
+            }
+            vec![g]
+        }
+    }
+}
+
 /// Converts shapes into editable paths ("Convert to Path"). Returns the ids converted.
 pub fn convert_to_paths(page: &mut Page, ids: &[LayerId]) -> Vec<LayerId> {
     let mut out = vec![];
@@ -347,7 +374,7 @@ pub fn outline_strokes(page: &mut Page, ids: &[LayerId]) -> Result<(), String> {
         let closed = layer.is_closed();
         let position = if closed { border.position } else { BorderPosition::Center };
         let width = if position == BorderPosition::Center { border.thickness } else { border.thickness * 2.0 };
-        let style = crate::style::stroke_style(width);
+        let style = crate::style::stroke_style(width, &layer.style.border_options);
         let stroked = kurbo::stroke(path.elements().iter().copied(), &style, &kurbo::StrokeOpts::default(), 0.01);
         // Normalize self-overlapping stroke output into simple contours.
         let mut outline = path_boolean(&stroked, &BezPath::new(), linesweeper::BinaryOp::Union)
@@ -621,6 +648,18 @@ mod tests {
         assert!(layer.is_closed());
         assert!(layer.style.borders.is_empty());
         assert!((area_of(&page, l) - 400.0).abs() < 8.0);
+    }
+
+    #[test]
+    fn mask_groups_bottom_layer() {
+        let (mut page, ids) = page_with_rects(3);
+        let out = use_as_mask(&mut page, &ids[..2]);
+        let g = page.find(out[0]).unwrap();
+        assert!(g.is_group());
+        let kids = g.children().unwrap();
+        assert!(kids[0].is_mask && !kids[1].is_mask);
+        use_as_mask(&mut page, &[ids[2]]);
+        assert!(page.find(ids[2]).unwrap().is_mask);
     }
 
     #[test]

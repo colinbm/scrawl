@@ -18,11 +18,14 @@ impl PageId {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub pages: Vec<Page>,
+    /// Document color swatches.
+    #[serde(default)]
+    pub colors: Vec<crate::Color>,
 }
 
 impl Default for Document {
     fn default() -> Self {
-        Self { pages: vec![Page::new("Page 1")] }
+        Self { pages: vec![Page::new("Page 1")], colors: vec![] }
     }
 }
 

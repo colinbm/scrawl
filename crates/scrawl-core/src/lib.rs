@@ -12,6 +12,7 @@ pub mod io;
 pub mod layer;
 pub mod ops;
 pub mod path;
+pub mod sample;
 pub mod style;
 
 pub use color::Color;
@@ -20,6 +21,9 @@ pub use geometry::Frame;
 pub use history::History;
 pub use layer::{Artboard, Group, Layer, LayerId, LayerKind, Polygon, Rectangle, Star};
 pub use path::{CurvePoint, FillRule, PathShape, PointMode, PointRef, Subpath};
-pub use style::{Border, BorderPosition, Fill, Style};
+pub use style::{
+    BlendMode, Border, BorderOptions, BorderPosition, Fill, FillType, Gradient, GradientKind, GradientStop, LineCap,
+    LineJoin, Marker, Paint, Shadow, Style,
+};
 
 pub use kurbo;

@@ -3,7 +3,7 @@
 use egui::{Color32, CursorIcon, Painter, PointerButton, Pos2, Rect as ERect, Sense, Stroke, StrokeKind, vec2};
 use scrawl_core::hit::{self, Hit};
 use scrawl_core::kurbo::{Affine, BezPath, Point, Rect, Shape, Vec2};
-use scrawl_core::{Frame, Layer, LayerId, LayerKind, Page, ops};
+use scrawl_core::{FillType, Frame, Gradient, Layer, LayerId, LayerKind, Page, ops};
 
 use crate::app::ScrawlApp;
 use crate::style::ACCENT;
@@ -68,6 +68,51 @@ impl Tool {
     }
 }
 
+/// Identifies a gradient being edited: a fill or border of a layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GradientTarget {
+    pub layer: LayerId,
+    pub border: bool,
+    pub index: usize,
+}
+
+impl GradientTarget {
+    pub fn gradient<'a>(&self, layer: &'a Layer) -> Option<&'a Gradient> {
+        let (ft, g) = if self.border {
+            let b = layer.style.borders.get(self.index)?;
+            (b.fill_type, &b.gradient)
+        } else {
+            let f = layer.style.fills.get(self.index)?;
+            (f.fill_type, &f.gradient)
+        };
+        (ft == FillType::Gradient).then_some(g)
+    }
+
+    fn gradient_mut<'a>(&self, layer: &'a mut Layer) -> Option<&'a mut Gradient> {
+        let g = if self.border {
+            &mut layer.style.borders.get_mut(self.index)?.gradient
+        } else {
+            &mut layer.style.fills.get_mut(self.index)?.gradient
+        };
+        Some(g)
+    }
+}
+
+/// Screen positions of the from/to handles of the gradient being edited, if it's visible.
+fn gradient_handles(app: &ScrawlApp, rect: ERect) -> Option<(GradientTarget, [Pos2; 2])> {
+    let target = app.gradient_edit?;
+    if app.selection != [target.layer] || app.canvas.edit.is_some() {
+        return None;
+    }
+    let page = app.page();
+    let layer = page.find(target.layer)?;
+    let g = target.gradient(layer)?;
+    let t = screen_transform(app, rect) * page.world_transform(target.layer)?;
+    let (w, h) = (layer.frame.width, layer.frame.height);
+    let at = |p: Point| to_pos(t * Point::new(p.x * w, p.y * h));
+    Some((target, [at(g.from), at(g.to)]))
+}
+
 /// Resize handles, in local layer space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Handle {
@@ -128,6 +173,12 @@ impl Handle {
 
 enum Drag {
     Pan,
+    GradientHandle {
+        target: GradientTarget,
+        end: usize,
+        /// Page space → the layer's local space.
+        to_local: Affine,
+    },
     Rotate {
         id: LayerId,
         center: Point,
@@ -307,6 +358,16 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
         let page = app.doc.page_mut(app.page).expect("current page exists");
         match drag {
             Drag::Pan => {}
+            Drag::GradientHandle { target, end, to_local } => {
+                let local = *to_local * p;
+                if let Some(layer) = page.find_mut(target.layer) {
+                    let (w, h) = (layer.frame.width, layer.frame.height);
+                    let norm = Point::new(if w > 0.0 { local.x / w } else { 0.0 }, if h > 0.0 { local.y / h } else { 0.0 });
+                    if let Some(g) = target.gradient_mut(layer) {
+                        if *end == 0 { g.from = norm } else { g.to = norm }
+                    }
+                }
+            }
             Drag::Rotate { id, center, start_angle, start_rotation } => {
                 let mut delta = ((p - *center).atan2() - *start_angle).to_degrees();
                 if mods.shift {
@@ -450,7 +511,10 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
     } else if app.canvas.drag.is_none()
         && let Some(pos) = hover_pos
     {
-        if let Some(hit) = handle_at(app, pos, rect) {
+        let on_gradient = gradient_handles(app, rect).is_some_and(|(_, e)| e.iter().any(|e| e.distance(pos) <= HANDLE_GRAB));
+        if on_gradient {
+            Some(CursorIcon::Move)
+        } else if let Some(hit) = handle_at(app, pos, rect) {
             Some(match hit {
                 HandleHit::LineEnd(_) => CursorIcon::Crosshair,
                 HandleHit::Single(_, h) if mods.command && !h.is_edge() => CursorIcon::Alias,
@@ -488,7 +552,13 @@ fn begin_select_drag(
     entered: &[LayerId],
     rect: ERect,
 ) -> Option<Drag> {
-    // Selection handles take priority.
+    // Gradient handles, then selection handles, take priority.
+    if let Some((target, ends)) = gradient_handles(app, rect)
+        && let Some(end) = ends.iter().position(|e| e.distance(screen) <= HANDLE_GRAB)
+    {
+        let to_local = app.page().world_transform(target.layer)?.inverse();
+        return Some(Drag::GradientHandle { target, end, to_local });
+    }
     if let Some(hit) = handle_at(app, screen, rect) {
         let page = app.page();
         return Some(match hit {
@@ -873,6 +943,14 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
     if let Some(Drag::Marquee { origin, current, .. }) = &app.canvas.drag {
         let r = ERect::from_two_pos(to_pos(to_screen * *origin), to_pos(to_screen * *current));
         p.rect(r, 0.0, ACCENT.gamma_multiply(0.08), thin, StrokeKind::Inside);
+    }
+
+    // Gradient handles.
+    if let Some((_, [a, b])) = gradient_handles(app, rect) {
+        p.line_segment([a, b], Stroke::new(3.0, Color32::from_black_alpha(80)));
+        p.line_segment([a, b], Stroke::new(1.5, Color32::WHITE));
+        p.circle(a, 5.0, Color32::WHITE, Stroke::new(1.5, ACCENT));
+        p.circle(b, 5.0, ACCENT, Stroke::new(1.5, Color32::WHITE));
     }
 
     // Readouts while drawing, resizing or rotating.

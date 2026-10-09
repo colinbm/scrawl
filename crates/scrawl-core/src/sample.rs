@@ -1,0 +1,110 @@
+//! A demo document exercising layer types and styles, used by "Open Sample Document", examples
+//! and tests.
+
+use kurbo::Point;
+
+use crate::ops::{self, BooleanOp};
+use crate::{
+    BlendMode, Border, BorderPosition, Color, Document, Fill, FillType, Frame, Gradient, GradientKind, GradientStop, Layer,
+    LayerKind, Marker, Rectangle, Shadow,
+};
+
+fn hex(s: &str) -> Color {
+    Color::from_hex(s).expect("valid hex")
+}
+
+fn gradient(kind: GradientKind, from: (f64, f64), to: (f64, f64), stops: &[(&str, f64)]) -> Fill {
+    let g = Gradient {
+        kind,
+        from: Point::new(from.0, from.1),
+        to: Point::new(to.0, to.1),
+        stops: stops.iter().map(|&(c, p)| GradientStop { position: p, color: hex(c) }).collect(),
+    };
+    Fill { fill_type: FillType::Gradient, gradient: g, ..Fill::solid(Color::BLACK) }
+}
+
+/// A demo document exercising layer types and styles.
+pub fn sample_document() -> Document {
+    let mut doc = Document {
+        colors: ["1F8FFF", "7C5CFF", "FF8A3D", "2EC4B6", "FFD23F"].iter().map(|h| hex(h)).collect(),
+        ..Default::default()
+    };
+    let page = &mut doc.pages[0];
+    page.name = "Home".into();
+
+    ops::insert_drawn(page, Layer::artboard("iPhone 16", Frame::new(0.0, 0.0, 393.0, 852.0)));
+
+    let mut header = Layer::new("Header", Frame::new(0.0, 0.0, 393.0, 140.0), LayerKind::Rectangle(Rectangle::default()));
+    header.style.fills.push(gradient(GradientKind::Linear, (0.0, 0.0), (1.0, 1.0), &[("1F8FFF", 0.0), ("7C5CFF", 1.0)]));
+    ops::insert_drawn(page, header);
+
+    let mut card = Layer::rectangle(Frame::new(24.0, 170.0, 345.0, 200.0));
+    card.kind = LayerKind::Rectangle(Rectangle { corner_radius: 16.0, corner_radii: None });
+    card.style.fills = vec![Fill::solid(Color::WHITE)];
+    card.style.borders.clear();
+    card.style.shadows = vec![Shadow { color: Color::BLACK.with_alpha(0.25), offset_y: 8.0, blur: 24.0, ..Shadow::drop() }];
+    card.name = "Card".into();
+    ops::insert_drawn(page, card);
+
+    let mut avatar = Layer::oval(Frame::new(48.0, 194.0, 64.0, 64.0));
+    avatar.style.fills = vec![gradient(GradientKind::Radial, (0.35, 0.3), (1.0, 1.0), &[("FFD23F", 0.0), ("FF8A3D", 1.0)])];
+    avatar.style.borders = vec![Border { position: BorderPosition::Outside, ..Border::solid(Color::WHITE, 3.0) }];
+    avatar.style.shadows = vec![Shadow::drop()];
+    avatar.name = "Avatar".into();
+    ops::insert_drawn(page, avatar);
+
+    let mut star = Layer::star(Frame::new(270.0, 194.0, 72.0, 72.0));
+    star.style.fills = vec![gradient(GradientKind::Angular, (0.5, 0.5), (1.0, 0.5), &[("FF3D7F", 0.0), ("FFD23F", 0.33), ("2EC4B6", 0.66), ("FF3D7F", 1.0)])];
+    star.style.borders.clear();
+    star.style.shadows = vec![Shadow { blur: 10.0, offset_y: 4.0, ..Shadow::drop() }];
+    ops::insert_drawn(page, star);
+
+    // A dashed arrow.
+    let mut arrow = Layer::line(Point::new(48.0, 320.0), Point::new(340.0, 320.0));
+    arrow.style.borders[0] = Border::solid(hex("7C5CFF"), 2.0);
+    arrow.style.border_options.dash = vec![6.0, 4.0];
+    arrow.style.border_options.end_marker = Marker::FilledArrow;
+    arrow.style.border_options.start_marker = Marker::OpenCircle;
+    arrow.name = "Arrow".into();
+    ops::insert_drawn(page, arrow);
+
+    // Tiles with inner shadows and blend modes over a stripe.
+    let mut stripe = Layer::rectangle(Frame::new(0.0, 420.0, 393.0, 60.0));
+    stripe.style.fills = vec![Fill::solid(hex("FFD23F"))];
+    stripe.style.borders.clear();
+    stripe.name = "Stripe".into();
+    ops::insert_drawn(page, stripe);
+    for (i, mode) in [BlendMode::Normal, BlendMode::Multiply, BlendMode::Difference].into_iter().enumerate() {
+        let mut tile = Layer::rectangle(Frame::new(24.0 + i as f64 * 119.0, 400.0, 107.0, 107.0));
+        tile.kind = LayerKind::Rectangle(Rectangle { corner_radius: 20.0, corner_radii: None });
+        tile.style.fills = vec![Fill::solid(hex("2EC4B6"))];
+        tile.style.borders.clear();
+        tile.style.inner_shadows = vec![Shadow { color: Color::BLACK.with_alpha(0.35), offset_y: 4.0, blur: 10.0, ..Shadow::inner() }];
+        tile.blend_mode = mode;
+        tile.name = format!("Tile ({})", mode.label());
+        ops::insert_drawn(page, tile);
+    }
+
+    // A mask: a circle clipping a striped rectangle.
+    let mask = ops::insert_drawn(page, Layer::oval(Frame::new(24.0, 560.0, 160.0, 160.0)));
+    let mut stripes = vec![mask];
+    for i in 0..6 {
+        let mut s = Layer::rectangle(Frame::new(0.0, 560.0 + i as f64 * 28.0, 220.0, 14.0));
+        s.style.fills = vec![Fill::solid(hex(if i % 2 == 0 { "FF8A3D" } else { "7C5CFF" }))];
+        s.style.borders.clear();
+        stripes.push(ops::insert_drawn(page, s));
+    }
+    ops::use_as_mask(page, &stripes);
+
+    // Boolean: a ring with a drop shadow.
+    let outer = ops::insert_drawn(page, Layer::oval(Frame::new(220.0, 560.0, 140.0, 140.0)));
+    let inner = ops::insert_drawn(page, Layer::oval(Frame::new(260.0, 600.0, 60.0, 60.0)));
+    let ring = ops::boolean(page, &[outer, inner], BooleanOp::Subtract).expect("subtract");
+    let ring = page.find_mut(ring).unwrap();
+    ring.name = "Ring".into();
+    ring.style.fills = vec![gradient(GradientKind::Linear, (0.5, 0.0), (0.5, 1.0), &[("2EC4B6", 0.0), ("1F8FFF", 1.0)])];
+    ring.style.borders.clear();
+    ring.style.shadows = vec![Shadow { blur: 12.0, offset_y: 6.0, color: Color::BLACK.with_alpha(0.35), ..Shadow::drop() }];
+
+    doc
+}

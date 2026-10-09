@@ -52,6 +52,7 @@ pub mod shortcuts {
     pub const DIFFERENCE: KeyboardShortcut = cmd_alt(Key::X);
     pub const CONVERT_TO_PATH: KeyboardShortcut = cmd_alt(Key::F);
     pub const OUTLINE: KeyboardShortcut = cmd_shift(Key::O);
+    pub const MASK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::CTRL), Key::M);
 
     pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
         match op {
@@ -79,6 +80,8 @@ pub struct ScrawlApp {
     /// Layer or page currently being renamed, with the edit buffer.
     pub renaming: Option<(RenameTarget, String)>,
     pub lock_aspect: bool,
+    /// The gradient whose handles are shown on the canvas.
+    pub gradient_edit: Option<crate::canvas::GradientTarget>,
     pub file_path: Option<PathBuf>,
     /// Document as last saved/loaded, to detect unsaved changes.
     saved: Document,
@@ -117,6 +120,7 @@ impl ScrawlApp {
             expanded: HashSet::new(),
             renaming: None,
             lock_aspect: false,
+            gradient_edit: None,
             file_path: None,
             clipboard: vec![],
             error: None,
@@ -160,7 +164,7 @@ impl ScrawlApp {
         }
     }
 
-    fn set_document(&mut self, doc: Document, path: Option<PathBuf>) {
+    pub fn set_document(&mut self, doc: Document, path: Option<PathBuf>) {
         self.page = doc.pages[0].id;
         self.history = History::new(&doc);
         self.saved = doc.clone();
@@ -192,6 +196,12 @@ impl ScrawlApp {
             rfd::MessageDialogResult::Yes => self.save(),
             rfd::MessageDialogResult::No => true,
             _ => false,
+        }
+    }
+
+    pub fn open_sample(&mut self) {
+        if self.confirm_discard() {
+            self.set_document(scrawl_core::sample::sample_document(), None);
         }
     }
 
@@ -345,6 +355,11 @@ impl ScrawlApp {
             Ok(id) => self.selection = vec![id],
             Err(e) => self.error = Some(format!("Couldn't {}: {e}", op.label().to_lowercase())),
         }
+    }
+
+    pub fn use_as_mask(&mut self) {
+        let sel = self.selection.clone();
+        self.selection = ops::use_as_mask(self.page_mut(), &sel);
     }
 
     pub fn convert_to_paths(&mut self) {
@@ -542,6 +557,9 @@ impl ScrawlApp {
         if pressed(OUTLINE) {
             self.outline_strokes();
         }
+        if pressed(MASK) {
+            self.use_as_mask();
+        }
         if pressed(UNGROUP) {
             self.ungroup_selection();
         }
@@ -628,7 +646,9 @@ impl ScrawlApp {
                     }
                 }
                 Key::Escape => {
-                    if self.tool != Tool::Select {
+                    if self.gradient_edit.take().is_some() {
+                        // Escape first dismisses the gradient handles.
+                    } else if self.tool != Tool::Select {
                         self.tool = Tool::Select;
                     } else if !self.canvas.cancel() {
                         // Escape walks up to the parent group.
@@ -659,6 +679,11 @@ impl ScrawlApp {
             && (self.selection != [edit.id] || self.tool != Tool::Select)
         {
             self.canvas.edit = None;
+        }
+        if let Some(target) = self.gradient_edit
+            && (self.selection != [target.layer] || self.page().find(target.layer).and_then(|l| target.gradient(l)).is_none())
+        {
+            self.gradient_edit = None;
         }
         // Commit an undo step once an interaction is finished: no pointer button held and no text
         // field being edited. A whole drag or a run of typing becomes a single step.

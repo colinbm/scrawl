@@ -4,6 +4,8 @@ mod dev;
 mod gpu;
 mod style;
 mod ui;
+#[cfg(test)]
+mod ui_tests;
 mod vector;
 mod viewport;
 

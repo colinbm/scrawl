@@ -26,11 +26,16 @@
 - ⬜ Scissors, rotate copies, per-point corner radius, vector point snapping
 
 ## Milestone 3 — Styling
-- ⬜ Gradients (linear, radial, angular), image fills, fill blend modes
-- ⬜ Shadows & inner shadows, layer/background blur (Vello lacks general blur — needs a filter pass)
-- ⬜ Border options: dash, caps, joins, arrowheads
-- ⬜ Layer blend modes, masks (alpha/outline)
-- ⬜ Color picker with document/global swatches
+- ✅ Linear, radial and angular gradients on fills and borders, with a stops editor and on-canvas handles
+- ✅ Paint popover: HSV picker, hex/alpha, per-fill blend modes, document color swatches
+- ✅ Drop shadows and inner shadows (offset, blur, spread). Exact Gaussian for rects/circles; banded approximation for other shapes
+- ✅ Border options: dash/gap, caps, joins; start/end markers (arrows, circles, squares, line) on open paths
+- ✅ Layer blend modes (16 modes); "Use as Mask" ⌃⌘M (outline masks clip layers above in the same group)
+- ✅ Headless GPU exporter (`scrawl_render::export`) with pixel tests; whole-app UI tests in egui_kittest
+- ⬜ Image fills and image layers (needs asset storage in the file format)
+- ⬜ True GPU blur pass (replace banded shadows; enables layer and background blur)
+- ⬜ Alpha/luminance masks, "ignore underlying mask"
+- ⬜ Noise fills, pattern fills, gradient interpolation options
 
 ## Milestone 4 — Text
 - ⬜ Text layers via `parley` (shaping, font fallback), Vello glyph rendering

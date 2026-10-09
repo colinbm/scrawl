@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::path::{CurvePoint, PathShape};
+use crate::style::BlendMode;
 use crate::{Color, Frame, Style, geometry::union_rects};
 
 /// Tolerance used when flattening analytic shapes to Béziers.
@@ -41,6 +42,11 @@ pub struct Layer {
     pub flip_vertical: bool,
     #[serde(default = "default_opacity")]
     pub opacity: f64,
+    #[serde(default)]
+    pub blend_mode: BlendMode,
+    /// Clips the layers above it within the same parent ("Use as Mask").
+    #[serde(default)]
+    pub is_mask: bool,
     #[serde(default)]
     pub style: Style,
     #[serde(flatten)]
@@ -151,6 +157,8 @@ impl Layer {
             flip_horizontal: false,
             flip_vertical: false,
             opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+            is_mask: false,
             style: Style::default(),
             kind,
         }

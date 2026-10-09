@@ -20,6 +20,7 @@ pub enum Icon {
     Difference,
     Group,
     Ungroup,
+    Mask,
     Eye,
     EyeClosed,
     Lock,
@@ -107,6 +108,15 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             }
             p.rect_stroke(a, 0.0, Stroke::new(1.0, faint), StrokeKind::Middle);
             p.rect_stroke(b, 0.0, Stroke::new(1.0, faint), StrokeKind::Middle);
+        }
+        Icon::Mask => {
+            p.circle_stroke(c, 5.5 * u, st);
+            let mut pts = vec![];
+            for i in 0..=16 {
+                let a = std::f32::consts::FRAC_PI_2 + i as f32 / 16.0 * std::f32::consts::PI;
+                pts.push(at(5.5 * a.cos(), 5.5 * a.sin()));
+            }
+            p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
         }
         Icon::Group => {
             p.rect_stroke(r(-6.0, -4.0, 6.0, 5.5), 1.0, st, StrokeKind::Middle);
@@ -222,6 +232,8 @@ pub fn small_button(ui: &mut egui::Ui, icon: Icon, tooltip: &str) -> egui::Respo
 
 fn icon_button_sized(ui: &mut egui::Ui, icon: Icon, selected: bool, tooltip: &str, size: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::click());
+    // Icon-only buttons use their tooltip as the accessible name.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip));
     let visuals = ui.visuals();
     if selected {
         ui.painter().rect_filled(rect, 4.0, visuals.selection.bg_fill);

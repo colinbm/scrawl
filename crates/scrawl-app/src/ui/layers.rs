@@ -122,7 +122,7 @@ fn collect_rows(layers: &[Layer], depth: usize, app: &ScrawlApp, out: &mut Vec<R
             id: l.id,
             depth,
             name: l.name.clone(),
-            icon: icons::for_layer(&l.kind),
+            icon: if l.is_mask { Icon::Mask } else { icons::for_layer(&l.kind) },
             container,
             expanded,
             visible: l.visible,

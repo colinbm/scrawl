@@ -9,7 +9,11 @@ cargo run -p scrawl-app --release                     # empty document
 cargo run -p scrawl-core --example sample demo.scrawl  # generate a sample file
 cargo run -p scrawl-app --release -- demo.scrawl       # open it
 cargo test --workspace
+cargo run -p scrawl-render --example render -- demo.scrawl out.png 2   # headless PNG render
 ```
+
+UI tests run the whole app offscreen with egui_kittest (wgpu); set `SCRAWL_UI_SHOTS=dir` to save
+a PNG of each test's final frame. GPU tests skip themselves when no adapter is available.
 
 ## Architecture
 

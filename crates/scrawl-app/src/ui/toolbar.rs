@@ -115,6 +115,9 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                     }
                 }
             });
+            if item(ui, "Use as Mask", Some(shortcuts::MASK), has_sel) {
+                app.use_as_mask();
+            }
             ui.menu_button("Path", |ui| {
                 if item(ui, "Edit Points", None, app.selection.len() == 1) {
                     app.enter_vector_edit(app.selection[0]);
@@ -129,6 +132,11 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                     app.reverse_paths();
                 }
             });
+        });
+        ui.menu_button("Help", |ui| {
+            if item(ui, "Open Sample Document", None, true) {
+                app.open_sample();
+            }
         });
         ui.menu_button("View", |ui| {
             if item(ui, "Zoom In", Some(shortcuts::ZOOM_IN), true) {
