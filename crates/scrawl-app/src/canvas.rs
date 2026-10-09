@@ -2,6 +2,7 @@
 
 use egui::{Color32, CursorIcon, Painter, PointerButton, Pos2, Rect as ERect, Sense, Stroke, StrokeKind, vec2};
 use scrawl_core::hit::{self, Hit};
+use scrawl_core::snap::{self, Feedback, Targets};
 use scrawl_core::kurbo::{Affine, BezPath, Point, Rect, Shape, Vec2};
 use scrawl_core::{FillType, Frame, Gradient, Layer, LayerId, LayerKind, Page, ops};
 
@@ -208,6 +209,8 @@ enum Drag {
         origin: Point,
         applied: Vec2,
         ids: Vec<LayerId>,
+        /// Page-space bounds of the moving layers at drag start, for snapping.
+        start: Option<Rect>,
     },
     Resize {
         id: LayerId,
@@ -238,6 +241,18 @@ enum Drag {
     },
 }
 
+impl Drag {
+    /// The layers this drag moves or reshapes, if it should snap.
+    fn moving(&self) -> Option<Vec<LayerId>> {
+        match self {
+            Drag::Move { ids, .. } => Some(ids.clone()),
+            Drag::Resize { id, .. } | Drag::LineEnd { id, .. } => Some(vec![*id]),
+            Drag::ResizeMany { starts, .. } => Some(starts.iter().map(|(l, _)| l.id).collect()),
+            _ => None,
+        }
+    }
+}
+
 pub struct CanvasState {
     drag: Option<Drag>,
     /// Point-editing mode for a path layer.
@@ -251,17 +266,33 @@ pub struct CanvasState {
     pub rect: ERect,
     /// Artboard title label rects from the most recent frame, for click-to-select.
     title_hits: Vec<(ERect, LayerId)>,
+    /// What the current drag can snap to.
+    snap: Option<Targets>,
+    /// Smart guides to show for the current drag.
+    feedback: Feedback,
 }
 
 impl Default for CanvasState {
     fn default() -> Self {
-        Self { drag: None, edit: None, pen: None, text_edit: None, hover: None, rect: ERect::ZERO, title_hits: vec![] }
+        Self {
+            drag: None,
+            edit: None,
+            pen: None,
+            text_edit: None,
+            hover: None,
+            rect: ERect::ZERO,
+            title_hits: vec![],
+            snap: None,
+            feedback: Feedback::default(),
+        }
     }
 }
 
 impl CanvasState {
     /// Abandons any in-progress drag. Returns whether there was one.
     pub fn cancel(&mut self) -> bool {
+        self.snap = None;
+        self.feedback = Feedback::default();
         self.drag.take().is_some()
     }
 }
@@ -353,6 +384,7 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
     let (mods, press_origin, latest) =
         ui.input(|i| (i.modifiers, i.pointer.press_origin(), i.pointer.interact_pos().or(i.pointer.hover_pos())));
     let tolerance = HIT_TOLERANCE / vp.zoom;
+    let snap_threshold = crate::snapping::THRESHOLD / vp.zoom;
     let entered = entered_groups(app.page(), &app.selection);
 
     // --- Drag start ---------------------------------------------------------------------------
@@ -360,10 +392,27 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
         && let Some(screen) = press_origin
     {
         let p = vp.to_page(rect, screen);
+        app.canvas.snap = None;
         app.canvas.drag = match app.tool {
             Tool::Select => begin_select_drag(app, screen, p, mods, tolerance, &entered, rect),
-            tool => Some(begin_create(app, tool, round(p))),
+            tool => {
+                let mut origin = round(p);
+                if app.snap_to_layers {
+                    let targets = crate::snapping::targets(app, &[], Some(p));
+                    if !mods.ctrl {
+                        origin = snap::snap_point(origin, &targets, snap_threshold, (true, true)).0;
+                    }
+                    app.canvas.snap = Some(targets);
+                }
+                Some(begin_create(app, tool, origin))
+            }
         };
+        if app.tool == Tool::Select
+            && app.snap_to_layers
+            && let Some(moving) = app.canvas.drag.as_ref().and_then(Drag::moving)
+        {
+            app.canvas.snap = Some(crate::snapping::targets(app, &moving, None));
+        }
     }
 
     // --- Drag update --------------------------------------------------------------------------
@@ -372,6 +421,18 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
     {
         let p = vp.to_page(rect, pos);
         let page = app.doc.page_mut(app.page).expect("current page exists");
+        // ⌃ suspends snapping for as long as it's held.
+        let snap = app.canvas.snap.as_ref().filter(|_| !mods.ctrl);
+        let mut fb = Feedback::default();
+        let snap_handle = |p: Point, handle: Handle, aligned: bool, fb: &mut Feedback| match snap {
+            Some(t) if aligned => {
+                let (u, v) = handle.unit();
+                let (q, f) = snap::snap_point(p, t, snap_threshold, (u != 0.5, v != 0.5));
+                *fb = f;
+                q
+            }
+            _ => p,
+        };
         match drag {
             Drag::Pan => {}
             Drag::GradientHandle { target, end, to_local } => {
@@ -395,6 +456,7 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
                 page.refit_ancestor_groups(*id);
             }
             Drag::ResizeMany { handle, bounds, starts } => {
+                let p = snap_handle(p, *handle, true, &mut fb);
                 let nb = resized_rect(*bounds, *handle, p, mods.shift || app.lock_aspect, mods.alt);
                 let sx = if bounds.width() > 0.0 { nb.width() / bounds.width() } else { 1.0 };
                 let sy = if bounds.height() > 0.0 { nb.height() / bounds.height() } else { 1.0 };
@@ -415,16 +477,29 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
                     page.refit_ancestor_groups(first.id);
                 }
             }
-            Drag::Move { origin, applied, ids } => {
+            Drag::Move { origin, applied, ids, start } => {
                 let mut total = round_vec(p - *origin);
+                let mut axes = (true, true);
                 if mods.shift {
                     // Constrain to the dominant axis.
-                    if total.x.abs() > total.y.abs() { total.y = 0.0 } else { total.x = 0.0 }
+                    if total.x.abs() > total.y.abs() {
+                        total.y = 0.0;
+                        axes.1 = false;
+                    } else {
+                        total.x = 0.0;
+                        axes.0 = false;
+                    }
+                }
+                if let (Some(t), Some(b)) = (snap, start) {
+                    let (offset, f) = snap::snap_rect(*b + total, t, snap_threshold, axes);
+                    total += offset;
+                    fb = f;
                 }
                 ops::move_by(page, ids, total - *applied);
                 *applied = total;
             }
             Drag::Resize { id, handle, start, to_local } => {
+                let p = snap_handle(p, *handle, crate::snapping::axis_aligned(*to_local), &mut fb);
                 let r = resized_rect(start.frame.local_rect(), *handle, *to_local * p, mods.shift || app.lock_aspect, mods.alt);
                 let mut layer = start.clone();
                 layer.reframe(r);
@@ -442,6 +517,10 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
                     let mut moved = round(p);
                     if mods.shift {
                         moved = snap_angle(fixed, moved);
+                    } else if let Some(t) = snap {
+                        let (q, f) = snap::snap_point(moved, t, snap_threshold, (true, true));
+                        moved = q;
+                        fb = f;
                     }
                     let (a, b) = if *end == 0 { (moved, fixed) } else { (fixed, moved) };
                     let inv = parent_to_page.inverse();
@@ -463,13 +542,24 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
                 app.selection = sel;
             }
             Drag::Create { id, tool, origin, parent_origin } => {
-                update_create(page, *id, *tool, *origin, round(p), *parent_origin, mods);
+                let mut q = round(p);
+                if let Some(t) = snap
+                    && !(*tool == Tool::Line && mods.shift)
+                {
+                    let (s, f) = snap::snap_point(q, t, snap_threshold, (true, true));
+                    q = s;
+                    fb = f;
+                }
+                update_create(page, *id, *tool, *origin, q, *parent_origin, mods);
             }
         }
+        app.canvas.feedback = fb;
     }
 
     // --- Drag end -----------------------------------------------------------------------------
     if response.drag_stopped() {
+        app.canvas.snap = None;
+        app.canvas.feedback = Feedback::default();
         match app.canvas.drag.take() {
             Some(Drag::Move { ids, .. }) => ops::reparent_to_artboards(app.page_mut(), &ids),
             Some(Drag::Create { id, tool: Tool::Text, .. }) => {
@@ -650,7 +740,9 @@ fn begin_select_drag(
                 // Option-drag duplicates.
                 app.duplicate_selection();
             }
-            Some(Drag::Move { origin: p, applied: Vec2::ZERO, ids: app.selection.clone() })
+            let ids = app.selection.clone();
+            let start = app.page().selection_bounds(&ops::normalize_selection(app.page(), &ids));
+            Some(Drag::Move { origin: p, applied: Vec2::ZERO, ids, start })
         }
         Hit::ArtboardBackground(_) | Hit::Nothing => {
             let base = if mods.shift { app.selection.clone() } else { vec![] };
@@ -989,6 +1081,25 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
             let t = to_screen * world;
             let local = layer.frame.local_rect();
             visible_handles(t, local).for_each(|h| handle(to_pos(t * h.position(local)), false));
+        }
+    }
+
+    // Smart guides while dragging; distances while holding ⌥.
+    crate::snapping::paint_feedback(p, &app.canvas.feedback, to_screen);
+    let alt = p.ctx().input(|i| i.modifiers.alt);
+    if alt
+        && app.canvas.drag.is_none()
+        && app.canvas.edit.is_none()
+        && app.canvas.text_edit.is_none()
+        && let Some(sel) = page.selection_bounds(&app.selection)
+    {
+        let other = match app.canvas.hover.filter(|h| !app.selection.contains(h)) {
+            Some(h) => Some(h),
+            // Nothing else hovered: measure to the parent container.
+            None => app.selection.first().and_then(|&id| page.parent(id)).flatten(),
+        };
+        if let Some(o) = other.and_then(|o| page.world_bounds(o)) {
+            crate::snapping::paint_measurements(p, sel, o, to_screen);
         }
     }
 

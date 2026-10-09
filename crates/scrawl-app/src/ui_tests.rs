@@ -47,6 +47,37 @@ fn click_page(h: &mut Harness<'_, ScrawlApp>, x: f64, y: f64) {
     }
 }
 
+fn page_to_screen(h: &Harness<'_, ScrawlApp>, x: f64, y: f64) -> egui::Pos2 {
+    let app = h.state();
+    let s = app.viewport().transform() * scrawl_core::kurbo::Point::new(x, y);
+    app.canvas.rect.min + egui::vec2(s.x as f32, s.y as f32)
+}
+
+/// Drags between two page-space points in small steps. Leaves the button held if `release` is
+/// false, so a test can inspect the canvas mid-drag.
+fn drag_page(h: &mut Harness<'_, ScrawlApp>, from: (f64, f64), to: (f64, f64), modifiers: egui::Modifiers, release: bool) {
+    let (a, b) = (page_to_screen(h, from.0, from.1), page_to_screen(h, to.0, to.1));
+    let button = egui::PointerButton::Primary;
+    h.event(egui::Event::ModifiersChanged(modifiers));
+    h.event(egui::Event::PointerMoved(a));
+    h.run();
+    h.event(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers });
+    h.run();
+    for i in 1..=8 {
+        h.event(egui::Event::PointerMoved(a + (b - a) * (i as f32 / 8.0)));
+        h.run();
+    }
+    if release {
+        h.event(egui::Event::PointerButton { pos: b, button, pressed: false, modifiers });
+        h.run();
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    }
+}
+
+fn frame_of(h: &Harness<'_, ScrawlApp>, id: LayerId) -> scrawl_core::Frame {
+    h.state().page().find(id).expect("layer exists").frame
+}
+
 fn text_of(h: &Harness<'_, ScrawlApp>, id: LayerId) -> Option<String> {
     match &h.state().page().find(id)?.kind {
         scrawl_core::LayerKind::Text(t) => Some(t.text.clone()),
@@ -170,4 +201,69 @@ fn edit_existing_text_is_one_undo_step() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(text_of(&h, id).as_deref(), Some("Good morning"));
+}
+
+/// Replaces the document with an artboard holding two rectangles, A and B, returning their ids.
+fn two_rects(h: &mut Harness<'_, ScrawlApp>) -> (LayerId, LayerId) {
+    use scrawl_core::{Frame, Layer, ops};
+    let mut doc = scrawl_core::Document::default();
+    let page = &mut doc.pages[0];
+    ops::insert_drawn(page, Layer::artboard("Board", Frame::new(0.0, 0.0, 400.0, 400.0)));
+    let a = ops::insert_drawn(page, Layer::rectangle(Frame::new(100.0, 100.0, 100.0, 100.0)));
+    let b = ops::insert_drawn(page, Layer::rectangle(Frame::new(300.0, 250.0, 50.0, 50.0)));
+    h.state_mut().set_document(doc, None);
+    h.run();
+    h.run();
+    (a, b)
+}
+
+#[test]
+fn moving_snaps_to_nearby_edges() {
+    let Some(mut h) = harness() else { return };
+    let (_, b) = two_rects(&mut h);
+    // B's left edge dragged from 300 to 203 snaps to A's right edge (200).
+    drag_page(&mut h, (325.0, 275.0), (228.0, 275.0), egui::Modifiers::NONE, false);
+    save(&mut h, "snap_guides");
+    h.event(egui::Event::PointerButton {
+        pos: page_to_screen(&h, 228.0, 275.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    assert_eq!(frame_of(&h, b).x, 200.0);
+    assert_eq!(frame_of(&h, b).y, 250.0);
+
+    // Holding ⌃ turns snapping off.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(frame_of(&h, b).x, 300.0);
+    drag_page(&mut h, (325.0, 275.0), (228.0, 275.0), egui::Modifiers::CTRL, true);
+    assert_eq!(frame_of(&h, b).x, 203.0);
+}
+
+#[test]
+fn resizing_snaps_the_dragged_edge() {
+    let Some(mut h) = harness() else { return };
+    let (_, b) = two_rects(&mut h);
+    h.state_mut().selection = vec![b];
+    h.run();
+    // Drag B's bottom-right handle from (350, 300) to (397, 203): snaps to the artboard's right
+    // edge (400) and A's bottom edge (200).
+    drag_page(&mut h, (350.0, 300.0), (397.0, 203.0), egui::Modifiers::NONE, true);
+    let f = frame_of(&h, b);
+    assert_eq!((f.x, f.y, f.width, f.height), (300.0, 200.0, 100.0, 50.0), "{f:?}");
+}
+
+#[test]
+fn option_shows_measurements() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    select(&mut h, "Avatar");
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+    let star = page_to_screen(&h, 306.0, 240.0);
+    h.event(egui::Event::PointerMoved(star));
+    h.run();
+    h.run();
+    save(&mut h, "measurements");
 }

@@ -13,6 +13,7 @@ pub mod layer;
 pub mod ops;
 pub mod path;
 pub mod sample;
+pub mod snap;
 pub mod style;
 pub mod text;
 

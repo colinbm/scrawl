@@ -154,6 +154,9 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
             if item(ui, "Zoom to Selection", Some(shortcuts::ZOOM_SELECTION), has_sel) {
                 app.zoom_to_selection(crate::viewport::MAX_ZOOM);
             }
+            ui.separator();
+            ui.checkbox(&mut app.snap_to_layers, "Snap to Layers")
+                .on_hover_text("Hold ⌃ while dragging to snap temporarily off");
         });
     });
 }

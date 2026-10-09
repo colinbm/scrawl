@@ -81,6 +81,8 @@ pub struct ScrawlApp {
     /// Layer or page currently being renamed, with the edit buffer.
     pub renaming: Option<(RenameTarget, String)>,
     pub lock_aspect: bool,
+    /// Snap drags to other layers, guides and grids.
+    pub snap_to_layers: bool,
     /// The gradient whose handles are shown on the canvas.
     pub gradient_edit: Option<crate::canvas::GradientTarget>,
     pub file_path: Option<PathBuf>,
@@ -122,6 +124,7 @@ impl ScrawlApp {
             expanded: HashSet::new(),
             renaming: None,
             lock_aspect: false,
+            snap_to_layers: true,
             gradient_edit: None,
             file_path: None,
             clipboard: vec![],
