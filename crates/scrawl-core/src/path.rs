@@ -67,6 +67,23 @@ pub struct CurvePoint {
     pub curve_to: Option<Point>,
     #[serde(default)]
     pub mode: PointMode,
+    /// Rounds a sharp corner between two straight segments, in local units (not normalized).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub corner_radius: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// A rounded corner: where it leaves the incoming edge and joins the outgoing one, with the
+/// arc's control points.
+#[derive(Clone, Copy, Debug)]
+struct Corner {
+    entry: Point,
+    c1: Point,
+    c2: Point,
+    exit: Point,
 }
 
 /// Identifies a point within a [`PathShape`].
@@ -87,16 +104,16 @@ pub enum HandleSide {
 
 impl CurvePoint {
     pub fn corner(point: Point) -> Self {
-        Self { point, curve_from: None, curve_to: None, mode: PointMode::Straight }
+        Self { point, curve_from: None, curve_to: None, mode: PointMode::Straight, corner_radius: 0.0 }
     }
 
     /// A smooth point whose outgoing handle is at `out`; the incoming one is mirrored.
     pub fn smooth(point: Point, out: Point) -> Self {
-        Self { point, curve_from: Some(out), curve_to: Some(point - (out - point)), mode: PointMode::Mirrored }
+        Self { point, curve_from: Some(out), curve_to: Some(point - (out - point)), mode: PointMode::Mirrored, corner_radius: 0.0 }
     }
 
     fn map(self, f: impl Fn(Point) -> Point) -> Self {
-        Self { point: f(self.point), curve_from: self.curve_from.map(&f), curve_to: self.curve_to.map(&f), mode: self.mode }
+        Self { point: f(self.point), curve_from: self.curve_from.map(&f), curve_to: self.curve_to.map(&f), ..self }
     }
 
     pub fn translate(&mut self, d: Vec2) {
@@ -203,12 +220,59 @@ impl Subpath {
                 let (l, r) = (c.subsegment(0.0..t), c.subsegment(t..1.0));
                 self.points[i].curve_from = Some(l.p1);
                 self.points[j].curve_to = Some(r.p2);
-                CurvePoint { point: at, curve_to: Some(l.p2), curve_from: Some(r.p1), mode: PointMode::Asymmetric }
+                CurvePoint { point: at, curve_to: Some(l.p2), curve_from: Some(r.p1), mode: PointMode::Asymmetric, corner_radius: 0.0 }
             }
             _ => CurvePoint::corner(at),
         };
         self.points.insert(i + 1, new);
         i + 1
+    }
+
+    /// The rounding of point `i`, if it has a radius and sits between two straight segments.
+    /// The radius shrinks so the arc fits in half of each edge.
+    fn corner(&self, i: usize) -> Option<Corner> {
+        let n = self.points.len();
+        let p = &self.points[i];
+        if p.corner_radius <= 0.0 || p.curve_from.is_some() || p.curve_to.is_some() || n < 3 {
+            return None;
+        }
+        if !self.closed && (i == 0 || i == n - 1) {
+            return None;
+        }
+        let prev = &self.points[(i + n - 1) % n];
+        let next = &self.points[(i + 1) % n];
+        if prev.curve_from.is_some() || next.curve_to.is_some() {
+            return None;
+        }
+        let (a, b, c) = (prev.point, p.point, next.point);
+        let (la, lc) = ((a - b).hypot(), (c - b).hypot());
+        if la < 1e-9 || lc < 1e-9 {
+            return None;
+        }
+        let (u, v) = ((a - b) / la, (c - b) / lc);
+        let theta = u.dot(v).clamp(-1.0, 1.0).acos();
+        if theta < 1e-6 || (std::f64::consts::PI - theta) < 1e-6 {
+            return None;
+        }
+        let half = (theta / 2.0).tan();
+        let d = (p.corner_radius / half).min(la / 2.0).min(lc / 2.0);
+        let r = d * half;
+        let sweep = std::f64::consts::PI - theta;
+        let h = 4.0 / 3.0 * (sweep / 4.0).tan() * r;
+        let (entry, exit) = (b + u * d, b + v * d);
+        Some(Corner { entry, c1: entry - u * h, c2: exit - v * h, exit })
+    }
+
+    /// Removes segment `i`: a closed subpath opens there; an open one splits in two. Returns the
+    /// pieces with at least two points.
+    pub fn cut(&self, i: usize) -> Vec<Subpath> {
+        let n = self.points.len();
+        if self.closed {
+            let points = (0..n).map(|k| self.points[(i + 1 + k) % n]).collect();
+            return vec![Subpath { points, closed: false }];
+        }
+        let (a, b) = self.points.split_at((i + 1).min(n));
+        [a, b].into_iter().filter(|p| p.len() >= 2).map(|p| Subpath { points: p.to_vec(), closed: false }).collect()
     }
 
     pub fn reverse(&mut self) {
@@ -258,17 +322,26 @@ impl PathShape {
         Self { subpaths: self.subpaths.iter().map(|s| s.map(f)).collect(), fill_rule: self.fill_rule }
     }
 
-    /// Treats the stored coordinates as absolute and builds a Bézier path.
+    /// Treats the stored coordinates as absolute and builds a Bézier path, rounding corners
+    /// that have a radius.
     pub fn to_absolute_bez_path(&self) -> BezPath {
         let mut path = BezPath::new();
         for sp in &self.subpaths {
-            let Some(first) = sp.points.first() else { continue };
-            path.move_to(first.point);
+            if sp.points.is_empty() {
+                continue;
+            }
+            let n = sp.points.len();
+            let corners: Vec<Option<Corner>> = (0..n).map(|i| sp.corner(i)).collect();
+            path.move_to(corners[0].map_or(sp.points[0].point, |c| c.exit));
             for i in 0..sp.segment_count() {
+                let j = (i + 1) % n;
                 match sp.segment(i) {
-                    PathSeg::Line(l) => path.line_to(l.p1),
+                    PathSeg::Line(l) => path.line_to(corners[j].map_or(l.p1, |c| c.entry)),
                     PathSeg::Cubic(c) => path.curve_to(c.p1, c.p2, c.p3),
                     PathSeg::Quad(q) => path.quad_to(q.p1, q.p2),
+                }
+                if let Some(c) = corners[j] {
+                    path.curve_to(c.c1, c.c2, c.exit);
                 }
             }
             if sp.closed {
@@ -419,6 +492,46 @@ mod tests {
         assert_eq!(i, 1);
         assert!((sp.points[1].point - before.eval(0.3)).hypot() < 1e-9);
         assert!((sp.segment(1).eval(0.5) - before.eval(0.65)).hypot() < 1e-9);
+    }
+
+    fn square(radius_at: &[(usize, f64)]) -> PathShape {
+        let mut points: Vec<CurvePoint> =
+            [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)].iter().map(|&(x, y)| CurvePoint::corner(Point::new(x, y))).collect();
+        for &(i, r) in radius_at {
+            points[i].corner_radius = r;
+        }
+        PathShape::single(points, true)
+    }
+
+    #[test]
+    fn corner_radius_rounds_one_corner() {
+        let plain = square(&[]).to_absolute_bez_path().area().abs();
+        let rounded = square(&[(2, 10.0)]).to_absolute_bez_path().area().abs();
+        // A 10-radius corner trims r² − πr²/4.
+        let trimmed = 100.0 - std::f64::consts::PI * 25.0;
+        assert!((plain - rounded - trimmed).abs() < 0.1, "{}", plain - rounded);
+        // Radii too big for the edges shrink to fit half of each.
+        let all = square(&[(0, 500.0), (1, 500.0), (2, 500.0), (3, 500.0)]).to_absolute_bez_path();
+        let circle = std::f64::consts::PI * 50.0 * 50.0;
+        assert!((all.area().abs() - circle).abs() < 5.0);
+        // The radius survives normalizing and scaling, staying in local units.
+        let (_, norm) = square(&[(2, 10.0)]).fit();
+        let again = norm.to_bez_path(100.0, 100.0).area().abs();
+        assert!((again - rounded).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cutting_segments() {
+        let closed = &square(&[]).subpaths[0];
+        let open = closed.cut(1);
+        assert_eq!(open.len(), 1);
+        assert!(!open[0].closed);
+        assert_eq!(open[0].points[0].point, Point::new(100.0, 100.0), "opens where the cut was");
+        assert_eq!(open[0].points.len(), 4);
+        let pieces = open[0].cut(1);
+        assert_eq!(pieces.iter().map(|p| p.points.len()).collect::<Vec<_>>(), [2, 2]);
+        // Cutting an end segment drops the lone point.
+        assert_eq!(open[0].cut(0).iter().map(|p| p.points.len()).collect::<Vec<_>>(), [3]);
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod plugins;
 mod prefs;
 mod preview;
 mod prototyping;
+mod rotate_copies;
 mod rulers;
 mod snapping;
 mod style;

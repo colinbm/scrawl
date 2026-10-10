@@ -23,7 +23,7 @@
 - ✅ Triangle / polygon / star shapes with editable sides, points, radius; independent corner radii
 - ✅ ⌘-drag corner to rotate (⇧ snaps 15°); multi-selection resize
 - ✅ Live boolean groups: Combine makes a shape group whose shapes stay editable, each with its own operation (inspector, layer list icons); Flatten / Convert to Path bakes it. Shape groups in design files import live
-- ⬜ Scissors, rotate copies, per-point corner radius, vector point snapping
+- ✅ Scissors (C in point editing, or Layer › Path), Rotate Copies with a live draggable pivot, per-point corner radius (round-trips through design files), point drags snap to layers, guides and the path's own points
 
 ## Milestone 3 — Styling
 - ✅ Linear, radial and angular gradients on fills and borders, with a stops editor and on-canvas handles

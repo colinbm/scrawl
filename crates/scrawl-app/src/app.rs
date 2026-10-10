@@ -972,6 +972,11 @@ impl ScrawlApp {
             for key in keys {
                 match key {
                     Key::Escape | Key::Enter => self.exit_vector_edit(),
+                    Key::C => {
+                        if let Some(e) = self.canvas.edit.as_mut() {
+                            e.scissors ^= true;
+                        }
+                    }
                     Key::Backspace | Key::Delete => crate::vector::delete_points(self),
                     Key::ArrowLeft => crate::vector::nudge_points(self, Vec2::new(-step, 0.0)),
                     Key::ArrowRight => crate::vector::nudge_points(self, Vec2::new(step, 0.0)),
@@ -991,6 +996,10 @@ impl ScrawlApp {
             if keys.contains(&Key::Escape) {
                 self.canvas.linking = None;
             }
+            return;
+        }
+        if self.canvas.rotate_copies.is_some() && keys.iter().any(|k| matches!(k, Key::Escape | Key::Enter)) {
+            crate::rotate_copies::finish(self);
             return;
         }
         if crate::vector::pen_active(self) {
@@ -1050,6 +1059,12 @@ impl ScrawlApp {
             && (self.selection != [edit.id] || self.tool != Tool::Select)
         {
             self.canvas.edit = None;
+        }
+        // Rotate Copies ends when its group is no longer what's selected (e.g. after undo).
+        if let Some(rc) = &self.canvas.rotate_copies
+            && (self.selection != [rc.group] || self.tool != Tool::Select)
+        {
+            self.canvas.rotate_copies = None;
         }
         // Picking a link destination ends with another tool, or if its layers went away.
         if let Some(sources) = &self.canvas.linking

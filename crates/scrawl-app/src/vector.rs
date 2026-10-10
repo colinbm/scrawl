@@ -18,18 +18,29 @@ const GRAB: f32 = 7.0;
 pub struct VectorEdit {
     pub id: LayerId,
     pub selected: Vec<PointRef>,
+    /// Scissors: clicking a segment cuts it out.
+    pub scissors: bool,
     drag: Option<EditDrag>,
 }
 
 enum EditDrag {
-    Points { start: Layer, shape: PathShape, to_local: Affine, origin: Point, refs: Vec<PointRef> },
+    Points {
+        start: Layer,
+        shape: PathShape,
+        to_local: Affine,
+        origin: Point,
+        refs: Vec<PointRef>,
+        /// The point under the pointer, which snaps, and what it snaps to.
+        grabbed: PointRef,
+        snap: Option<scrawl_core::snap::Targets>,
+    },
     Handle { start: Layer, shape: PathShape, to_local: Affine, r: PointRef, side: HandleSide },
     Marquee { origin: Pos2, current: Pos2, base: Vec<PointRef> },
 }
 
 impl VectorEdit {
     pub fn new(id: LayerId) -> Self {
-        Self { id, selected: vec![], drag: None }
+        Self { id, selected: vec![], scissors: false, drag: None }
     }
 }
 
@@ -109,18 +120,32 @@ pub fn edit_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Respons
         && let Some(screen) = press_origin
         && let Some((layer, shape, to_local)) = current_layer(app, id)
     {
-        let edit = app.canvas.edit.as_mut().expect("checked above");
         let local = to_local * vp.to_page(rect, screen);
-        edit.drag = match edit_hit(edit, &shape, t, screen) {
+        let hit = edit_hit(app.canvas.edit.as_ref().expect("checked above"), &shape, t, screen);
+        // Point drags snap to what's around (and the path's other points).
+        let moving = |edit: &VectorEdit, r: PointRef| {
+            if edit.selected.contains(&r) {
+                edit.selected.clone()
+            } else if mods.shift {
+                [edit.selected.clone(), vec![r]].concat()
+            } else {
+                vec![r]
+            }
+        };
+        let snap = match hit {
+            EditHit::Point(r) if app.snap_to_layers => {
+                let refs = moving(app.canvas.edit.as_ref().expect("checked above"), r);
+                Some(point_targets(app, id, &shape, &refs, to_local.inverse()))
+            }
+            _ => None,
+        };
+        let edit = app.canvas.edit.as_mut().expect("checked above");
+        edit.drag = match hit {
             EditHit::Handle(r, side) => Some(EditDrag::Handle { start: layer, shape, to_local, r, side }),
             EditHit::Point(r) => {
-                if !edit.selected.contains(&r) {
-                    if !mods.shift {
-                        edit.selected.clear();
-                    }
-                    edit.selected.push(r);
-                }
-                Some(EditDrag::Points { start: layer, shape, to_local, origin: local, refs: edit.selected.clone() })
+                edit.selected = moving(edit, r);
+                let refs = edit.selected.clone();
+                Some(EditDrag::Points { start: layer, shape, to_local, origin: local, refs, grabbed: r, snap })
             }
             EditHit::Segment { .. } | EditHit::Nothing => {
                 let base = if mods.shift { edit.selected.clone() } else { vec![] };
@@ -134,13 +159,31 @@ pub fn edit_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Respons
         && let Some(pos) = latest
     {
         let p = vp.to_page(rect, pos);
+        let threshold = crate::snapping::THRESHOLD / vp.zoom;
         let edit = app.canvas.edit.as_mut().expect("checked above");
         let mut write: Option<(Layer, PathShape)> = None;
+        let mut feedback = scrawl_core::snap::Feedback::default();
         match &mut edit.drag {
-            Some(EditDrag::Points { start, shape, to_local, origin, refs }) => {
+            Some(EditDrag::Points { start, shape, to_local, origin, refs, grabbed, snap }) => {
                 let mut d = *to_local * p - *origin;
+                let mut axes = (true, true);
                 if mods.shift {
-                    if d.x.abs() > d.y.abs() { d.y = 0.0 } else { d.x = 0.0 }
+                    if d.x.abs() > d.y.abs() {
+                        d.y = 0.0;
+                        axes.1 = false;
+                    } else {
+                        d.x = 0.0;
+                        axes.0 = false;
+                    }
+                }
+                // The grabbed point snaps (in page space) to other layers, guides and the path's
+                // own points; ⌃ suspends it.
+                if let (Some(t), Some(cp), false) = (snap.as_ref(), shape.point(*grabbed), mods.ctrl) {
+                    let to_page = to_local.inverse();
+                    let at = to_page * (cp.point + d);
+                    let (snapped, fb) = scrawl_core::snap::snap_point(at, t, threshold, axes);
+                    d = *to_local * snapped - cp.point;
+                    feedback = fb;
                 }
                 let mut s = shape.clone();
                 for &r in refs.iter() {
@@ -174,6 +217,7 @@ pub fn edit_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Respons
             }
             None => {}
         }
+        app.canvas.feedback = feedback;
         if let Some((start, s)) = write {
             commit_shape(app, id, &start, &s);
         }
@@ -183,6 +227,7 @@ pub fn edit_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Respons
         && let Some(edit) = app.canvas.edit.as_mut()
     {
         edit.drag = None;
+        app.canvas.feedback = Default::default();
     }
 
     if response.clicked_by(PointerButton::Primary)
@@ -199,6 +244,23 @@ pub fn edit_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Respons
                     }
                 } else {
                     edit.selected = vec![r];
+                }
+            }
+            EditHit::Segment { subpath, index, .. } if edit.scissors => {
+                if let Some((start, mut s, _)) = current_layer(app, id) {
+                    let pieces = s.subpaths[subpath].cut(index);
+                    s.subpaths.splice(subpath..=subpath, pieces);
+                    if let Some(edit) = app.canvas.edit.as_mut() {
+                        edit.selected.clear();
+                    }
+                    if s.subpaths.is_empty() {
+                        app.exit_vector_edit();
+                        ops::delete(app.page_mut(), &[id]);
+                    } else {
+                        // An open path can't have a fill that reads as a closed shape; keep its
+                        // style as it is.
+                        commit_shape(app, id, &start, &s);
+                    }
                 }
             }
             EditHit::Segment { subpath, index, t: param } => {
@@ -244,11 +306,33 @@ pub fn edit_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Respons
     {
         let icon = match edit_hit(edit, &shape, t, pos) {
             EditHit::Point(_) | EditHit::Handle(..) => CursorIcon::Move,
+            EditHit::Segment { .. } if edit.scissors => CursorIcon::Crosshair,
             EditHit::Segment { .. } => CursorIcon::Copy,
             EditHit::Nothing => CursorIcon::Default,
         };
         ui.ctx().set_cursor_icon(icon);
     }
+}
+
+/// What a point drag snaps to: the usual layer and guide targets, plus the path's own points that
+/// aren't moving. `to_page` maps the path's local space to page space.
+fn point_targets(app: &ScrawlApp, id: LayerId, shape: &PathShape, moving: &[PointRef], to_page: Affine) -> scrawl_core::snap::Targets {
+    let mut t = crate::snapping::targets(app, &[id], None);
+    for r in shape.point_refs().filter(|r| !moving.contains(r)) {
+        let p = to_page * shape.point(r).expect("listed").point;
+        t.add_line(scrawl_core::snap::Axis::X, p.x, (p.y, p.y));
+        t.add_line(scrawl_core::snap::Axis::Y, p.y, (p.x, p.x));
+    }
+    t
+}
+
+/// Sets the corner radius of the selected points.
+pub fn set_corner_radius(app: &mut ScrawlApp, radius: f64) {
+    edit_selected_points(app, |shape, r| {
+        if let Some(p) = shape.point_mut(r) {
+            p.corner_radius = radius.max(0.0);
+        }
+    });
 }
 
 /// Applies `f` to the selected points (absolute local coordinates) and writes the result back.

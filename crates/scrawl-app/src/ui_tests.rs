@@ -1105,3 +1105,74 @@ fn shape_groups_stay_editable() {
     h.run();
     assert_eq!(h.state().front().page().find(ring).unwrap().kind.type_name(), "Path");
 }
+
+fn path_of(h: &Harness<'_, Workspace>, id: LayerId) -> scrawl_core::PathShape {
+    h.state().front().page().find(id).unwrap().editable_path().unwrap()
+}
+
+#[test]
+fn point_editing_snaps_cuts_and_rounds() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let stripe = select(&mut h, "Stripe");
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().front().canvas.edit.is_some());
+    let origin = h.state().front().page().world_bounds(stripe).unwrap().origin();
+    // The top-left point, dragged 2 units off the artboard's left edge, snaps back onto it.
+    drag_page(&mut h, (origin.x, origin.y), (origin.x + 2.0, origin.y + 30.0), egui::Modifiers::NONE, true);
+    h.run();
+    let p = path_of(&h, stripe);
+    let world = h.state().front().page().world_transform(stripe).unwrap();
+    let moved = p.subpaths[0].points.iter().map(|c| world * c.point).min_by(|a, b| (a.y - origin.y - 30.0).abs().total_cmp(&(b.y - origin.y - 30.0).abs())).unwrap();
+    assert!((moved.x - origin.x).abs() < 1e-6, "snapped to the edge: {moved:?}");
+    assert!((moved.y - (origin.y + 30.0)).abs() < 6.0, "within snapping distance: {moved:?}");
+
+    // A corner radius on the selected point rounds it.
+    crate::vector::set_corner_radius(h.state_mut().front_mut(), 8.0);
+    h.run();
+    assert!(path_of(&h, stripe).subpaths[0].points.iter().any(|c| c.corner_radius == 8.0));
+    assert!(h.query_by_label("CORNER RADIUS").is_some());
+
+    // Scissors (C) cut the bottom edge out: the path opens.
+    h.key_press(egui::Key::C);
+    h.run();
+    assert!(h.state().front().canvas.edit.as_ref().unwrap().scissors);
+    let b = h.state().front().page().world_bounds(stripe).unwrap();
+    click_page(&mut h, b.center().x, b.y1);
+    assert!(!path_of(&h, stripe).subpaths[0].closed, "the cut opened the path");
+    save(&mut h, "scissors");
+}
+
+#[test]
+fn rotate_copies_with_a_live_pivot() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let star = select(&mut h, "Star");
+    crate::commands::execute(h.state_mut().front_mut(), crate::commands::Command::RotateCopies, &egui::Context::default());
+    h.run();
+    let group = h.state().front().canvas.rotate_copies.as_ref().map(|r| r.group).expect("rotating");
+    let count = |h: &Harness<'_, Workspace>| h.state().front().page().find(group).and_then(|g| g.children().map(Vec::len));
+    assert_eq!(count(&h), Some(6));
+    assert!(h.query_by_label("Rotate Copies").is_some());
+    crate::rotate_copies::set_count(h.state_mut().front_mut(), 3);
+    h.run();
+    let group = h.state().front().canvas.rotate_copies.as_ref().unwrap().group;
+    assert_eq!(h.state().front().page().find(group).unwrap().children().unwrap().len(), 4);
+    assert!(h.state().front().page().find(group).unwrap().children().unwrap().iter().any(|c| c.id == star), "the original is one of them");
+    // Dragging the pivot spreads them out.
+    let before = h.state().front().page().world_bounds(group).unwrap();
+    let sb = h.state().front().page().find(group).unwrap().children().unwrap()[0].bounds_in(scrawl_core::kurbo::Affine::IDENTITY).unwrap();
+    let parent = h.state().front().page().world_transform(group).unwrap();
+    let pivot = parent * scrawl_core::kurbo::Point::new(sb.center().x, sb.y1);
+    drag_page(&mut h, (pivot.x, pivot.y), (pivot.x, pivot.y + 60.0), egui::Modifiers::NONE, true);
+    h.run();
+    let group = h.state().front().canvas.rotate_copies.as_ref().expect("still rotating").group;
+    let after = h.state().front().page().world_bounds(group).unwrap();
+    assert!(after.width() > before.width() + 50.0, "{before:?} → {after:?}");
+    save(&mut h, "rotate_copies");
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().front().canvas.rotate_copies.is_none());
+    assert_eq!(h.state().front().selection, [group]);
+}

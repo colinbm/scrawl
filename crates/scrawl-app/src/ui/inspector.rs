@@ -52,6 +52,24 @@ pub fn show(app: &mut ScrawlApp, ui: &mut Ui) {
             points_section(app, ui);
             return;
         }
+        if let Some(count) = app.canvas.rotate_copies.as_ref().map(|r| r.count) {
+            ui.horizontal(|ui| {
+                ui.strong("Rotate Copies");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Done").clicked() {
+                        crate::rotate_copies::finish(app);
+                    }
+                });
+            });
+            ui.weak("Drag the pivot on the canvas to arrange the copies.");
+            ui.horizontal(|ui| {
+                let mut n = count as f64;
+                if num(ui, "Copies", &mut n, 0.1, "") {
+                    crate::rotate_copies::set_count(app, n.round().max(1.0) as u32);
+                }
+            });
+            return;
+        }
         match app.selection[..] {
             [] => {
                 ui.add_space(12.0);
@@ -748,7 +766,18 @@ fn points_section(app: &mut ScrawlApp, ui: &mut Ui) {
             }
         });
     });
-    ui.weak("Click a segment to add a point. Double-click a point to toggle curve. Keys 1–4 set the point type.");
+    let scissors = app.canvas.edit.as_ref().is_some_and(|e| e.scissors);
+    ui.weak(if scissors {
+        "Scissors: click a segment to cut it out."
+    } else {
+        "Click a segment to add a point. Double-click a point to toggle curve. Keys 1–4 set the point type."
+    });
+    let mut on = scissors;
+    if ui.toggle_value(&mut on, "✂ Scissors").on_hover_text("Cut segments out of the path (C)").changed()
+        && let Some(e) = app.canvas.edit.as_mut()
+    {
+        e.scissors = on;
+    }
     if selected.is_empty() {
         ui.add_space(8.0);
         ui.weak("No points selected");
@@ -766,6 +795,15 @@ fn points_section(app: &mut ScrawlApp, ui: &mut Ui) {
             }
         });
     }
+
+    section(ui, "Corner Radius");
+    let radius = shape.as_ref().and_then(|s| selected.first().and_then(|&r| s.point(r)).map(|p| p.corner_radius)).unwrap_or(0.0);
+    ui.horizontal(|ui| {
+        let mut r = radius;
+        if num(ui, "Radius", &mut r, 0.5, "") {
+            crate::vector::set_corner_radius(app, r);
+        }
+    });
 
     section(ui, "Point Type");
     let current: Option<PointMode> = shape.as_ref().and_then(|s| {

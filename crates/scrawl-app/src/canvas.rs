@@ -279,11 +279,13 @@ pub struct CanvasState {
     /// What the current drag can snap to.
     snap: Option<Targets>,
     /// Smart guides to show for the current drag.
-    feedback: Feedback,
+    pub(crate) feedback: Feedback,
     /// A ruler guide being dragged.
     pub guide_drag: Option<crate::rulers::GuideDrag>,
     /// Layers whose link destination is being picked by clicking an artboard.
     pub linking: Option<Vec<LayerId>>,
+    /// Rotate Copies in progress, with its pivot on the canvas.
+    pub rotate_copies: Option<crate::rotate_copies::RotateCopies>,
 }
 
 impl Default for CanvasState {
@@ -300,6 +302,7 @@ impl Default for CanvasState {
             feedback: Feedback::default(),
             guide_drag: None,
             linking: None,
+            rotate_copies: None,
         }
     }
 }
@@ -348,7 +351,10 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui) {
     }
     crate::rulers::interact(app, ui, rect);
     handle_navigation(app, ui, &response, rect);
-    if !handle_pan(app, ui, &response) && !crate::text_edit::pointer(app, ui, &response, rect) {
+    if !handle_pan(app, ui, &response)
+        && !crate::text_edit::pointer(app, ui, &response, rect)
+        && !crate::rotate_copies::pointer(app, ui, &response, rect)
+    {
         if app.canvas.linking.is_some() {
             crate::prototyping::link_pointer(app, ui, &response, rect);
         } else if app.canvas.edit.is_some() {
@@ -364,6 +370,7 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui) {
     let painter = ui.painter_at(rect);
     paint_overlays(app, &painter, rect);
     crate::prototyping::paint(app, &painter, rect, response.hover_pos());
+    crate::rotate_copies::paint(app, &painter, rect);
     crate::vector::paint_edit(app, &painter, rect);
     crate::vector::paint_pen(app, &painter, rect, response.hover_pos());
     crate::text_edit::paint(app, &painter, rect);

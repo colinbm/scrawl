@@ -542,6 +542,7 @@ fn subpath_in(v: &Value) -> Subpath {
                     4 => PointMode::Disconnected,
                     _ => PointMode::Straight,
                 },
+                corner_radius: num(p, "cornerRadius"),
             }
         })
         .collect();
@@ -804,7 +805,7 @@ fn text_attrs(ts: &TextStyle, color: Color, full: bool) -> Value {
 fn curve_point(p: &CurvePoint) -> Value {
     json!({
         "_class": "curvePoint",
-        "cornerRadius": 0,
+        "cornerRadius": p.corner_radius,
         "cornerStyle": 0,
         "curveFrom": point_str(p.curve_from.unwrap_or(p.point)),
         "curveTo": point_str(p.curve_to.unwrap_or(p.point)),
@@ -1004,7 +1005,7 @@ impl Exporter {
                     .iter()
                     .zip(radii)
                     .map(|(&(x, y), radius)| {
-                        let mut p = curve_point(&CurvePoint { point: Point::new(x, y), curve_from: None, curve_to: None, mode: PointMode::Straight });
+                        let mut p = curve_point(&CurvePoint::corner(Point::new(x, y)));
                         p["cornerRadius"] = json!(radius);
                         p
                     })

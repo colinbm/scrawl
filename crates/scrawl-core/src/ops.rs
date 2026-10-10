@@ -323,6 +323,28 @@ pub fn boolean(page: &mut Page, ids: &[LayerId], op: BooleanOp) -> Result<LayerI
     Ok(gid)
 }
 
+/// "Rotate Copies": `count` copies of layer `id` turned about `pivot` (in its parent's
+/// space) at equal angles, grouped with the original. Returns the group.
+pub fn rotate_copies(page: &mut Page, id: LayerId, count: u32, pivot: Point) -> Option<LayerId> {
+    let loc = page.location(id)?;
+    let layer = page.find(id)?.clone();
+    let center = layer.local_transform() * layer.frame.local_rect().center();
+    let mut ids = vec![id];
+    for k in 1..=count {
+        let angle = 360.0 * k as f64 / (count + 1) as f64;
+        let c = Affine::rotate_about(angle.to_radians(), pivot) * center;
+        let mut copy = layer.duplicate();
+        copy.rotation = (copy.rotation + angle).rem_euclid(360.0);
+        copy.frame.x = c.x - copy.frame.width / 2.0;
+        copy.frame.y = c.y - copy.frame.height / 2.0;
+        ids.push(copy.id);
+        page.insert(Location { parent: loc.parent, index: loc.index + k as usize }, copy).ok()?;
+    }
+    let g = group(page, &ids)?;
+    page.find_mut(g)?.name = "Rotated Copies".into();
+    Some(g)
+}
+
 /// "Use as Mask": with one layer, toggles its mask flag; with several sharing a parent,
 /// groups them and makes the bottom-most the mask. Returns the ids to select afterwards.
 pub fn use_as_mask(page: &mut Page, ids: &[LayerId]) -> Vec<LayerId> {
@@ -674,6 +696,20 @@ mod tests {
         let back: Page = serde_json::from_str(&json).unwrap();
         assert_eq!(back, page);
         assert!(json.contains("\"boolean_op\":\"intersect\""));
+    }
+
+    #[test]
+    fn rotate_copies_make_a_ring() {
+        let mut page = Page::new("P");
+        let petal = insert_drawn(&mut page, Layer::oval(Frame::new(90.0, 0.0, 20.0, 50.0)));
+        let g = rotate_copies(&mut page, petal, 3, Point::new(100.0, 100.0)).unwrap();
+        let group = page.find(g).unwrap();
+        assert_eq!(group.children().unwrap().len(), 4);
+        // Four petals at 90° steps around (100, 100): the group spans 0..200 both ways.
+        let b = page.world_bounds(g).unwrap();
+        assert!((b.x0 - 0.0).abs() < 0.5 && (b.x1 - 200.0).abs() < 0.5 && (b.y1 - 200.0).abs() < 0.5, "{b:?}");
+        let rotations: Vec<f64> = group.children().unwrap().iter().map(|c| c.rotation.round()).collect();
+        assert_eq!(rotations, [0.0, 90.0, 180.0, 270.0]);
     }
 
     #[test]

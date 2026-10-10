@@ -60,6 +60,8 @@ pub enum Command {
     DetachSymbol,
     EditMaster,
     EditPoints,
+    Scissors,
+    RotateCopies,
     ConvertToPath,
     ConvertToOutlines,
     ReversePath,
@@ -375,6 +377,8 @@ pub fn menus(app: &ScrawlApp, cx: &MenuContext) -> Vec<Menu> {
             "Path",
             vec![
                 item("Edit Points", EditPoints, n == 1),
+                item("Scissors", Scissors, n == 1),
+                item("Rotate Copies…", RotateCopies, n == 1),
                 item("Convert to Path", ConvertToPath, has_sel),
                 item("Convert to Outlines", ConvertToOutlines, has_sel),
                 item("Reverse Path Direction", ReversePath, has_sel),
@@ -523,6 +527,17 @@ pub fn execute(app: &mut ScrawlApp, command: Command, ctx: &egui::Context) {
                 app.enter_vector_edit(id);
             }
         }
+        Scissors => {
+            if let [id] = app.selection[..] {
+                if app.canvas.edit.is_none() {
+                    app.enter_vector_edit(id);
+                }
+                if let Some(e) = app.canvas.edit.as_mut() {
+                    e.scissors = true;
+                }
+            }
+        }
+        RotateCopies => crate::rotate_copies::start(app),
         ConvertToPath => app.convert_to_paths(),
         ConvertToOutlines => app.outline_strokes(),
         ReversePath => app.reverse_paths(),
