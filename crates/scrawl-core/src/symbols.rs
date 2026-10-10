@@ -52,6 +52,30 @@ pub enum OverrideValue {
     Symbol(Option<SymbolId>),
     /// Applies a shared layer or text style.
     Style(StyleId),
+    /// An image layer's picture (or a layer's image fill), by asset id.
+    Image(String),
+    /// The color of a fill that follows a color variable.
+    Color(crate::Color),
+}
+
+impl OverrideValue {
+    /// What property this overrides, as named in a master's override settings.
+    pub fn property(&self) -> &'static str {
+        match self {
+            Self::Text(_) => "text",
+            Self::Symbol(_) => "symbol",
+            Self::Style(_) => "style",
+            Self::Image(_) => "image",
+            Self::Color(_) => "color",
+        }
+    }
+}
+
+/// An override a master doesn't allow: the layer path and the property.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverrideRef {
+    pub path: Vec<LayerId>,
+    pub property: String,
 }
 
 impl SymbolInstance {
@@ -105,6 +129,35 @@ pub enum OverridableKind {
     Text(String),
     Symbol(SymbolId),
     Style { style: StyleId, text: bool },
+    /// The master's image (asset id), if any.
+    Image(Option<String>),
+    /// The master's color for a fill that follows a color variable.
+    Color(crate::Color),
+}
+
+impl OverridableKind {
+    pub fn property(&self) -> &'static str {
+        match self {
+            Self::Text(_) => "text",
+            Self::Symbol(_) => "symbol",
+            Self::Style { .. } => "style",
+            Self::Image(_) => "image",
+            Self::Color(_) => "color",
+        }
+    }
+}
+
+/// The image a layer shows: an image layer's, or its first image fill's.
+fn image_of(layer: &Layer) -> Option<String> {
+    match &layer.kind {
+        LayerKind::Image(i) => Some(i.image.clone()),
+        _ => layer.style.fills.iter().find(|f| f.enabled && f.fill_type == crate::FillType::Image).and_then(|f| f.image.clone()),
+    }
+}
+
+/// The fill whose color an instance can override: the first one following a color variable.
+fn variable_fill(layer: &mut Layer) -> Option<&mut crate::Fill> {
+    layer.style.fills.iter_mut().find(|f| f.enabled && f.fill_type == crate::FillType::Color && f.swatch.is_some())
 }
 
 /// Masters and shared styles by id: everything needed to resolve instances.
@@ -174,6 +227,20 @@ impl Symbols {
                     }
                 }
                 OverrideValue::Symbol(None) => layer.visible = false,
+                OverrideValue::Image(id) => match &mut layer.kind {
+                    LayerKind::Image(i) => i.image = id.clone(),
+                    _ => {
+                        if let Some(f) = layer.style.fills.iter_mut().find(|f| f.enabled && f.fill_type == crate::FillType::Image) {
+                            f.image = Some(id.clone());
+                        }
+                    }
+                },
+                OverrideValue::Color(c) => {
+                    if let Some(f) = variable_fill(layer) {
+                        f.color = *c;
+                        f.swatch = None;
+                    }
+                }
             }
         }
         if let LayerKind::Symbol(inner) = &mut layer.kind {
@@ -206,8 +273,16 @@ impl Symbols {
     /// swapped by `inst`'s overrides).
     pub fn overridables(&self, inst: &SymbolInstance) -> Vec<Overridable> {
         let mut out = vec![];
-        let mut walk = OverridableWalk { symbols: self, own: &inst.overrides, out: &mut out, stack: vec![] };
+        let mut walk = OverridableWalk { symbols: self, own: &inst.overrides, out: &mut out, stack: vec![], disabled: vec![], all: false };
         walk.symbol(inst.symbol_id, &[], &[], 0);
+        out
+    }
+
+    /// Everything instances of `symbol` could override, allowed by its master or not.
+    pub fn all_overridables(&self, symbol: SymbolId) -> Vec<Overridable> {
+        let mut out = vec![];
+        let mut walk = OverridableWalk { symbols: self, own: &[], out: &mut out, stack: vec![], disabled: vec![], all: true };
+        walk.symbol(symbol, &[], &[], 0);
         out
     }
 }
@@ -218,6 +293,10 @@ struct OverridableWalk<'a> {
     own: &'a [Override],
     out: &'a mut Vec<Overridable>,
     stack: Vec<SymbolId>,
+    /// Overrides the masters on the way here don't allow, with full paths.
+    disabled: Vec<OverrideRef>,
+    /// List disabled overrides too (for the master's own settings).
+    all: bool,
 }
 
 impl OverridableWalk<'_> {
@@ -226,9 +305,20 @@ impl OverridableWalk<'_> {
     fn symbol(&mut self, symbol: SymbolId, prefix: &[LayerId], inherited: &[Override], depth: usize) {
         let Some(master) = self.symbols.masters.get(&symbol).filter(|_| !self.stack.contains(&symbol)) else { return };
         self.stack.push(symbol);
+        let restore = self.disabled.len();
+        // Only the outermost master's settings decide, when listing for that master itself.
+        if !(self.all && depth > 0)
+            && let LayerKind::Artboard(a) = &master.kind
+        {
+            for d in &a.disabled_overrides {
+                let path = prefix.iter().chain(&d.path).copied().collect();
+                self.disabled.push(OverrideRef { path, property: d.property.clone() });
+            }
+        }
         for c in master.children().into_iter().flatten().rev() {
             self.layer(c, prefix, inherited, depth);
         }
+        self.disabled.truncate(restore);
         self.stack.pop();
     }
 
@@ -236,20 +326,26 @@ impl OverridableWalk<'_> {
         let path: Vec<LayerId> = prefix.iter().copied().chain([layer.id]).collect();
         let find = |list: &[Override]| list.iter().find(|o| o.path == path).map(|o| o.value.clone());
         let item = |kind| Overridable { path: path.clone(), name: layer.name.clone(), depth, kind };
+        let allowed = |kind: &OverridableKind, disabled: &[OverrideRef]| !disabled.iter().any(|d| d.path == path && d.property == kind.property());
+        let push = |this: &mut Self, kind: OverridableKind| {
+            if this.all || allowed(&kind, &this.disabled) {
+                this.out.push(item(kind));
+            }
+        };
         match &layer.kind {
             LayerKind::Text(t) => {
                 let default = match find(inherited) {
                     Some(OverrideValue::Text(s)) => s,
                     _ => t.text.clone(),
                 };
-                self.out.push(item(OverridableKind::Text(default)));
+                push(self, OverridableKind::Text(default));
             }
             LayerKind::Symbol(inner) => {
                 let default = match find(inherited) {
                     Some(OverrideValue::Symbol(Some(id))) => id,
                     _ => inner.symbol_id,
                 };
-                self.out.push(item(OverridableKind::Symbol(default)));
+                push(self, OverridableKind::Symbol(default));
                 let shown = match find(self.own) {
                     Some(OverrideValue::Symbol(swap)) => swap,
                     _ => Some(default),
@@ -273,7 +369,21 @@ impl OverridableWalk<'_> {
             }
         }
         if let Some(style) = layer.shared_style {
-            self.out.push(item(OverridableKind::Style { style, text: layer.is_text() }));
+            push(self, OverridableKind::Style { style, text: layer.is_text() });
+        }
+        if matches!(layer.kind, LayerKind::Image(_)) || image_of(layer).is_some() {
+            let default = match find(inherited) {
+                Some(OverrideValue::Image(id)) => Some(id),
+                _ => image_of(layer),
+            };
+            push(self, OverridableKind::Image(default));
+        }
+        if let Some(f) = variable_fill(&mut layer.clone()) {
+            let default = match find(inherited) {
+                Some(OverrideValue::Color(c)) => c,
+                _ => f.color,
+            };
+            push(self, OverridableKind::Color(default));
         }
     }
 }
@@ -577,6 +687,48 @@ mod tests {
         set_override(&mut doc, inst, vec![bg], OverrideValue::Style(style));
         sync_instances(&mut doc, &mut |_| {});
         assert_eq!(expanded(&doc, inst)[0].style.fills[0].color, Color::BLACK);
+    }
+
+    #[test]
+    fn color_overrides_and_masters_choosing_what_overrides() {
+        let mut doc = Document::default();
+        let (symbol, bg, label) = button(&mut doc);
+        let swatch = doc.add_swatch(crate::Color::rgba(0.0, 0.0, 1.0, 1.0));
+        // The master's background follows a color variable, so it's color-overridable.
+        let (page_id, master) = doc.find_master(symbol).unwrap();
+        if let Some(l) = doc.page_mut(page_id).unwrap().find_mut(bg) {
+            l.style.fills = vec![crate::Fill { swatch: Some(swatch), ..crate::Fill::solid(crate::Color::rgba(0.0, 0.0, 1.0, 1.0)) }];
+        }
+        let id = instance(&mut doc, symbol, Frame::new(0.0, 300.0, 100.0, 40.0));
+        let syms = Symbols::new(&doc);
+        let LayerKind::Symbol(inst) = &doc.pages[0].find(id).unwrap().kind else { panic!() };
+        let kinds: Vec<&str> = syms.overridables(inst).iter().map(|o| o.kind.property()).collect();
+        assert!(kinds.contains(&"color") && kinds.contains(&"text"), "{kinds:?}");
+        let red = crate::Color::rgba(1.0, 0.0, 0.0, 1.0);
+        set_override(&mut doc, id, vec![bg], OverrideValue::Color(red));
+        let contents = Symbols::new(&doc).expand(doc.pages[0].find(id).unwrap());
+        let fill = &contents.iter().find(|l| l.children().is_none() && !l.is_text()).unwrap().style.fills[0];
+        assert_eq!((fill.color, fill.swatch), (red, None));
+        // The master turns text overrides off: instances no longer list them.
+        if let Some(LayerKind::Artboard(a)) = doc.page_mut(page_id).unwrap().find_mut(master).map(|l| &mut l.kind) {
+            a.disabled_overrides.push(OverrideRef { path: vec![label], property: "text".into() });
+        }
+        let syms = Symbols::new(&doc);
+        let LayerKind::Symbol(inst) = &doc.pages[0].find(id).unwrap().kind else { panic!() };
+        assert!(!syms.overridables(inst).iter().any(|o| o.kind.property() == "text"));
+        assert!(syms.all_overridables(symbol).iter().any(|o| o.kind.property() == "text"), "the master still lists it");
+        // Both survive a design-file round trip.
+        let back = crate::sketch::import(&crate::sketch::export(&doc).unwrap()).unwrap();
+        let (_, m) = back.symbol_masters().into_iter().find(|(_, l)| l.master_of() == Some(symbol)).unwrap();
+        let LayerKind::Artboard(a) = &m.kind else { panic!() };
+        assert_eq!(a.disabled_overrides, [OverrideRef { path: vec![label], property: "text".into() }]);
+        let mut found = None;
+        back.pages[0].walk(|l| {
+            if let LayerKind::Symbol(i) = &l.kind && i.symbol_id == symbol {
+                found = i.overrides.iter().find(|o| matches!(o.value, OverrideValue::Color(_))).cloned();
+            }
+        });
+        assert_eq!(found.map(|o| o.value), Some(OverrideValue::Color(red)));
     }
 
     #[test]

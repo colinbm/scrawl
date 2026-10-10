@@ -435,6 +435,21 @@ impl Importer {
                 resizes_content: flag(v, "resizesContent"),
                 symbol_id: (class == "symbolMaster").then(|| SymbolId(uuid_of(text(v, "symbolID")))),
                 flow_home: flag(v, "isFlowHome"),
+                disabled_overrides: list(v, "overrideProperties")
+                    .iter()
+                    .filter(|p| !flag_or(p, "canOverride", true))
+                    .filter_map(|p| {
+                        let (path, prop) = text(p, "overrideName").rsplit_once('_')?;
+                        let property = match prop {
+                            "stringValue" => "text",
+                            "symbolID" => "symbol",
+                            "layerStyle" | "textStyle" => "style",
+                            "image" => "image",
+                            _ => "color",
+                        };
+                        Some(crate::symbols::OverrideRef { path: path.split('/').map(|s| LayerId(uuid_of(s))).collect(), property: property.into() })
+                    })
+                    .collect(),
                 ..Artboard::new()
             }),
             "group" => LayerKind::Group(Group { children: self.children(v, entry), stack: None, shape: false }),
@@ -599,6 +614,7 @@ fn override_in(v: &Value) -> Option<Override> {
         "stringValue" => OverrideValue::Text(s.to_owned()),
         "symbolID" => OverrideValue::Symbol((!s.is_empty()).then(|| SymbolId(uuid_of(s)))),
         "layerStyle" | "textStyle" if !s.is_empty() => OverrideValue::Style(StyleId(uuid_of(s))),
+        "fillColor" if v["value"].is_object() => OverrideValue::Color(color_in(&v["value"])),
         _ => return None,
     };
     Some(Override { path, value })
@@ -1022,7 +1038,10 @@ impl Exporter {
                 if let Some(s) = a.symbol_id {
                     v["symbolID"] = json!(id_str(s.0));
                     v["allowsOverrides"] = json!(true);
-                    v["overrideProperties"] = json!([]);
+                    v["overrideProperties"] = json!(a.disabled_overrides.iter().map(|d| {
+                        let path: Vec<String> = d.path.iter().map(|id| id_str(id.0)).collect();
+                        json!({ "_class": "MSImmutableOverrideProperty", "overrideName": format!("{}_{}", path.join("/"), sketch_property(&d.property)), "canOverride": false })
+                    }).collect::<Vec<_>>());
                     v["includeBackgroundColorInInstance"] = json!(false);
                 }
             }
@@ -1171,7 +1190,7 @@ impl Exporter {
                 v["scale"] = json!(1);
                 v["horizontalSpacing"] = json!(0);
                 v["verticalSpacing"] = json!(0);
-                v["overrideValues"] = json!(s.overrides.iter().map(override_out).collect::<Vec<_>>());
+                v["overrideValues"] = json!(s.overrides.iter().filter_map(override_out).collect::<Vec<_>>());
             }
             LayerKind::Image(img) => {
                 v["_class"] = json!("bitmap");
@@ -1221,14 +1240,29 @@ fn flow_out(link: &FlowLink) -> Value {
     json!({ "_class": "MSImmutableFlowConnection", "destinationArtboardID": dest, "animationType": code, "maintainScrollPosition": false })
 }
 
-fn override_out(o: &Override) -> Value {
+/// Sketch's override property name for one of ours.
+fn sketch_property(property: &str) -> &'static str {
+    match property {
+        "text" => "stringValue",
+        "symbol" => "symbolID",
+        "style" => "layerStyle",
+        "image" => "image",
+        _ => "fillColor",
+    }
+}
+
+/// Image overrides aren't written (Sketch stores them as image references); the rest are.
+fn override_out(o: &Override) -> Option<Value> {
     let path: Vec<String> = o.path.iter().map(|id| id_str(id.0)).collect();
-    let (property, value) = match &o.value {
-        OverrideValue::Text(s) => ("stringValue", s.clone()),
-        OverrideValue::Symbol(s) => ("symbolID", s.map_or_else(String::new, |s| id_str(s.0))),
-        OverrideValue::Style(s) => ("layerStyle", id_str(s.0)),
+    let value = match &o.value {
+        OverrideValue::Text(s) => json!(s),
+        OverrideValue::Symbol(s) => json!(s.map_or_else(String::new, |s| id_str(s.0))),
+        OverrideValue::Style(s) => json!(id_str(s.0)),
+        OverrideValue::Color(c) => color_out(*c, None),
+        OverrideValue::Image(_) => return None,
     };
-    json!({ "_class": "overrideValue", "overrideName": format!("{}_{property}", path.join("/")), "value": value })
+    let name = format!("{}_{}", path.join("/"), sketch_property(o.value.property()));
+    Some(json!({ "_class": "overrideValue", "overrideName": name, "value": value }))
 }
 
 #[cfg(test)]

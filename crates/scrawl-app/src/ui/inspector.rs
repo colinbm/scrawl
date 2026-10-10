@@ -1225,6 +1225,34 @@ fn symbol_section(app: &mut ScrawlApp, ui: &mut Ui, id: scrawl_core::LayerId, in
                             }
                         });
                     }
+                    OverridableKind::Image(default) => {
+                        let overridden = matches!(current, Some(OverrideValue::Image(_)));
+                        let assets: Vec<String> = app.doc.assets.iter().map(|(id, _)| id.clone()).collect();
+                        let label = if overridden { "Replaced" } else { "Master's image" };
+                        egui::ComboBox::from_id_salt("image").selected_text(label).width(120.0).show_ui(ui, |ui| {
+                            if ui.selectable_label(!overridden, "Master's image").clicked() {
+                                inst.set_override(item.path.clone(), None);
+                            }
+                            for (i, id) in assets.iter().enumerate() {
+                                let chosen = matches!(&current, Some(OverrideValue::Image(c)) if c == id);
+                                if Some(id) != default.as_ref() && ui.selectable_label(chosen, format!("Image {}", i + 1)).clicked() {
+                                    inst.set_override(item.path.clone(), Some(OverrideValue::Image(id.clone())));
+                                }
+                            }
+                        });
+                    }
+                    OverridableKind::Color(default) => {
+                        let shown = match current {
+                            Some(OverrideValue::Color(c)) => c,
+                            _ => *default,
+                        };
+                        let mut c = crate::ui::paint::to_color32(shown);
+                        if ui.color_edit_button_srgba(&mut c).changed() {
+                            let [r, g, b, a] = c.to_srgba_unmultiplied();
+                            let color = scrawl_core::Color::from_rgba8(r, g, b, a);
+                            set(OverrideValue::Color(color), color == *default);
+                        }
+                    }
                     OverridableKind::Style { style, text } => {
                         let shown = match current {
                             Some(OverrideValue::Style(s)) => s,
@@ -1329,6 +1357,29 @@ fn master_section(app: &mut ScrawlApp, ui: &mut Ui, ab: &mut scrawl_core::Artboa
             ab.symbol_id = None;
         }
     });
+    // Which overrides instances may use.
+    let items = Symbols::new(&app.doc).all_overridables(symbol);
+    if items.is_empty() {
+        return;
+    }
+    section(ui, "Allow Overrides");
+    for item in items {
+        let property = item.kind.property();
+        let key = scrawl_core::symbols::OverrideRef { path: item.path.clone(), property: property.into() };
+        let mut allowed = !ab.disabled_overrides.contains(&key);
+        ui.push_id((&item.path, property), |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(item.depth as f32 * 10.0);
+                if ui.checkbox(&mut allowed, format!("{} ({property})", item.name)).changed() {
+                    if allowed {
+                        ab.disabled_overrides.retain(|d| *d != key);
+                    } else {
+                        ab.disabled_overrides.push(key.clone());
+                    }
+                }
+            });
+        });
+    }
 }
 
 fn stack_section(ui: &mut Ui, g: &mut scrawl_core::Group) {

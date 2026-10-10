@@ -64,7 +64,7 @@
 - ✅ Color variables on fills, borders and shadows; editing one recolors every linked color
 - ✅ Symbols: masters (artboards), instances resized by constraints, text / nested-swap / style overrides, nested symbols, Create Symbol ⌥⌘Y, Detach ⌥⌘B, Edit Master
 - ✅ Libraries: link other `.scrawl` files, use their symbols, styles and variables (copied in with dependencies), update when the library changes, unlink to keep them locally
-- ⬜ Per-master override controls (choose which layers are overridable), image and color overrides
+- ✅ Masters choose which overrides instances may use; image overrides and color overrides (for fills following a color variable); color overrides and master settings round-trip through design files (image overrides don't yet)
 - ⬜ Watch library files for changes; relative library paths; gradient stops linked to variables
 
 ## Milestone 7 — Export & interop

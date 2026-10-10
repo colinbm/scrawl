@@ -182,6 +182,9 @@ pub struct Artboard {
     /// A prototype's start point.
     #[serde(default, skip_serializing_if = "is_false")]
     pub flow_home: bool,
+    /// For a symbol master: overrides its instances may not change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_overrides: Vec<crate::symbols::OverrideRef>,
 }
 
 impl Artboard {
@@ -196,6 +199,7 @@ impl Artboard {
             layout: Default::default(),
             symbol_id: None,
             flow_home: false,
+            disabled_overrides: vec![],
         }
     }
 }
