@@ -74,6 +74,9 @@ pub struct Layer {
     /// Stays put when the artboard scrolls in the preview (direct children of artboards).
     #[serde(default, skip_serializing_if = "is_false")]
     pub fixed_to_viewport: bool,
+    /// How this layer sizes itself inside a stack.
+    #[serde(default, skip_serializing_if = "crate::layout::StackItem::is_default")]
+    pub stack_item: crate::layout::StackItem,
     /// How this layer combines with the ones below it inside a shape group.
     #[serde(default, skip_serializing_if = "is_union")]
     pub boolean_op: crate::ops::BooleanOp,
@@ -301,6 +304,7 @@ impl Layer {
             flow: None,
             fixed_to_viewport: false,
             boolean_op: crate::ops::BooleanOp::Union,
+            stack_item: Default::default(),
             kind,
         }
     }
@@ -598,6 +602,22 @@ impl Layer {
     /// Applies resizing constraints after the parent's size changed from `old` to `new`.
     pub(crate) fn fit_to_parent(&mut self, old: (f64, f64), new: (f64, f64)) {
         let rs = self.resizing;
+        // A rotated layer is pinned and stretched by its rotated bounds, as it looks.
+        if self.rotation.rem_euclid(360.0) != 0.0
+            && let Some(b) = self.local_path().map(|p| (self.local_transform() * p).bounding_box())
+        {
+            let (x, w) = Resizing::axis(b.x0, b.width(), old.0, new.0, rs.left, rs.right, rs.fix_width);
+            let (y, h) = Resizing::axis(b.y0, b.height(), old.1, new.1, rs.top, rs.bottom, rs.fix_height);
+            let kx = if b.width() > 1e-9 { w / b.width() } else { 1.0 };
+            let ky = if b.height() > 1e-9 { h / b.height() } else { 1.0 };
+            // Carry the on-screen scales onto the layer's own (rotated) axes.
+            let (sin, cos) = self.rotation.to_radians().sin_cos();
+            let (sw, sh) = ((kx * cos).hypot(ky * sin), (kx * sin).hypot(ky * cos));
+            let (fw, fh) = (self.frame.width * sw, self.frame.height * sh);
+            let center = kurbo::Point::new(x + w / 2.0, y + h / 2.0);
+            self.set_frame(Frame::new(center.x - fw / 2.0, center.y - fh / 2.0, fw, fh), Vec2::ZERO);
+            return;
+        }
         let f = self.frame;
         let (x, w) = Resizing::axis(f.x, f.width, old.0, new.0, rs.left, rs.right, rs.fix_width);
         let (y, h) = Resizing::axis(f.y, f.height, old.1, new.1, rs.top, rs.bottom, rs.fix_height);

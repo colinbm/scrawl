@@ -175,6 +175,15 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             layer.reframe(Rect::new(0.0, 0.0, w.max(0.0), h.max(0.0)));
         }
     });
+    // Inside a stack: how this child sizes itself.
+    let in_stack = app.page().parent(layer.id).flatten().and_then(|p| app.page().find(p)).is_some_and(|p| p.stack().is_some());
+    if in_stack {
+        section(ui, "In Stack");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut layer.stack_item.fill, "Fill across").on_hover_text("Stretch to the stack's thickness");
+            ui.checkbox(&mut layer.stack_item.grow, "Grow").on_hover_text("Share a fixed-size stack's leftover length");
+        });
+    }
     // Constraints matter for anything inside a group or artboard.
     if app.page().parent(layer.id).flatten().is_some() {
         section(ui, "Resizing");
@@ -1348,4 +1357,45 @@ fn stack_section(ui: &mut Ui, g: &mut scrawl_core::Group) {
             ui.label(RichText::new("Align").small().weak());
         });
     });
+    ui.horizontal(|ui| {
+        for (i, label) in ["Top", "Right", "Bottom", "Left"].iter().enumerate() {
+            let mut v = stack.padding[i];
+            ui.push_id(i, |ui| {
+                if num_small(ui, label, &mut v) {
+                    stack.padding[i] = v.max(0.0);
+                }
+            });
+        }
+    });
+    ui.weak("Padding");
+    let main = if stack.direction == Axis::X { "Width" } else { "Height" };
+    ui.horizontal(|ui| {
+        let mut wraps = stack.wrap.is_some();
+        if ui.checkbox(&mut wraps, "Wrap at").changed() {
+            stack.wrap = wraps.then_some(400.0);
+        }
+        if let Some(w) = &mut stack.wrap {
+            ui.add(DragValue::new(w).range(1.0..=100_000.0).speed(1.0));
+        }
+    });
+    ui.horizontal(|ui| {
+        let mut fixed = stack.length.is_some();
+        if ui.checkbox(&mut fixed, format!("Fixed {}", main.to_lowercase())).on_hover_text("Children set to Grow share what's left").changed() {
+            stack.length = fixed.then_some(300.0);
+        }
+        if let Some(l) = &mut stack.length {
+            ui.add(DragValue::new(l).range(1.0..=100_000.0).speed(1.0));
+        }
+    });
+}
+
+/// A compact numeric field with a label under it, for rows of four.
+fn num_small(ui: &mut Ui, label: &str, v: &mut f64) -> bool {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        let changed = ui.add_sized([48.0, 20.0], DragValue::new(v).speed(0.5).max_decimals(1)).changed();
+        ui.label(RichText::new(label).small().weak());
+        changed
+    })
+    .inner
 }

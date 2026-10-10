@@ -122,4 +122,30 @@ mod tests {
         assert_eq!(Resizing::axis(10.0, 20.0, 100.0, 200.0, true, true, false), (10.0, 120.0));
         assert_eq!(Resizing::axis(10.0, 20.0, 100.0, 50.0, true, true, false), (10.0, 0.0));
     }
+
+    #[test]
+    fn rotated_children_pin_by_their_rotated_bounds() {
+        // A 40×10 bar turned 90° looks 10×40; pinned to the right edge with a fixed size.
+        let mut bar = Layer::rectangle(Frame::new(150.0, 30.0, 40.0, 10.0));
+        bar.rotation = 90.0;
+        bar.resizing = Resizing { right: true, fix_width: true, fix_height: true, top: true, ..Default::default() };
+        let gap_before = 200.0 - bar.bounds_in(kurbo::Affine::IDENTITY).unwrap().x1;
+        let spacer = Layer::rectangle(Frame::new(0.0, 0.0, 200.0, 100.0));
+        let mut g = Layer::group(vec![spacer, bar], Frame::new(0.0, 0.0, 200.0, 100.0));
+        g.reframe(Rect::new(0.0, 0.0, 300.0, 100.0));
+        let bar = &g.children().unwrap()[1];
+        let b = bar.bounds_in(kurbo::Affine::IDENTITY).unwrap();
+        assert!((300.0 - b.x1 - gap_before).abs() < 1e-6, "keeps its gap to the right edge: {b:?}");
+        assert!((b.width() - 10.0).abs() < 1e-6 && (b.height() - 40.0).abs() < 1e-6, "and its size: {b:?}");
+        assert_eq!(bar.rotation, 90.0);
+        // Stretching across scales it along its on-screen width.
+        let mut stretchy = Layer::rectangle(Frame::new(80.0, 30.0, 40.0, 10.0));
+        stretchy.rotation = 90.0;
+        stretchy.resizing = Resizing { left: true, right: true, top: true, fix_height: true, ..Default::default() };
+        let spacer = Layer::rectangle(Frame::new(0.0, 0.0, 200.0, 100.0));
+        let mut g = Layer::group(vec![spacer, stretchy], Frame::new(0.0, 0.0, 200.0, 100.0));
+        g.reframe(Rect::new(0.0, 0.0, 400.0, 100.0));
+        let b = g.children().unwrap()[1].bounds_in(kurbo::Affine::IDENTITY).unwrap();
+        assert!((b.width() - 210.0).abs() < 1e-6, "pinned both sides: 10 + 200 wide: {b:?}");
+    }
 }

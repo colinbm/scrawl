@@ -1320,3 +1320,54 @@ fn text_attaches_to_a_path_and_back() {
     h.run();
     assert!(text_layer(&h, text).on_path.is_none());
 }
+
+#[test]
+fn smart_distribute_handles_change_the_gaps() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let names = ["Tile (Normal)", "Tile (Multiply)", "Tile (Difference)"];
+    let ids: Vec<LayerId> = names.iter().map(|n| layer_named(&h, n).id).collect();
+    h.state_mut().front_mut().selection = ids.clone();
+    h.run();
+    let bounds = |h: &Harness<'_, Workspace>| ids.iter().map(|&id| h.state().front().page().world_bounds(id).unwrap()).collect::<Vec<_>>();
+    let b = bounds(&h);
+    let gap = b[1].x0 - b[0].x1;
+    // The handle sits in the middle of the first gap.
+    let handle = ((b[0].x1 + b[1].x0) / 2.0, (b[0].center().y + b[1].center().y) / 2.0);
+    drag_page(&mut h, handle, (handle.0 + 10.0, handle.1), egui::Modifiers::NONE, true);
+    h.run();
+    let after = bounds(&h);
+    let gaps: Vec<f64> = after.windows(2).map(|w| w[1].x0 - w[0].x1).collect();
+    assert!((gaps[0] - gaps[1]).abs() < 0.01, "still even: {gaps:?}");
+    assert!((gaps[0] - (gap + 10.0)).abs() < 1.5, "{gap} → {gaps:?}");
+    assert_eq!(after[0].x0, b[0].x0, "the first stays put");
+    assert_eq!(h.state().front().selection, ids, "dragging a handle keeps the selection");
+    save(&mut h, "smart_distribute");
+}
+
+#[test]
+fn stack_padding_and_child_sizing_from_the_inspector() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let names = ["Tile (Normal)", "Tile (Multiply)", "Tile (Difference)"];
+    let ids: Vec<LayerId> = names.iter().map(|n| layer_named(&h, n).id).collect();
+    h.state_mut().front_mut().selection = ids.clone();
+    h.run();
+    h.state_mut().front_mut().make_stack();
+    h.run();
+    let [stack] = h.state().front().selection[..] else { panic!("stack selected") };
+    assert!(h.query_by_label("Wrap at").is_some() && h.query_by_label("Padding").is_some());
+    h.get_by_label("Wrap at").click();
+    h.run();
+    let page = h.state().front().page();
+    let s = *page.find(stack).unwrap().stack().unwrap();
+    assert_eq!(s.wrap, Some(400.0));
+    // A child in the stack can fill across.
+    h.state_mut().front_mut().selection = vec![ids[0]];
+    h.run();
+    assert!(h.query_by_label("IN STACK").is_some());
+    h.get_by_label("Fill across").click();
+    h.run();
+    assert!(h.state().front().page().find(ids[0]).unwrap().stack_item.fill);
+    save(&mut h, "stack_options");
+}

@@ -56,8 +56,8 @@
 - ✅ Resizing constraints (pin edges, fix size); artboards can adjust content on resize
 - ✅ Stacks (auto-flowing groups, reorder by dragging), distribute (⌃⌘H/⌃⌘V), tidy (⌃⌘T)
 - ✅ Layer search (⌘F) by name or text, with a type filter and Select All
-- ⬜ Smart distribute handles (drag spacing directly on canvas)
-- ⬜ Stack padding, wrapping and per-item sizing; constraints for rotated layers
+- ✅ Smart distribute handles: drag the gap between evenly spaced layers on the canvas
+- ✅ Stack padding, wrapping, fixed length; children fill across or grow; constraints for rotated layers use their rotated bounds
 
 ## Milestone 6 — Components
 - ✅ Shared layer & text styles: link, detect drift, update or reset, apply from the Components tab

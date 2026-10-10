@@ -242,6 +242,16 @@ enum Drag {
         current: Point,
         base: Vec<LayerId>,
     },
+    /// Dragging a smart distribute handle: changes the even gap between the selected layers.
+    Spacing {
+        axis: snap::Axis,
+        /// The layers in order along `axis`, with their page bounds at drag start.
+        items: Vec<(LayerId, Rect)>,
+        start_gap: f64,
+        origin: Point,
+        /// How far each layer has been moved so far.
+        applied: Vec<f64>,
+    },
     Create {
         id: LayerId,
         tool: Tool,
@@ -567,6 +577,20 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
                     page.refit_ancestor_groups(*id);
                 }
             }
+            Drag::Spacing { axis, items, start_gap, origin, applied } => {
+                let along = |v: Vec2| if *axis == snap::Axis::X { v.x } else { v.y };
+                let gap = (*start_gap + along(p - *origin)).round().max(0.0);
+                let lo = |r: &Rect| if *axis == snap::Axis::X { r.x0 } else { r.y0 };
+                let len = |r: &Rect| if *axis == snap::Axis::X { r.width() } else { r.height() };
+                let mut cursor = items.first().map_or(0.0, |(_, r)| lo(r));
+                for ((id, r), done) in items.iter().zip(applied.iter_mut()) {
+                    let d = cursor - lo(r);
+                    let step = if *axis == snap::Axis::X { Vec2::new(d - *done, 0.0) } else { Vec2::new(0.0, d - *done) };
+                    ops::move_by(page, &[*id], step);
+                    *done = d;
+                    cursor += len(r) + gap;
+                }
+            }
             Drag::Marquee { origin, current, base } => {
                 *current = p;
                 let mut sel = base.clone();
@@ -684,7 +708,10 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
         && let Some(pos) = hover_pos
     {
         let on_gradient = gradient_handles(app, rect).is_some_and(|(_, e)| e.iter().any(|e| e.distance(pos) <= HANDLE_GRAB));
-        if on_gradient {
+        let on_spacing = spacing_handles(app, rect).filter(|(_, _, _, hs)| hs.iter().any(|h| h.distance(pos) <= HANDLE_GRAB));
+        if let Some((axis, ..)) = on_spacing {
+            Some(if axis == snap::Axis::X { CursorIcon::ResizeHorizontal } else { CursorIcon::ResizeVertical })
+        } else if on_gradient {
             Some(CursorIcon::Move)
         } else if let Some(hit) = handle_at(app, pos, rect) {
             Some(match hit {
@@ -736,7 +763,13 @@ fn begin_select_drag(
     entered: &[LayerId],
     rect: ERect,
 ) -> Option<Drag> {
-    // Gradient handles, then selection handles, take priority.
+    // Smart distribute handles, gradient handles, then selection handles, take priority.
+    if let Some((axis, items, gap, handles)) = spacing_handles(app, rect)
+        && handles.iter().any(|h| h.distance(screen) <= HANDLE_GRAB)
+    {
+        let applied = vec![0.0; items.len()];
+        return Some(Drag::Spacing { axis, items, start_gap: gap, origin: p, applied });
+    }
     if let Some((target, ends)) = gradient_handles(app, rect)
         && let Some(end) = ends.iter().position(|e| e.distance(screen) <= HANDLE_GRAB)
     {
@@ -1217,6 +1250,20 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
         p.circle(b, 5.0, ACCENT, Stroke::new(1.5, Color32::WHITE));
     }
 
+    // Smart distribute handles in the gaps of an evenly spaced selection, and the gap while
+    // dragging one.
+    if show_handles && let Some((axis, items, gap, handles)) = spacing_handles(app, rect) {
+        for h in &handles {
+            let size = if axis == snap::Axis::X { vec2(3.0, 12.0) } else { vec2(12.0, 3.0) };
+            p.rect_filled(ERect::from_center_size(*h, size), 1.5, crate::snapping::GUIDE);
+        }
+        if let Some(Drag::Spacing { .. }) = &app.canvas.drag
+            && let (Some(h), Some(_)) = (handles.first(), items.first())
+        {
+            pill(p, *h, format!("{gap:.0}"));
+        }
+    }
+
     // Readouts while drawing, resizing or rotating.
     if let Some(Drag::Rotate { id, .. }) = &app.canvas.drag
         && let (Some(layer), Some(b)) = (page.find(*id), page.world_bounds(*id))
@@ -1236,6 +1283,44 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
         };
         pill(p, to_pos(to_screen * Point::new(b.center().x, b.y1)), label);
     }
+}
+
+/// For a selection of two or more layers sitting evenly spaced in a row or column (and not
+/// overlapping along it): the axis, the layers in order with their page bounds, the gap, and
+/// where to draw a handle in each gap (screen space).
+#[allow(clippy::type_complexity)]
+fn spacing_handles(app: &ScrawlApp, rect: ERect) -> Option<(snap::Axis, Vec<(LayerId, Rect)>, f64, Vec<Pos2>)> {
+    let page = app.page();
+    let ids = ops::normalize_selection(page, &app.selection);
+    if ids.len() < 2 || app.canvas.edit.is_some() || app.canvas.text_edit.is_some() {
+        return None;
+    }
+    let to_screen = screen_transform(app, rect);
+    let rects: Vec<(LayerId, Rect)> = ids.iter().filter_map(|&id| Some((id, page.world_bounds(id)?))).collect();
+    for axis in [snap::Axis::X, snap::Axis::Y] {
+        let lo = |r: &Rect| if axis == snap::Axis::X { r.x0 } else { r.y0 };
+        let hi = |r: &Rect| if axis == snap::Axis::X { r.x1 } else { r.y1 };
+        let mut items = rects.clone();
+        items.sort_by(|a, b| lo(&a.1).total_cmp(&lo(&b.1)));
+        let gaps: Vec<f64> = items.windows(2).map(|w| lo(&w[1].1) - hi(&w[0].1)).collect();
+        let even = gaps.iter().all(|&g| g >= 0.0 && (g - gaps[0]).abs() < 0.5);
+        if !even {
+            continue;
+        }
+        let handles = items
+            .windows(2)
+            .map(|w| {
+                let (a, b) = (w[0].1, w[1].1);
+                let mid = match axis {
+                    snap::Axis::X => Point::new((a.x1 + b.x0) / 2.0, (a.center().y + b.center().y) / 2.0),
+                    snap::Axis::Y => Point::new((a.center().x + b.center().x) / 2.0, (a.y1 + b.y0) / 2.0),
+                };
+                to_pos(to_screen * mid)
+            })
+            .collect();
+        return Some((axis, items, gaps[0].max(0.0), handles));
+    }
+    None
 }
 
 /// A small accent label centered below `anchor`.

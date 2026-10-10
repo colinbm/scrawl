@@ -25,14 +25,57 @@ pub enum StackAlign {
 pub struct Stack {
     /// `Axis::X` lays children out left to right, `Axis::Y` top to bottom.
     pub direction: Axis,
+    /// Between children, and between wrapped rows or columns.
     pub spacing: f64,
     #[serde(default)]
     pub align: StackAlign,
+    /// Space inside the stack's edges: top, right, bottom, left.
+    #[serde(default, skip_serializing_if = "is_zero4")]
+    pub padding: [f64; 4],
+    /// Children move to a new row (or column) beyond this length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<f64>,
+    /// A fixed length along the direction (instead of hugging the content); growing children
+    /// share what's left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<f64>,
+}
+
+fn is_zero4(p: &[f64; 4]) -> bool {
+    p.iter().all(|&v| v == 0.0)
 }
 
 impl Default for Stack {
     fn default() -> Self {
-        Self { direction: Axis::Y, spacing: 8.0, align: StackAlign::Start }
+        Self { direction: Axis::Y, spacing: 8.0, align: StackAlign::Start, padding: [0.0; 4], wrap: None, length: None }
+    }
+}
+
+impl Stack {
+    /// Padding before and after the content along `axis`.
+    fn pad(&self, axis: Axis) -> (f64, f64) {
+        let [top, right, bottom, left] = self.padding;
+        match axis {
+            Axis::X => (left, right),
+            Axis::Y => (top, bottom),
+        }
+    }
+}
+
+/// How a child of a stack sizes itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackItem {
+    /// Stretch across the stack (to its row's thickness).
+    #[serde(default)]
+    pub fill: bool,
+    /// Share the stack's leftover length (with a fixed length set).
+    #[serde(default)]
+    pub grow: bool,
+}
+
+impl StackItem {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -66,43 +109,107 @@ impl Layer {
         }
     }
 
-    /// Lays out a stack group's visible children and refits the group. Returns whether anything
-    /// moved.
+    /// Lays out a stack group's visible children and refits the group: rows (or columns) of
+    /// children with spacing and padding, wrapping past the wrap length; growing children share a
+    /// fixed length's slack and filling ones stretch across their row. Returns whether anything
+    /// changed.
     fn layout_stack(&mut self) -> bool {
+        let before = self.clone();
         let LayerKind::Group(g) = &mut self.kind else { return false };
         let Some(stack) = g.stack else { return false };
-        let dir = stack.direction;
-        let bounds: Vec<Option<Rect>> =
-            g.children.iter().map(|c| if c.visible { c.bounds_in(Affine::IDENTITY) } else { None }).collect();
-        let thickness = bounds.iter().flatten().map(|r| along(*r, cross(dir))).map(|(a, b)| b - a).fold(0.0, f64::max);
-        let mut cursor = 0.0;
-        let mut changed = false;
-        for (c, b) in g.children.iter_mut().zip(&bounds).rev() {
-            let Some(b) = b else { continue };
-            let (a0, a1) = along(*b, dir);
-            let (c0, c1) = along(*b, cross(dir));
-            let across = match stack.align {
-                StackAlign::Start => 0.0,
-                StackAlign::Center => (thickness - (c1 - c0)) / 2.0,
-                StackAlign::End => thickness - (c1 - c0),
-            };
-            let d = vec(dir, cursor - a0, across - c0);
-            if d.hypot() > 1e-9 {
-                c.frame.translate(d);
-                changed = true;
+        let (dir, across_axis) = (stack.direction, cross(stack.direction));
+        let (pad0, pad1) = stack.pad(dir);
+        let (cpad0, cpad1) = stack.pad(across_axis);
+        let size = |c: &Layer, axis: Axis| c.bounds_in(Affine::IDENTITY).map_or(0.0, |b| along(b, axis).1 - along(b, axis).0);
+        // Flow order is the layer list's: last child first.
+        let order: Vec<usize> = (0..g.children.len()).rev().filter(|&i| g.children[i].visible).collect();
+        let inner = stack.length.map(|l| (l - pad0 - pad1).max(0.0));
+        let limit = stack.wrap.map(|w| (w - pad0 - pad1).max(0.0));
+        // Break into lines.
+        let mut lines: Vec<Vec<usize>> = vec![vec![]];
+        let mut used = 0.0;
+        for &i in &order {
+            let s = size(&g.children[i], dir);
+            let line = lines.last_mut().expect("one line at least");
+            if let Some(limit) = limit
+                && !line.is_empty()
+                && used + stack.spacing + s > limit
+            {
+                lines.push(vec![i]);
+                used = s;
+                continue;
             }
-            cursor += a1 - a0 + stack.spacing;
+            used += if line.is_empty() { s } else { stack.spacing + s };
+            line.push(i);
         }
-        // Size to the content, keeping the top-left where it is.
+        // Grow along, then fill across, each line; then place.
+        let resize = |c: &mut Layer, axis: Axis, to: f64| {
+            if c.rotation != 0.0 || to <= 0.0 {
+                return;
+            }
+            let (w, h) = match axis {
+                Axis::X => (to, c.frame.height),
+                Axis::Y => (c.frame.width, to),
+            };
+            if (w - c.frame.width).abs() > 1e-9 || (h - c.frame.height).abs() > 1e-9 {
+                c.reframe(Rect::new(0.0, 0.0, w, h));
+            }
+        };
+        let mut cross_cursor = cpad0;
+        for line in &lines {
+            if let Some(inner) = inner {
+                let total: f64 = line.iter().map(|&i| size(&g.children[i], dir)).sum::<f64>() + stack.spacing * line.len().saturating_sub(1) as f64;
+                let growers: Vec<usize> = line.iter().copied().filter(|&i| g.children[i].stack_item.grow).collect();
+                if !growers.is_empty() {
+                    let slack = (inner - total) / growers.len() as f64;
+                    for i in growers {
+                        let s = size(&g.children[i], dir);
+                        resize(&mut g.children[i], dir, s + slack);
+                    }
+                }
+            }
+            let fixed_thickness = line.iter().filter(|&&i| !g.children[i].stack_item.fill).map(|&i| size(&g.children[i], across_axis)).fold(0.0, f64::max);
+            let thickness = if fixed_thickness > 0.0 { fixed_thickness } else { line.iter().map(|&i| size(&g.children[i], across_axis)).fold(0.0, f64::max) };
+            for &i in line {
+                if g.children[i].stack_item.fill {
+                    resize(&mut g.children[i], across_axis, thickness);
+                }
+            }
+            let mut cursor = pad0;
+            for &i in line {
+                let c = &mut g.children[i];
+                let Some(b) = c.bounds_in(Affine::IDENTITY) else { continue };
+                let (a0, a1) = along(b, dir);
+                let (c0, c1) = along(b, across_axis);
+                let across = match stack.align {
+                    StackAlign::Start => 0.0,
+                    StackAlign::Center => (thickness - (c1 - c0)) / 2.0,
+                    StackAlign::End => thickness - (c1 - c0),
+                };
+                let d = vec(dir, cursor - a0, cross_cursor + across - c0);
+                if d.hypot() > 1e-9 {
+                    c.frame.translate(d);
+                }
+                cursor += a1 - a0 + stack.spacing;
+            }
+            cross_cursor += thickness + stack.spacing;
+        }
+        // Size to the content plus padding (or the fixed length), keeping the top-left in place.
         let content = union_rects(g.children.iter().filter(|c| c.visible).filter_map(|c| c.bounds_in(Affine::IDENTITY)));
-        if let Some(u) = content
-            && (self.frame.width, self.frame.height) != (u.x1, u.y1)
-        {
-            self.frame.width = u.x1;
-            self.frame.height = u.y1;
-            changed = true;
+        let (mut w, mut h) = content.map_or((0.0, 0.0), |u| (u.x1, u.y1));
+        match dir {
+            Axis::X => {
+                w = stack.length.unwrap_or(w + pad1);
+                h += cpad1;
+            }
+            Axis::Y => {
+                h = stack.length.unwrap_or(h + pad1);
+                w += cpad1;
+            }
         }
-        changed
+        self.frame.width = w;
+        self.frame.height = h;
+        *self != before
     }
 
     /// Lays out every stack in this subtree, innermost first, skipping stacks that hold a layer
@@ -155,7 +262,7 @@ pub fn make_stack(page: &mut Page, ids: &[LayerId]) -> Option<LayerId> {
     let spacing = average_gap(&rects, direction).unwrap_or(8.0);
     let gid = crate::ops::group(page, &ids)?;
     if let Some(LayerKind::Group(g)) = page.find_mut(gid).map(|l| &mut l.kind) {
-        g.stack = Some(Stack { direction, spacing, align: StackAlign::Start });
+        g.stack = Some(Stack { direction, spacing, ..Stack::default() });
     }
     order_stack_by_position(page, gid);
     if let Some(l) = page.find_mut(gid) {
@@ -279,6 +386,62 @@ mod tests {
         assert_eq!(page.find(gid).unwrap().frame.height, 34.0);
         // Stable once laid out.
         assert!(!apply_stacks(page, &[]));
+    }
+
+    /// A horizontal stack of `n` 20×10 boxes at spacing 5, returned with its child ids in flow
+    /// order (left to right).
+    fn row(n: usize, f: impl FnOnce(&mut Stack)) -> (Document, LayerId, Vec<LayerId>) {
+        let rects: Vec<_> = (0..n).map(|i| (i as f64 * 30.0, 0.0, 20.0, 10.0)).collect();
+        let (mut doc, ids) = page_with(&rects);
+        let page = &mut doc.pages[0];
+        let gid = make_stack(page, &ids).unwrap();
+        if let LayerKind::Group(g) = &mut page.find_mut(gid).unwrap().kind {
+            let mut stack = Stack { direction: Axis::X, spacing: 5.0, ..Stack::default() };
+            f(&mut stack);
+            g.stack = Some(stack);
+        }
+        apply_stacks(page, &[]);
+        (doc, gid, ids)
+    }
+
+    #[test]
+    fn stack_padding_insets_the_content() {
+        let (doc, gid, ids) = row(2, |s| s.padding = [4.0, 6.0, 8.0, 10.0]);
+        let page = &doc.pages[0];
+        let g = page.find(gid).unwrap().frame;
+        let first = page.world_bounds(ids[0]).unwrap();
+        assert_eq!((first.x0 - g.x, first.y0 - g.y), (10.0, 4.0));
+        // 10 + 20 + 5 + 20 + 6 wide, 4 + 10 + 8 tall.
+        assert_eq!((g.width, g.height), (61.0, 22.0));
+    }
+
+    #[test]
+    fn stacks_wrap_into_rows() {
+        let (doc, gid, ids) = row(5, |s| s.wrap = Some(70.0));
+        let page = &doc.pages[0];
+        let g = page.find(gid).unwrap().frame;
+        // 20 + 5 + 20 + 5 + 20 is exactly 70, so three fit per row.
+        let ys: Vec<f64> = ids.iter().map(|&id| page.world_bounds(id).unwrap().y0 - g.y).collect();
+        assert_eq!(ys, [0.0, 0.0, 0.0, 15.0, 15.0]);
+        assert_eq!(g.height, 25.0);
+        let xs: Vec<f64> = ids.iter().map(|&id| page.world_bounds(id).unwrap().x0 - g.x).collect();
+        assert_eq!(xs, [0.0, 25.0, 50.0, 0.0, 25.0]);
+    }
+
+    #[test]
+    fn growing_and_filling_children() {
+        let (mut doc, gid, ids) = row(3, |s| s.length = Some(120.0));
+        let page = &mut doc.pages[0];
+        // A taller first child sets the row's thickness; the last fills across and grows along.
+        page.find_mut(ids[0]).unwrap().frame.height = 30.0;
+        let last = page.find_mut(ids[2]).unwrap();
+        last.stack_item = StackItem { fill: true, grow: true };
+        apply_stacks(page, &[]);
+        let b = page.world_bounds(ids[2]).unwrap();
+        // 120 − (20 + 5 + 20 + 5) = 70 left for the grower.
+        assert_eq!((b.width(), b.height()), (70.0, 30.0));
+        assert_eq!(page.find(gid).unwrap().frame.width, 120.0);
+        assert!(!apply_stacks(page, &[]), "stable");
     }
 
     #[test]
