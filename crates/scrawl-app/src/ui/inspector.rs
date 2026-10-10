@@ -254,14 +254,16 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         ui.label("Blending");
         crate::ui::paint::blend_combo(ui, "layer_blend", &mut layer.blend_mode);
     });
-    if !layer.is_artboard() && !layer.is_group() {
+    let slice = matches!(layer.kind, LayerKind::Slice);
+    if !layer.is_artboard() && !layer.is_group() && !slice {
         ui.checkbox(&mut layer.is_mask, "Use as mask").on_hover_text("Clips the layers above it in the same group");
     }
     // Instances take their look from the master; overrides cover the rest.
-    if !layer.is_artboard() && !layer.is_group() && !layer.is_symbol_instance() {
+    if !layer.is_artboard() && !layer.is_group() && !layer.is_symbol_instance() && !slice {
         shared_style_row(app, ui, layer);
         style_sections(app, ui, layer);
     }
+    export_section(app, ui, layer);
 }
 
 /// Picks the shared layer or text style a layer follows, and offers to update or reset it when
@@ -980,6 +982,41 @@ fn symbol_section(app: &mut ScrawlApp, ui: &mut Ui, id: scrawl_core::LayerId, in
                 }
             });
         });
+    }
+}
+
+/// Export formats: scale, suffix and file type per row, and a button to export now.
+fn export_section(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
+    use scrawl_core::exportable::{ExportFormat, FileFormat};
+    list_header(ui, "Export", || layer.exports.push(ExportFormat::after(layer.exports.last())));
+    let mut remove = None;
+    for (i, f) in layer.exports.iter_mut().enumerate() {
+        ui.push_id(("export", i), |ui| {
+            ui.horizontal(|ui| {
+                let drag = DragValue::new(&mut f.scale).range(0.1..=16.0).speed(0.05).max_decimals(2).suffix("x");
+                ui.add_sized([48.0, 20.0], drag);
+                ui.add(egui::TextEdit::singleline(&mut f.suffix).hint_text("Suffix").desired_width(64.0));
+                egui::ComboBox::from_id_salt("format").selected_text(f.format.label()).width(56.0).show_ui(ui, |ui| {
+                    for format in FileFormat::ALL {
+                        ui.selectable_value(&mut f.format, format, format.label());
+                    }
+                });
+                if icons::small_button(ui, Icon::Minus, "Remove export format").clicked() {
+                    remove = Some(i);
+                }
+            });
+        });
+    }
+    if let Some(i) = remove {
+        layer.exports.remove(i);
+    }
+    if !layer.exports.is_empty() && ui.button(format!("Export {}…", layer.name)).clicked() {
+        // Export what's being edited, so a just-added format counts.
+        let (id, edited) = (layer.id, layer.clone());
+        if let Some(l) = app.page_mut().find_mut(id) {
+            *l = edited;
+        }
+        app.export_layers(&[id]);
     }
 }
 

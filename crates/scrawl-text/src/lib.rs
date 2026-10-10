@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use kurbo::{Affine, BezPath, Rect};
+use kurbo::{Affine, BezPath, Rect, Shape};
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, FontStyle, FontWeight, LayoutContext, LineHeight,
     PositionedLayoutItem, StyleProperty, StyleSet,
@@ -263,6 +263,20 @@ impl TextEngine {
                         * skew.unwrap_or(Affine::IDENTITY)
                         * Affine::scale_non_uniform(1.0, -1.0);
                     path.extend((t * pen.0).elements().iter().copied());
+                }
+                // Underlines and strikethroughs, as the renderer draws them.
+                let m = r.font_metrics();
+                let style = run.style();
+                let (x0, x1) = (run.offset() as f64, (run.offset() + run.advance()) as f64);
+                for (on, offset, thickness) in [
+                    (style.underline.is_some(), m.underline_offset, m.underline_size),
+                    (style.strikethrough.is_some(), m.strikethrough_offset, m.strikethrough_size),
+                ] {
+                    if on {
+                        let top = run.baseline() as f64 - offset as f64 + dy;
+                        let rect = Rect::new(x0, top, x1, top + (thickness as f64).max(1.0));
+                        path.extend(rect.to_path(0.1).elements().iter().copied());
+                    }
                 }
             }
         }

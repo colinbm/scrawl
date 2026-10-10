@@ -86,3 +86,47 @@ fn image_layers_and_fills() {
     // Fit leaves the rest of the square empty.
     assert!(close(px(&img, 80, 3), [255, 255, 255, 255]), "{:?}", px(&img, 80, 3));
 }
+
+/// Exports the sample's first artboard in every format; the SVG, rasterized by resvg, should
+/// look like Vello's render.
+#[test]
+fn sample_exports_in_every_format() {
+    use scrawl_core::exportable::{ExportFormat, FileFormat};
+    use scrawl_render::output::export_layer;
+    let Some(mut ex) = exporter() else { return };
+    let mut doc = scrawl_core::sample::sample_document();
+    ex.text.fit_document(&mut doc);
+    let page = doc.pages[0].clone();
+    let artboard = page.layers.iter().find(|l| l.is_artboard()).unwrap().id;
+    let fmt = |format, scale| ExportFormat { scale, suffix: String::new(), format };
+
+    let png = export_layer(&mut ex, &doc, &page, artboard, &fmt(FileFormat::Png, 2.0)).unwrap();
+    let raster = image::load_from_memory(&png).unwrap().to_rgba8();
+    assert_eq!(raster.dimensions(), (786, 1704));
+    for (format, magic) in [(FileFormat::Jpg, &b"\xFF\xD8\xFF"[..]), (FileFormat::Webp, b"RIFF"), (FileFormat::Pdf, b"%PDF")] {
+        let bytes = export_layer(&mut ex, &doc, &page, artboard, &fmt(format, 1.0)).unwrap();
+        assert!(bytes.starts_with(magic), "{format:?}");
+    }
+
+    let svg = export_layer(&mut ex, &doc, &page, artboard, &fmt(FileFormat::Svg, 1.0)).unwrap();
+    let tree = resvg::usvg::Tree::from_data(&svg, &Default::default()).unwrap();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(393, 852).unwrap();
+    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    let vello = image::imageops::resize(&raster, 393, 852, image::imageops::FilterType::Triangle);
+    // Mean channel difference over the artboard; text and blurs differ slightly between renderers.
+    let total: u64 = pixmap
+        .pixels()
+        .iter()
+        .zip(vello.pixels())
+        .map(|(a, b)| {
+            let a = a.demultiply();
+            [a.red(), a.green(), a.blue()].iter().zip(&b.0[..3]).map(|(x, y)| x.abs_diff(*y) as u64).sum::<u64>()
+        })
+        .sum();
+    let mean = total as f64 / (393.0 * 852.0 * 3.0);
+    if let Some(dir) = std::env::var_os("SCRAWL_UI_SHOTS") {
+        pixmap.save_png(std::path::Path::new(&dir).join("sample_svg.png")).unwrap();
+        vello.save(std::path::Path::new(&dir).join("sample_vello.png")).unwrap();
+    }
+    assert!(mean < 6.0, "SVG export differs from the render: mean difference {mean:.2}");
+}

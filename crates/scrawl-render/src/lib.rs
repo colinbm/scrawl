@@ -2,7 +2,9 @@
 
 pub mod export;
 pub mod images;
+pub mod output;
 mod shadow;
+pub mod svg;
 
 pub use images::ImageCache;
 
@@ -155,6 +157,8 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
         LayerKind::Symbol(s) => render_children(scene, &s.expanded, t, res),
         LayerKind::Text(_) => render_text(scene, layer, parent, res),
         LayerKind::Image(img) => render_image(scene, layer, &img.image, parent, res.images),
+        // Slices only mark an area to export.
+        LayerKind::Slice => {}
         _ => {
             if let Some(path) = layer.local_path() {
                 render_shape(scene, layer, &path, parent, res.images);
@@ -167,15 +171,7 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
     }
 }
 
-/// The furthest a layer or any descendant paints outside its own geometry.
-fn max_paint_outset(layer: &Layer) -> f64 {
-    let own = layer.style.paint_outset();
-    let children = match &layer.kind {
-        LayerKind::Symbol(s) => Some(&s.expanded),
-        _ => layer.children(),
-    };
-    children.map_or(own, |c| c.iter().map(max_paint_outset).fold(own, f64::max))
-}
+use scrawl_core::exportable::paint_outset as max_paint_outset;
 
 /// A bitmap stretched to the frame, with the layer's shadows and borders. Missing images show a
 /// crossed-out placeholder.

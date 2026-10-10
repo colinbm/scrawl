@@ -43,6 +43,14 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
             if item(ui, "Save As…", Some(shortcuts::SAVE_AS), true) {
                 app.save_as();
             }
+            ui.separator();
+            if item(ui, "Export Selection…", Some(shortcuts::EXPORT), has_sel) {
+                let sel = app.selection.clone();
+                app.export_layers(&sel);
+            }
+            if item(ui, "Export All…", None, true) {
+                app.export_all();
+            }
         });
         ui.menu_button("Edit", |ui| {
             if item(ui, "Find Layer…", Some(shortcuts::FIND), true) {

@@ -8,6 +8,7 @@ pub mod color;
 pub mod components;
 pub mod constraints;
 pub mod document;
+pub mod exportable;
 pub mod geometry;
 pub mod grid;
 pub mod hit;

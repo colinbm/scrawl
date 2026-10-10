@@ -58,7 +58,7 @@ impl KindFilter {
             KindFilter::Artboards => matches!(kind, LayerKind::Artboard(_)),
             KindFilter::Symbols => matches!(kind, LayerKind::Symbol(_)) || matches!(kind, LayerKind::Artboard(a) if a.symbol_id.is_some()),
             KindFilter::Shapes => {
-                !matches!(kind, LayerKind::Text(_) | LayerKind::Group(_) | LayerKind::Artboard(_) | LayerKind::Symbol(_) | LayerKind::Image(_))
+                !matches!(kind, LayerKind::Text(_) | LayerKind::Group(_) | LayerKind::Artboard(_) | LayerKind::Symbol(_) | LayerKind::Image(_) | LayerKind::Slice)
             }
         }
     }

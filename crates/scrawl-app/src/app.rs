@@ -66,6 +66,7 @@ pub mod shortcuts {
     pub const CREATE_SYMBOL: KeyboardShortcut = cmd_alt(Key::Y);
     pub const DETACH_SYMBOL: KeyboardShortcut = cmd_alt(Key::B);
     pub const PLACE_IMAGE: KeyboardShortcut = cmd_shift(Key::K);
+    pub const EXPORT: KeyboardShortcut = cmd_shift(Key::E);
 
     pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
         match op {
@@ -104,6 +105,10 @@ pub struct ScrawlApp {
     pub layer_filter: crate::ui::layers::LayerFilter,
     /// What the left sidebar shows.
     pub sidebar: Sidebar,
+    /// Offscreen renderer for exports, created on first use.
+    exporter: Option<scrawl_render::export::Exporter>,
+    /// A short message shown over the canvas, with when it was posted (egui time).
+    pub notice: Option<(String, f64)>,
     /// Linked libraries' documents as last read from disk, or why they couldn't be.
     pub libraries: HashMap<LibraryId, Result<Document, String>>,
     /// The gradient whose handles are shown on the canvas.
@@ -161,6 +166,8 @@ impl ScrawlApp {
             layer_filter: Default::default(),
             sidebar: Sidebar::Layers,
             libraries: HashMap::new(),
+            exporter: None,
+            notice: None,
             gradient_edit: None,
             file_path: None,
             clipboard: vec![],
@@ -359,6 +366,92 @@ impl ScrawlApp {
             symbols::detach_all(&mut self.doc, symbol);
         }
         ops::delete(self.page_mut(), &sel);
+    }
+
+    // ---- Export ------------------------------------------------------------------------------
+
+    /// Writes every export format of each layer (1× PNG for layers without any) into a folder
+    /// the user picks.
+    pub fn export_layers(&mut self, ids: &[LayerId]) {
+        if ids.is_empty() {
+            return;
+        }
+        let Some(dir) = rfd::FileDialog::new().set_title("Export to Folder").pick_folder() else { return };
+        let page = self.page;
+        let jobs: Vec<(PageId, LayerId)> = ids.iter().map(|&id| (page, id)).collect();
+        self.export_to(&dir, &jobs, true);
+    }
+
+    /// File › Export All…: every layer with export formats, on every page.
+    pub fn export_all(&mut self) {
+        let jobs: Vec<(PageId, LayerId)> = self
+            .doc
+            .pages
+            .iter()
+            .flat_map(|p| {
+                let mut ids = vec![];
+                p.walk(|l| {
+                    if !l.exports.is_empty() {
+                        ids.push((p.id, l.id));
+                    }
+                });
+                ids
+            })
+            .collect();
+        if jobs.is_empty() {
+            self.error = Some("Nothing is exportable yet. Add export formats in the inspector, or draw a slice (S).".into());
+            return;
+        }
+        let Some(dir) = rfd::FileDialog::new().set_title("Export All to Folder").pick_folder() else { return };
+        self.export_to(&dir, &jobs, false);
+    }
+
+    /// Exports `jobs` into `dir`. Layers without formats get 1× PNG when `default_png` is set.
+    /// Returns the files written.
+    pub fn export_to(&mut self, dir: &Path, jobs: &[(PageId, LayerId)], default_png: bool) -> Vec<PathBuf> {
+        if self.exporter.is_none() {
+            match scrawl_render::export::Exporter::new() {
+                Ok(ex) => self.exporter = Some(ex),
+                Err(e) => {
+                    self.error = Some(format!("Couldn't start the exporter: {e}"));
+                    return vec![];
+                }
+            }
+        }
+        let ex = self.exporter.as_mut().expect("created above");
+        let (mut written, mut errors) = (vec![], vec![]);
+        for &(page_id, id) in jobs {
+            let Some(page) = self.doc.page(page_id) else { continue };
+            let Some(layer) = page.find(id) else { continue };
+            let formats = match (&layer.exports[..], default_png) {
+                ([], true) => vec![scrawl_core::exportable::ExportFormat::default()],
+                (f, _) => f.to_vec(),
+            };
+            for f in formats {
+                let path = dir.join(f.file_name(&layer.name));
+                let result = scrawl_render::output::export_layer(ex, &self.doc, page, id, &f)
+                    .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+                match result {
+                    Ok(()) => written.push(path),
+                    Err(e) => errors.push(format!("{}: {e}", path.display())),
+                }
+            }
+        }
+        if !errors.is_empty() {
+            self.error = Some(format!("Some exports failed:\n{}", errors.join("\n")));
+        }
+        if !written.is_empty() {
+            let msg = match written.len() {
+                1 => format!("Exported {}", written[0].file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())),
+                n => format!("Exported {n} files"),
+            };
+            self.notify(msg);
+        }
+        written
+    }
+
+    pub fn notify(&mut self, msg: impl Into<String>) {
+        self.notice = Some((msg.into(), f64::NAN));
     }
 
     // ---- Libraries ---------------------------------------------------------------------------
@@ -779,6 +872,10 @@ impl ScrawlApp {
         if pressed(PLACE_IMAGE) {
             crate::import::choose_images(self);
         }
+        if pressed(EXPORT) {
+            let sel = self.selection.clone();
+            self.export_layers(&sel);
+        }
         if pressed(UNGROUP) {
             self.ungroup_selection();
         }
@@ -872,6 +969,7 @@ impl ScrawlApp {
                 Key::L => self.tool = Tool::Line,
                 Key::P => self.tool = Tool::Pen,
                 Key::T => self.tool = Tool::Text,
+                Key::S => self.tool = Tool::Slice,
                 Key::Enter => {
                     if let [id] = self.selection[..] {
                         self.enter_vector_edit(id);
@@ -968,6 +1066,26 @@ impl ScrawlApp {
     }
 }
 
+impl ScrawlApp {
+    /// Shows the latest notice at the bottom of the canvas for a few seconds.
+    fn show_notice(&mut self, ctx: &egui::Context) {
+        let Some((msg, posted)) = &mut self.notice else { return };
+        let now = ctx.input(|i| i.time);
+        if posted.is_nan() {
+            *posted = now;
+        }
+        if now - *posted > 3.0 {
+            self.notice = None;
+            return;
+        }
+        let pos = egui::pos2(self.canvas.rect.center().x, self.canvas.rect.bottom() - 24.0);
+        egui::Area::new(egui::Id::new("notice")).fixed_pos(pos).pivot(egui::Align2::CENTER_BOTTOM).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(msg.as_str()));
+        });
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
 impl eframe::App for ScrawlApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         crate::dev::DevHooks::inject(self, raw_input);
@@ -1010,6 +1128,7 @@ impl eframe::App for ScrawlApp {
             });
         }
 
+        self.show_notice(&ctx);
         self.end_frame(&ctx);
         crate::dev::DevHooks::on_frame(self, &ctx);
     }

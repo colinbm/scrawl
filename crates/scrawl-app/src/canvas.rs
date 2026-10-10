@@ -21,10 +21,11 @@ pub enum Tool {
     Polygon,
     Star,
     Text,
+    Slice,
 }
 
 impl Tool {
-    pub const INSERT: [Tool; 9] = [
+    pub const INSERT: [Tool; 10] = [
         Tool::Artboard,
         Tool::Rectangle,
         Tool::Oval,
@@ -34,6 +35,7 @@ impl Tool {
         Tool::Triangle,
         Tool::Polygon,
         Tool::Star,
+        Tool::Slice,
     ];
 
     pub fn label(self) -> &'static str {
@@ -48,6 +50,7 @@ impl Tool {
             Tool::Polygon => "Polygon",
             Tool::Star => "Star",
             Tool::Text => "Text",
+            Tool::Slice => "Slice",
         }
     }
 
@@ -61,6 +64,7 @@ impl Tool {
             Tool::Line => "L",
             Tool::Pen => "P",
             Tool::Text => "T",
+            Tool::Slice => "S",
             Tool::Triangle | Tool::Polygon | Tool::Star => "",
         }
     }
@@ -78,6 +82,7 @@ impl Tool {
             Tool::Polygon => Icon::Polygon,
             Tool::Star => Icon::Star,
             Tool::Text => Icon::Text,
+            Tool::Slice => Icon::Slice,
         }
     }
 }
@@ -686,6 +691,9 @@ fn entered_groups(page: &Page, selection: &[LayerId]) -> Vec<LayerId> {
     selection.iter().filter_map(|&id| page.ancestors(id)).flatten().collect()
 }
 
+/// The color slices are outlined in.
+pub const SLICE: Color32 = Color32::from_rgb(0xE0, 0x5A, 0x9B);
+
 /// The color symbol masters and instances are marked with.
 pub const SYMBOL: Color32 = Color32::from_rgb(0xA0, 0x7C, 0xFF);
 
@@ -813,6 +821,7 @@ fn begin_create(app: &mut ScrawlApp, tool: Tool, origin: Point) -> Drag {
         Tool::Triangle => Layer::polygon(frame, 3),
         Tool::Polygon => Layer::polygon(frame, 5),
         Tool::Star => Layer::star(frame),
+        Tool::Slice => Layer::slice(frame),
         Tool::Text => {
             // Dragging out a text box makes it fixed-width; a plain click switches it to auto.
             let mut l = Layer::text(origin, "");
@@ -1077,6 +1086,22 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
         };
         let r = p.text(pos, egui::Align2::LEFT_BOTTOM, &l.name, egui::FontId::proportional(11.0), color);
         app.canvas.title_hits.push((r.expand(2.0), l.id));
+    }
+
+    // Slices show as dashed outlines.
+    let mut slices = vec![];
+    page.walk(|l| {
+        if matches!(l.kind, LayerKind::Slice) && l.visible {
+            slices.push(l.id);
+        }
+    });
+    for id in slices {
+        let (Some(layer), Some(t)) = (page.find(id), page.parent_transform(id)) else { continue };
+        let t = to_screen * t * layer.local_transform();
+        let r = layer.frame.local_rect();
+        let mut pts: Vec<Pos2> = [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1), (r.x0, r.y0)].iter().map(|&(x, y)| to_pos(t * Point::new(x, y))).collect();
+        pts.dedup();
+        p.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.0, SLICE), 4.0, 3.0));
     }
 
     // Hover outline.

@@ -39,6 +39,7 @@ pub enum Icon {
     FlipV,
     Symbol,
     Image,
+    Slice,
 }
 
 /// Paints `icon` centered in `rect`.
@@ -216,6 +217,12 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.add(egui::Shape::closed_line(vec![at(0.0, -6.5), at(6.5, 0.0), at(0.0, 6.5), at(-6.5, 0.0)], st));
             p.add(egui::Shape::convex_polygon(vec![at(0.0, -2.8), at(2.8, 0.0), at(0.0, 2.8), at(-2.8, 0.0)], color, Stroke::NONE));
         }
+        Icon::Slice => {
+            // A dashed frame with a blade across it.
+            let pts = [at(-6.0, -6.0), at(6.0, -6.0), at(6.0, 6.0), at(-6.0, 6.0), at(-6.0, -6.0)];
+            p.extend(egui::Shape::dashed_line(&pts, Stroke::new(st.width * 0.8, color), 2.0 * u, 1.5 * u));
+            p.line_segment([at(-3.5, 3.5), at(3.5, -3.5)], st);
+        }
         Icon::Image => {
             // A framed landscape: mountains and a sun.
             p.rect_stroke(r(-6.5, -5.5, 6.5, 5.5), 1.0, st, StrokeKind::Middle);
@@ -272,6 +279,7 @@ pub fn for_layer(kind: &scrawl_core::LayerKind) -> Icon {
         K::Artboard(_) => Icon::Artboard,
         K::Symbol(_) => Icon::Symbol,
         K::Image(_) => Icon::Image,
+        K::Slice => Icon::Slice,
         K::Group(_) => Icon::Group,
         K::Rectangle(_) => Icon::Rectangle,
         K::Oval => Icon::Oval,

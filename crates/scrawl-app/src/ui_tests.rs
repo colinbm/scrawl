@@ -664,3 +664,46 @@ fn importing_images_makes_image_layers() {
     assert!(h.query_by_label("64×32 px").is_some());
     save(&mut h, "image_layer");
 }
+
+#[test]
+fn export_formats_slices_and_files() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let card = select(&mut h, "Card");
+    h.get_by_label("Add export").click();
+    h.run();
+    h.get_by_label("Add export").click();
+    h.run();
+    let exports = h.state().page().find(card).unwrap().exports.clone();
+    assert_eq!(exports.iter().map(|f| f.file_name("Card")).collect::<Vec<_>>(), ["Card.png", "Card@2x.png"]);
+    save(&mut h, "export_section");
+
+    // A slice drawn with S exports 1× PNG of whatever is under it.
+    h.key_press(egui::Key::S);
+    h.run();
+    drag_page(&mut h, (24.0, 400.0), (144.0, 507.0), egui::Modifiers::NONE, true);
+    h.run();
+    let app = h.state();
+    let [slice] = app.selection[..] else { panic!("slice selected") };
+    assert_eq!(app.page().find(slice).unwrap().kind.type_name(), "Slice");
+
+    let dir = std::env::temp_dir().join(format!("scrawl-ui-export-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let page = h.state().page;
+    let written = h.state_mut().export_to(&dir, &[(page, card), (page, slice)], true);
+    if let Some(e) = &h.state().error {
+        // No GPU adapter for the offscreen exporter: nothing more to check.
+        assert!(e.contains("exporter"), "{e}");
+        return;
+    }
+    assert_eq!(written.len(), 3);
+    let size = |name: &str| image::image_dimensions(dir.join(name)).unwrap();
+    let (w, h1) = size("Card.png");
+    assert_eq!(size("Card@2x.png"), (w * 2, h1 * 2));
+    let f = h.state().page().find(slice).unwrap().frame;
+    assert_eq!(size("Slice.png"), (f.width.ceil() as u32, f.height.ceil() as u32));
+    // The notice animates away, so step a frame rather than waiting for the UI to settle.
+    h.step();
+    assert!(h.query_by_label("Exported 3 files").is_some());
+    std::fs::remove_dir_all(&dir).ok();
+}

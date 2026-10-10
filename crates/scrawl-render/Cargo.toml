@@ -9,6 +9,10 @@ license.workspace = true
 image.workspace = true
 png = "0.18"
 pollster = "0.4"
+svg2pdf.workspace = true
 scrawl-core.workspace = true
 scrawl-text.workspace = true
 vello.workspace = true
+
+[dev-dependencies]
+resvg = { version = "0.45.1", default-features = false, features = ["raster-images"] }

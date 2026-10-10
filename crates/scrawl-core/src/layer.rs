@@ -54,6 +54,9 @@ pub struct Layer {
     pub resizing: Resizing,
     #[serde(default)]
     pub style: Style,
+    /// Files written when the layer is exported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exports: Vec<crate::exportable::ExportFormat>,
     /// The shared layer or text style this layer follows. Its `style` is a copy, which may differ
     /// from the shared one until updated or reset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,6 +88,8 @@ pub enum LayerKind {
     Symbol(crate::symbols::SymbolInstance),
     /// A bitmap, stretched to the frame.
     Image(ImageLayer),
+    /// An invisible region to export.
+    Slice,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -203,6 +208,7 @@ impl LayerKind {
             Self::Path(_) => "Path",
             Self::Symbol(_) => "Symbol",
             Self::Image(_) => "Image",
+            Self::Slice => "Slice",
         }
     }
 }
@@ -223,6 +229,7 @@ impl Layer {
             is_mask: false,
             resizing: Resizing::default(),
             style: Style::default(),
+            exports: vec![],
             shared_style: None,
             kind,
         }
@@ -282,6 +289,13 @@ impl Layer {
             LayerKind::Text(TextLayer::new(text)),
         );
         l.style.fills = vec![crate::Fill::solid(Color::BLACK)];
+        l
+    }
+
+    /// A slice: a region exported at its formats, by default 1× PNG.
+    pub fn slice(frame: Frame) -> Self {
+        let mut l = Self::new("Slice", frame, LayerKind::Slice);
+        l.exports = vec![crate::exportable::ExportFormat::default()];
         l
     }
 
@@ -377,7 +391,7 @@ impl Layer {
             }
             LayerKind::Path(p) => Some(p.to_bez_path(r.width(), r.height())),
             // A text layer's or symbol instance's geometry, for selection and bounds, is its frame.
-            LayerKind::Text(_) | LayerKind::Symbol(_) | LayerKind::Image(_) => Some(r.to_path(PATH_TOLERANCE)),
+            LayerKind::Text(_) | LayerKind::Symbol(_) | LayerKind::Image(_) | LayerKind::Slice => Some(r.to_path(PATH_TOLERANCE)),
         }
     }
 
@@ -392,7 +406,8 @@ impl Layer {
     pub fn is_closed(&self) -> bool {
         match &self.kind {
             LayerKind::Path(p) => p.is_closed(),
-            LayerKind::Group(_) => false,
+            // Slices are only picked by their outline, so they don't block clicks on what's under.
+            LayerKind::Group(_) | LayerKind::Slice => false,
             _ => true,
         }
     }
@@ -481,7 +496,12 @@ impl Layer {
     pub fn editable_path(&self) -> Option<PathShape> {
         match &self.kind {
             LayerKind::Path(p) => Some(p.scaled(self.frame.width, self.frame.height)),
-            LayerKind::Artboard(_) | LayerKind::Group(_) | LayerKind::Text(_) | LayerKind::Symbol(_) | LayerKind::Image(_) => None,
+            LayerKind::Artboard(_)
+            | LayerKind::Group(_)
+            | LayerKind::Text(_)
+            | LayerKind::Symbol(_)
+            | LayerKind::Image(_)
+            | LayerKind::Slice => None,
             _ => Some(PathShape::from_bez_path(&self.local_path()?)),
         }
     }
