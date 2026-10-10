@@ -45,8 +45,9 @@
 - ✅ Underline, strikethrough, case transform; fills (incl. gradients), borders, shadows on text
 - ✅ Convert text to outlines (⇧⌘O) via skrifa glyph outlines
 - ✅ Rich text: style runs (font, size, weight, italic, spacing, decorations, color) on parts of a layer, from the inspector or ⌘B/⌘I/⌘U while editing; the editor works on the rendered layout. Runs round-trip through design files and keep their colors in SVG
-- ⬜ OpenType features, paragraph spacing, lists (shared text styles: see Milestone 6)
-- ⬜ Text on path
+- ✅ OpenType features (ligatures, figures, small caps…), paragraph spacing, bulleted and numbered lists (shared text styles: see Milestone 6)
+- ✅ Text on path: Layer › Attach Text to Path, with a start offset; lies flat while editing
+- ⬜ Decorations along paths; lists and features per style run; lists and features in design files
 
 ## Milestone 5 — Productivity
 - ✅ Smart guides: edge/center alignment and equal-spacing snaps while moving, resizing and drawing (⌃ suspends; View > Snap to Layers)

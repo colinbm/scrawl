@@ -10,7 +10,7 @@ use std::ops::Range;
 use egui::{Event, Key, Painter, PointerButton, Pos2, Rect as ERect, Stroke};
 use scrawl_core::kurbo::{Affine, Point};
 use scrawl_core::{Layer, LayerId, LayerKind, TextLayer, ops};
-use scrawl_text::Layout;
+use scrawl_text::{Layout, Placement};
 use scrawl_text::parley::editing::{Cursor, Selection};
 use scrawl_text::parley::layout::Affinity;
 
@@ -34,9 +34,14 @@ fn text_of(layer: &Layer) -> Option<&TextLayer> {
 
 /// Runs `f` with the layout of text layer `id`, as rendered.
 fn with_layout<R>(app: &mut ScrawlApp, id: LayerId, f: impl FnOnce(&Layout) -> R) -> Option<R> {
+    with_placed(app, id, |l, _| f(l))
+}
+
+/// Runs `f` with the layout of text layer `id` and where its lines sit in the layer.
+fn with_placed<R>(app: &mut ScrawlApp, id: LayerId, f: impl FnOnce(&Layout, &Placement) -> R) -> Option<R> {
     let layer = app.doc.page(app.page)?.find(id)?.clone();
-    let (layout, _) = app.text.layer_layout(&layer)?;
-    Some(f(layout))
+    let (layout, placement) = app.text.layer_layout(&layer)?;
+    Some(f(layout, &placement))
 }
 
 fn caret_at(layout: &Layout, index: usize) -> Selection {
@@ -249,13 +254,10 @@ pub fn handle_keys(app: &mut ScrawlApp, ctx: &egui::Context) {
     }
 }
 
-/// Maps the layout's space to screen space.
+/// Maps the layer's space to screen space.
 fn layout_to_screen(app: &mut ScrawlApp, id: LayerId, rect: ERect) -> Option<Affine> {
-    let page = app.doc.page(app.page)?;
-    let layer = page.find(id)?.clone();
-    let world = page.world_transform(id)?;
-    let (_, dy) = app.text.layer_layout(&layer)?;
-    Some(screen_transform(app, rect) * world * Affine::translate((0.0, dy)))
+    let world = app.doc.page(app.page)?.world_transform(id)?;
+    Some(screen_transform(app, rect) * world)
 }
 
 /// Pointer handling while editing: click to place the caret, drag to select, double-click to
@@ -264,8 +266,10 @@ pub fn pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response, re
     let Some(id) = app.canvas.text_edit.as_ref().map(|e| e.id) else { return false };
     let Some(t) = layout_to_screen(app, id, rect) else { return false };
     let inv = t.inverse();
-    let local = |p: Pos2| {
+    // Screen → layer → layout space (lines move for paragraph spacing and list indents).
+    let local = |app: &mut ScrawlApp, p: Pos2| {
         let q = inv * Point::new(p.x as f64, p.y as f64);
+        let q = with_placed(app, id, |l, pl| pl.to_layout(l, q)).unwrap_or(q);
         (q.x as f32, q.y as f32)
     };
     let (press, latest, mods) = ui.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos(), i.modifiers));
@@ -289,19 +293,19 @@ pub fn pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response, re
         ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
     }
     if let Some(p) = started.or(clicked) {
-        let (x, y) = local(p);
+        let (x, y) = local(app, p);
         navigate(app, |s, l| if mods.shift { s.shift_click_extension(l, x, y) } else { Selection::from_point(l, x, y) });
     }
     if response.dragged_by(PointerButton::Primary)
         && let Some(p) = latest
     {
-        let (x, y) = local(p);
+        let (x, y) = local(app, p);
         navigate(app, |s, l| s.extend_to_point(l, x, y));
     }
     if response.double_clicked_by(PointerButton::Primary)
         && let Some(p) = response.interact_pointer_pos()
     {
-        let (x, y) = local(p);
+        let (x, y) = local(app, p);
         navigate(app, |_, l| Selection::word_from_point(l, x, y));
     }
     true
@@ -315,9 +319,18 @@ pub fn paint(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
     // Restyling from the inspector moves things; keep the selection on the same bytes.
     navigate(app, |s, l| s.refresh(l));
     let Some(sel) = app.canvas.text_edit.as_ref().map(|e| e.selection) else { return };
-    let Some((boxes, caret, line_box)) = with_layout(app, id, |l| (sel.geometry(l), sel.focus().geometry(l, 1.5), sel.focus().geometry(l, 1.0))) else {
-        return;
-    };
+    // Boxes come in layout space; move each by its line's placement.
+    let placed = with_placed(app, id, |l, pl| {
+        let shift = |bb: scrawl_text::parley::BoundingBox, line: usize| {
+            let o = pl.line_offset(line);
+            scrawl_text::parley::BoundingBox::new(bb.x0 + o.x, bb.y0 + o.y, bb.x1 + o.x, bb.y1 + o.y)
+        };
+        let boxes: Vec<_> = sel.geometry(l).into_iter().map(|(bb, line)| (shift(bb, line), line)).collect();
+        let caret = sel.focus().geometry(l, 1.5);
+        let line = pl.line_of_box(l, caret.y0, caret.y1);
+        (boxes, shift(caret, line), shift(sel.focus().geometry(l, 1.0), line))
+    });
+    let Some((boxes, caret, line_box)) = placed else { return };
 
     let quad = |x0: f64, y0: f64, x1: f64, y1: f64| -> Vec<Pos2> {
         [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].iter().map(|&(x, y)| to_pos(t * Point::new(x, y))).collect()
@@ -340,10 +353,13 @@ pub fn paint(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
     });
     // Underline the input method's in-progress text.
     if let Some(r) = app.canvas.text_edit.as_ref().and_then(|e| e.compose.clone())
-        && let Some(boxes) = with_layout(app, id, |l| caret_at(l, r.start).extend(Cursor::from_byte_index(l, r.end, Affinity::Upstream)).geometry(l))
+        && let Some(boxes) = with_placed(app, id, |l, pl| {
+            let sel = caret_at(l, r.start).extend(Cursor::from_byte_index(l, r.end, Affinity::Upstream));
+            sel.geometry(l).into_iter().map(|(bb, line)| (bb, pl.line_offset(line))).collect::<Vec<_>>()
+        })
     {
-        for (bb, _) in boxes {
-            let (a, b) = (to_pos(t * Point::new(bb.x0, bb.y1)), to_pos(t * Point::new(bb.x1, bb.y1)));
+        for (bb, o) in boxes {
+            let (a, b) = (to_pos(t * Point::new(bb.x0 + o.x, bb.y1 + o.y)), to_pos(t * Point::new(bb.x1 + o.x, bb.y1 + o.y)));
             p.line_segment([a, b], Stroke::new(1.5, ACCENT));
         }
     }

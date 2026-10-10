@@ -323,6 +323,50 @@ pub fn boolean(page: &mut Page, ids: &[LayerId], op: BooleanOp) -> Result<LayerI
     Ok(gid)
 }
 
+/// Sets text along a shape's outline: of the two selected layers, the text follows the other's
+/// path (in its own coordinates). The text's frame becomes the path's area. Returns the text.
+pub fn attach_text_to_path(page: &mut Page, ids: &[LayerId]) -> Result<LayerId, String> {
+    let [a, b] = ids[..] else { return Err("Select a text layer and a shape.".into()) };
+    let (text, shape) = match (page.find(a).is_some_and(Layer::is_text), page.find(b).is_some_and(Layer::is_text)) {
+        (true, false) => (a, b),
+        (false, true) => (b, a),
+        _ => return Err("Select one text layer and one shape.".into()),
+    };
+    let outline = page.find(shape).and_then(Layer::local_path).ok_or("That shape has no outline to follow.")?;
+    let shape_to_page = page.world_transform(shape).ok_or("Layer not found.")?;
+    let parent_to_page = page.parent_transform(text).ok_or("Layer not found.")?;
+    // The text's frame covers the path (in the text's parent space), padded for the glyphs.
+    let in_parent = parent_to_page.inverse() * shape_to_page * outline;
+    let size = match &page.find(text).ok_or("Layer not found.")?.kind {
+        LayerKind::Text(t) => t.style.font_size,
+        _ => unreachable!("checked above"),
+    };
+    let area = kurbo::Shape::bounding_box(&in_parent).inflate(size, size);
+    let layer = page.find_mut(text).ok_or("Layer not found.")?;
+    layer.rotation = 0.0;
+    layer.flip_horizontal = false;
+    layer.flip_vertical = false;
+    layer.frame = Frame::from_rect(area);
+    let local = Affine::translate(-area.origin().to_vec2()) * in_parent;
+    if let LayerKind::Text(t) = &mut layer.kind {
+        t.sizing = crate::TextSizing::Fixed;
+        t.on_path = Some(crate::text::TextPath { path: PathShape::from_bez_path(&local), offset: 0.0 });
+    }
+    refit_parent(page, text);
+    Ok(text)
+}
+
+/// Puts text on a path back into ordinary lines.
+pub fn detach_text_from_path(page: &mut Page, ids: &[LayerId]) {
+    for &id in ids {
+        if let Some(LayerKind::Text(t)) = page.find_mut(id).map(|l| &mut l.kind)
+            && t.on_path.take().is_some()
+        {
+            t.sizing = crate::TextSizing::Auto;
+        }
+    }
+}
+
 /// "Rotate Copies": `count` copies of layer `id` turned about `pivot` (in its parent's
 /// space) at equal angles, grouped with the original. Returns the group.
 pub fn rotate_copies(page: &mut Page, id: LayerId, count: u32, pivot: Point) -> Option<LayerId> {

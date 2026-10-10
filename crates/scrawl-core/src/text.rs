@@ -22,6 +22,19 @@ pub struct TextLayer {
     /// Character styles for parts of the text, sorted and not overlapping.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<TextRun>,
+    /// Sets the text along a path instead of in lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_path: Option<TextPath>,
+}
+
+/// A path the text follows, in the layer's local coordinates (not normalized: resizing the
+/// frame doesn't stretch it).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextPath {
+    pub path: crate::PathShape,
+    /// Where along the path the text starts, in points.
+    #[serde(default)]
+    pub offset: f64,
 }
 
 /// A range of the text (byte offsets) with styles of its own.
@@ -95,7 +108,7 @@ impl RunStyle {
 
 impl TextLayer {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), style: TextStyle::default(), sizing: TextSizing::Auto, runs: vec![] }
+        Self { text: text.into(), style: TextStyle::default(), sizing: TextSizing::Auto, runs: vec![], on_path: None }
     }
 
     /// The run covering byte `at`, if any.
@@ -258,6 +271,99 @@ pub struct TextStyle {
     pub underline: bool,
     pub strikethrough: bool,
     pub transform: TextTransform,
+    /// Extra space after each paragraph (a line ending in a newline), in points.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub paragraph_spacing: f64,
+    /// Bullets or numbers before each paragraph, with the text indented after them.
+    #[serde(skip_serializing_if = "ListStyle::is_none")]
+    pub list: ListStyle,
+    /// OpenType features turned on or off, e.g. `tnum` 1 for tabular figures.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<FontFeature>,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// A list marker style for paragraphs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ListStyle {
+    #[default]
+    None,
+    Bullet,
+    Numbered,
+}
+
+impl ListStyle {
+    pub const ALL: [Self; 3] = [Self::None, Self::Bullet, Self::Numbered];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Bullet => "Bullets",
+            Self::Numbered => "Numbers",
+        }
+    }
+
+    fn is_none(&self) -> bool {
+        *self == Self::None
+    }
+
+    /// The marker for paragraph `n` (counting from 1).
+    pub fn marker(self, n: usize) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Bullet => Some("•".into()),
+            Self::Numbered => Some(format!("{n}.")),
+        }
+    }
+}
+
+/// An OpenType feature setting: a four-letter tag and a value (0 off, 1 on, or an alternate).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FontFeature {
+    pub tag: String,
+    pub value: u16,
+}
+
+/// Features offered in the inspector: (tag, label, on by default in fonts).
+pub const COMMON_FEATURES: [(&str, &str, bool); 9] = [
+    ("liga", "Ligatures", true),
+    ("dlig", "Discretionary ligatures", false),
+    ("kern", "Kerning", true),
+    ("tnum", "Tabular figures", false),
+    ("onum", "Oldstyle figures", false),
+    ("lnum", "Lining figures", false),
+    ("smcp", "Small caps", false),
+    ("frac", "Fractions", false),
+    ("zero", "Slashed zero", false),
+];
+
+impl TextStyle {
+    /// Whether feature `tag` is on, given fonts' defaults.
+    pub fn feature_on(&self, tag: &str) -> bool {
+        match self.features.iter().find(|f| f.tag == tag) {
+            Some(f) => f.value != 0,
+            None => COMMON_FEATURES.iter().any(|&(t, _, on)| t == tag && on),
+        }
+    }
+
+    /// Turns feature `tag` on or off, dropping the setting when it matches the default.
+    pub fn set_feature(&mut self, tag: &str, on: bool) {
+        self.features.retain(|f| f.tag != tag);
+        let default = COMMON_FEATURES.iter().any(|&(t, _, d)| t == tag && d);
+        if on != default {
+            self.features.push(FontFeature { tag: tag.into(), value: u16::from(on) });
+        }
+    }
+
+    /// The features as CSS `font-feature-settings`.
+    pub fn feature_css(&self) -> String {
+        let tags = self.features.iter().filter(|f| f.tag.len() == 4 && f.tag.is_ascii());
+        tags.map(|f| format!("\"{}\" {}", f.tag, f.value)).collect::<Vec<_>>().join(", ")
+    }
 }
 
 impl Default for TextStyle {
@@ -274,6 +380,9 @@ impl Default for TextStyle {
             underline: false,
             strikethrough: false,
             transform: TextTransform::None,
+            paragraph_spacing: 0.0,
+            list: ListStyle::None,
+            features: vec![],
         }
     }
 }

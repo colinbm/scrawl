@@ -60,6 +60,8 @@ pub enum Command {
     DetachSymbol,
     EditMaster,
     EditPoints,
+    AttachTextToPath,
+    DetachTextFromPath,
     Scissors,
     RotateCopies,
     ConvertToPath,
@@ -282,6 +284,7 @@ pub fn menus(app: &ScrawlApp, cx: &MenuContext) -> Vec<Menu> {
         },
         _ => None,
     };
+    let text_on_path = app.selection.iter().any(|&id| matches!(page.find(id).map(|l| &l.kind), Some(LayerKind::Text(t)) if t.on_path.is_some()));
     let shape_group = matches!(app.selection[..], [id] if page.find(id).is_some_and(scrawl_core::Layer::is_shape_group));
     let artboard = match app.selection[..] {
         [id] => page.find(id).filter(|l| l.is_artboard() && l.master_of().is_none()),
@@ -372,6 +375,9 @@ pub fn menus(app: &ScrawlApp, cx: &MenuContext) -> Vec<Menu> {
         item("Create Symbol", CreateSymbol, has_sel),
         item("Detach from Symbol", DetachSymbol, instance.is_some()),
         item("Edit Master", EditMaster, instance.is_some()),
+        Entry::Separator,
+        item("Attach Text to Path", AttachTextToPath, n == 2),
+        item("Detach Text from Path", DetachTextFromPath, text_on_path),
         Entry::Separator,
         submenu(
             "Path",
@@ -538,6 +544,17 @@ pub fn execute(app: &mut ScrawlApp, command: Command, ctx: &egui::Context) {
             }
         }
         RotateCopies => crate::rotate_copies::start(app),
+        AttachTextToPath => {
+            let sel = app.selection.clone();
+            match scrawl_core::ops::attach_text_to_path(app.page_mut(), &sel) {
+                Ok(text) => app.selection = vec![text],
+                Err(e) => app.error = Some(e),
+            }
+        }
+        DetachTextFromPath => {
+            let sel = app.selection.clone();
+            scrawl_core::ops::detach_text_from_path(app.page_mut(), &sel);
+        }
         ConvertToPath => app.convert_to_paths(),
         ConvertToOutlines => app.outline_strokes(),
         ReversePath => app.reverse_paths(),

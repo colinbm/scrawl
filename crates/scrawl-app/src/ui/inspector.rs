@@ -856,6 +856,18 @@ fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scr
     let mut working = effective.clone();
     let style = &mut working;
     section(ui, "Text");
+    let mut detach = false;
+    if let Some(on) = &mut text.on_path {
+        ui.horizontal(|ui| {
+            num(ui, "Start", &mut on.offset, 0.5, "");
+            on.offset = on.offset.max(0.0);
+            detach = ui.button("Detach from Path").clicked();
+        });
+    }
+    if detach {
+        text.on_path = None;
+        text.sizing = TextSizing::Auto;
+    }
     if let Some(r) = &range {
         let n = text.text.get(r.clone()).map_or(0, |s| s.chars().count());
         ui.weak(format!("Styling {n} selected character{}", if n == 1 { "" } else { "s" }));
@@ -932,6 +944,28 @@ fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scr
         });
         num(ui, "Character", &mut style.letter_spacing, 0.05, "");
     });
+    ui.horizontal(|ui| {
+        num(ui, "Paragraph", &mut style.paragraph_spacing, 0.25, "");
+        style.paragraph_spacing = style.paragraph_spacing.max(0.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for list in scrawl_core::text::ListStyle::ALL {
+                    ui.selectable_value(&mut style.list, list, list.label());
+                }
+            });
+            ui.label(RichText::new("List").small().weak());
+        });
+    });
+    egui::CollapsingHeader::new("OpenType features").id_salt("ot_features").show(ui, |ui| {
+        for (tag, label, _) in scrawl_core::text::COMMON_FEATURES {
+            let mut on = style.feature_on(tag);
+            if ui.checkbox(&mut on, label).on_hover_text(tag).changed() {
+                style.set_feature(tag, on);
+            }
+        }
+    });
 
     ui.horizontal(|ui| {
         for (align, label) in [(TextAlign::Left, "Left"), (TextAlign::Center, "Center"), (TextAlign::Right, "Right"), (TextAlign::Justify, "Justify")] {
@@ -976,6 +1010,9 @@ fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scr
             text.style.alignment = working.alignment;
             text.style.vertical_alignment = working.vertical_alignment;
             text.style.transform = working.transform;
+            text.style.paragraph_spacing = working.paragraph_spacing;
+            text.style.list = working.list;
+            text.style.features = working.features.clone();
             // Changed character properties become overrides on the range; values matching the
             // layer's style need none.
             macro_rules! apply {

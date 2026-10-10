@@ -340,22 +340,39 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resou
         }
     }
 
-    let Some((layout, dy)) = engine.layer_layout(layer) else { return };
-    let text_t = t * Affine::translate((0.0, dy));
-    for fill in style.fills.iter().filter(|f| f.enabled) {
-        let (brush, bt, _) = brush(fill.paint(), w, h, images);
-        // Gradients map onto the frame, not the (vertically offset) text block.
-        let bt = bt.map(|b| Affine::translate((0.0, -dy)) * b);
-        if fill.blend_mode == SBlend::Normal {
-            draw_layout(scene, layout, text_t, &brush, bt, Fill::NonZero.into(), Runs::Uncolored);
-        } else {
-            let bounds = layer.frame.local_rect().inflate(w.max(h), w.max(h));
-            scene.push_layer(Fill::NonZero, to_mix(fill.blend_mode), 1.0, t, &bounds);
-            draw_layout(scene, layout, text_t, &brush, bt, Fill::NonZero.into(), Runs::Uncolored);
-            scene.pop_layer();
+    // Text on a path: each glyph placed along it, in the same passes.
+    if let Some((walker, offset)) = engine.path_of(layer) {
+        let Some((layout, _)) = engine.layer_layout(layer) else { return };
+        for fill in style.fills.iter().filter(|f| f.enabled) {
+            let (brush, bt, _) = brush(fill.paint(), w, h, images);
+            draw_on_path(scene, layout, t, &walker, offset, &brush, bt, Fill::NonZero.into(), Runs::Uncolored);
         }
+        draw_on_path(scene, layout, t, &walker, offset, &Brush::Solid(peniko::Color::TRANSPARENT), None, Fill::NonZero.into(), Runs::Colored);
+        for border in style.borders.iter().filter(|b| b.enabled && b.thickness > 0.0) {
+            let (brush, bt, _) = brush(border.paint(), w, h, images);
+            let stroke = stroke_style(border.thickness, &style.border_options);
+            draw_on_path(scene, layout, t, &walker, offset, &brush, bt, (&stroke).into(), Runs::All);
+        }
+        return;
     }
-    draw_layout(scene, layout, text_t, &Brush::Solid(peniko::Color::TRANSPARENT), None, Fill::NonZero.into(), Runs::Colored);
+    let Some((layout, placement)) = engine.layer_layout(layer) else { return };
+    let offsets: Vec<Vec2> = (0..layout.len()).map(|i| placement.line_offset(i)).collect();
+    let at = |i: usize| offsets.get(i).copied().unwrap_or_default();
+    let fill_pass = |scene: &mut Scene, layout: &scrawl_text::Layout, at: &dyn Fn(usize) -> Vec2| {
+        for fill in style.fills.iter().filter(|f| f.enabled) {
+            let (brush, bt, _) = brush(fill.paint(), w, h, images);
+            if fill.blend_mode == SBlend::Normal {
+                draw_layout(scene, layout, t, at, &brush, bt, Fill::NonZero.into(), Runs::Uncolored);
+            } else {
+                let bounds = layer.frame.local_rect().inflate(w.max(h), w.max(h));
+                scene.push_layer(Fill::NonZero, to_mix(fill.blend_mode), 1.0, t, &bounds);
+                draw_layout(scene, layout, t, at, &brush, bt, Fill::NonZero.into(), Runs::Uncolored);
+                scene.pop_layer();
+            }
+        }
+    };
+    fill_pass(scene, layout, &at);
+    draw_layout(scene, layout, t, &at, &Brush::Solid(peniko::Color::TRANSPARENT), None, Fill::NonZero.into(), Runs::Colored);
     if let Some(path) = &outlines {
         for s in style.inner_shadows.iter().filter(|s| s.enabled) {
             shadow::inner_shadow(scene, layer, path, Fill::NonZero, parent, s);
@@ -363,9 +380,17 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resou
     }
     for border in style.borders.iter().filter(|b| b.enabled && b.thickness > 0.0) {
         let (brush, bt, _) = brush(border.paint(), w, h, images);
-        let bt = bt.map(|b| Affine::translate((0.0, -dy)) * b);
         let stroke = stroke_style(border.thickness, &style.border_options);
-        draw_layout(scene, layout, text_t, &brush, bt, (&stroke).into(), Runs::All);
+        draw_layout(scene, layout, t, &at, &brush, bt, (&stroke).into(), Runs::All);
+    }
+    // List markers, in the text's fills, right-aligned in the indent on each paragraph's baseline.
+    let anchors = scrawl_text::marker_anchors(layout, &placement);
+    let LayerKind::Text(text) = &layer.kind else { return };
+    for (marker, baseline, right) in anchors {
+        let m = engine.marker_layout(&text.style, &marker);
+        let mb = m.lines().next().map_or(0.0, |l| l.metrics().baseline as f64);
+        let offset = Vec2::new(right - m.width() as f64, baseline - mb);
+        fill_pass(scene, m, &|_| offset);
     }
 }
 
@@ -380,8 +405,14 @@ enum Runs {
     Colored,
 }
 
-fn draw_layout(scene: &mut Scene, layout: &scrawl_text::Layout, t: Affine, brush: &Brush, bt: Option<Affine>, style: StyleRef<'_>, runs: Runs) {
-    for line in layout.lines() {
+/// `t` maps the layer's space to the target; `at(i)` moves line `i` from layout to layer space.
+/// Brushes (`bt`) are in layer space, so gradients span the frame whatever the line positions.
+#[allow(clippy::too_many_arguments)]
+fn draw_layout(scene: &mut Scene, layout: &scrawl_text::Layout, t: Affine, at: &dyn Fn(usize) -> Vec2, brush: &Brush, bt: Option<Affine>, style: StyleRef<'_>, runs: Runs) {
+    for (li, line) in layout.lines().enumerate() {
+        let shift = Affine::translate(at(li));
+        let t = t * shift;
+        let bt = bt.map(|b| shift.inverse() * b);
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(run) = item else { continue };
             let own = run.style().brush.0;
@@ -422,6 +453,52 @@ fn draw_layout(scene: &mut Scene, layout: &scrawl_text::Layout, t: Affine, brush
                     let rect = Rect::new(x0, top, x1, top + (size as f64).max(1.0));
                     scene.fill(Fill::NonZero, t, brush, bt, &rect);
                 }
+            }
+        }
+    }
+}
+
+/// Draws a layout's glyphs one by one along a path. Brushes stay in layer space.
+#[allow(clippy::too_many_arguments)]
+fn draw_on_path(
+    scene: &mut Scene,
+    layout: &scrawl_text::Layout,
+    t: Affine,
+    walker: &scrawl_text::PathWalker,
+    offset: f64,
+    brush: &Brush,
+    bt: Option<Affine>,
+    style: StyleRef<'_>,
+    runs: Runs,
+) {
+    let first = layout.lines().next().map_or(0.0, |l| l.metrics().baseline as f64);
+    for line in layout.lines() {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(run) = item else { continue };
+            let solid;
+            let (brush, bt) = match (runs, run.style().brush.0) {
+                (Runs::Uncolored, Some(_)) | (Runs::Colored, None) => continue,
+                (Runs::Colored, Some(c)) => {
+                    solid = Brush::Solid(to_peniko(c));
+                    (&solid, None)
+                }
+                _ => (brush, bt),
+            };
+            let r = run.run();
+            let coords: Vec<i16> = r.normalized_coords().iter().map(|c| c.to_bits()).collect();
+            let skew = r.synthesis().skew().map(|deg| Affine::skew((deg as f64).to_radians().tan(), 0.0));
+            for g in run.positioned_glyphs() {
+                let Some(place) = walker.place(offset, g.x as f64, g.advance as f64, g.y as f64 - first) else { continue };
+                scene
+                    .draw_glyphs(r.font())
+                    .font_size(r.font_size())
+                    .transform(t * place)
+                    .glyph_transform(skew)
+                    .normalized_coords(&coords)
+                    .brush(brush)
+                    .brush_transform(bt.map(|b| place.inverse() * b))
+                    .hint(false)
+                    .draw(style, std::iter::once(vello::Glyph { id: g.id, x: 0.0, y: 0.0 }));
             }
         }
     }

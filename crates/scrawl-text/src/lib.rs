@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use kurbo::{Affine, BezPath, Rect, Shape};
+use kurbo::{Affine, BezPath, Point, Rect, Shape, Vec2};
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, FontStyle, FontWeight, LayoutContext, LineHeight,
     PositionedLayoutItem, StyleProperty,
@@ -20,6 +20,118 @@ pub use parley;
 pub struct RunBrush(pub Option<scrawl_core::Color>);
 
 pub type Layout = parley::Layout<RunBrush>;
+
+/// Where a laid-out text goes inside its layer: the block's vertical offset (vertical alignment),
+/// the indent left for list markers, each line's extra drop from paragraph spacing, and the
+/// markers themselves.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Placement {
+    pub dy: f64,
+    pub indent: f64,
+    pub line_dy: Vec<f64>,
+    /// List markers: the line each goes on, and its text.
+    pub markers: Vec<(usize, String)>,
+}
+
+impl Placement {
+    /// Layout space → layer space for line `line`.
+    pub fn line_offset(&self, line: usize) -> Vec2 {
+        Vec2::new(self.indent, self.dy + self.line_dy.get(line).copied().unwrap_or(0.0))
+    }
+
+    /// The line at layer-space height `y`.
+    pub fn line_at_y(&self, layout: &Layout, y: f64) -> usize {
+        let n = layout.len();
+        for (i, line) in layout.lines().enumerate() {
+            let bottom = line.metrics().block_max_coord as f64 + self.line_offset(i).y;
+            if y < bottom {
+                return i;
+            }
+        }
+        n.saturating_sub(1)
+    }
+
+    /// Layer space → layout space, for hit testing.
+    pub fn to_layout(&self, layout: &Layout, p: Point) -> Point {
+        p - self.line_offset(self.line_at_y(layout, p.y))
+    }
+
+    /// The line a layout-space box (a caret, say) sits on.
+    pub fn line_of_box(&self, layout: &Layout, y0: f64, y1: f64) -> usize {
+        let mid = (y0 + y1) / 2.0;
+        layout.lines().position(|l| (mid as f32) < l.metrics().block_max_coord).unwrap_or(layout.len().saturating_sub(1))
+    }
+
+    /// How much taller paragraph spacing makes the text.
+    pub fn extra_height(&self) -> f64 {
+        self.line_dy.last().copied().unwrap_or(0.0)
+    }
+}
+
+/// Walks a path by distance, for setting text along it.
+pub struct PathWalker {
+    points: Vec<Point>,
+    /// Distance from the start to each point.
+    along: Vec<f64>,
+}
+
+impl PathWalker {
+    /// Follows the path's first contour.
+    pub fn new(path: &BezPath) -> Self {
+        let mut points: Vec<Point> = vec![];
+        let mut done = false;
+        kurbo::flatten(path.elements().iter().copied(), 0.05, |el| match el {
+            kurbo::PathEl::MoveTo(p) if points.is_empty() => points.push(p),
+            kurbo::PathEl::MoveTo(_) => done = true,
+            kurbo::PathEl::LineTo(p) if !done => points.push(p),
+            kurbo::PathEl::ClosePath if !done => {
+                if let Some(&first) = points.first() {
+                    points.push(first);
+                }
+                done = true;
+            }
+            _ => {}
+        });
+        let mut along = vec![0.0];
+        for w in points.windows(2) {
+            along.push(along.last().copied().unwrap_or(0.0) + (w[1] - w[0]).hypot());
+        }
+        Self { points, along }
+    }
+
+    pub fn length(&self) -> f64 {
+        self.along.last().copied().unwrap_or(0.0)
+    }
+
+    /// The point `s` along the path and the direction there (radians); `None` past either end.
+    pub fn at(&self, s: f64) -> Option<(Point, f64)> {
+        if s < 0.0 || s > self.length() || self.points.len() < 2 {
+            return None;
+        }
+        let i = self.along.partition_point(|&d| d < s).clamp(1, self.points.len() - 1);
+        let (a, b) = (self.points[i - 1], self.points[i]);
+        let span = (self.along[i] - self.along[i - 1]).max(1e-9);
+        let k = (s - self.along[i - 1]) / span;
+        Some((a.lerp(b, k), (b - a).atan2()))
+    }
+
+    /// Takes a glyph drawn at the origin (baseline at y = 0) to where it sits on the path: its
+    /// middle at its distance along it, turned to follow it. `x` and `advance` are the glyph's
+    /// position and width in the line; `drop` its baseline's distance below the first line's.
+    pub fn place(&self, offset: f64, x: f64, advance: f64, drop: f64) -> Option<Affine> {
+        let (p, angle) = self.at(offset + x + advance / 2.0)?;
+        Some(Affine::translate(p.to_vec2()) * Affine::rotate(angle) * Affine::translate((-advance / 2.0, drop)))
+    }
+}
+
+/// The list indent for a style: room for the widest marker.
+pub fn list_indent(style: &TextStyle) -> f64 {
+    match style.list {
+        scrawl_core::text::ListStyle::None => 0.0,
+        scrawl_core::text::ListStyle::Bullet => style.font_size * 1.2,
+        scrawl_core::text::ListStyle::Numbered => style.font_size * 1.8,
+    }
+}
 
 /// The font stack used when a layer names no family, or as a fallback after it.
 const FALLBACK_FAMILIES: &str = "system-ui, sans-serif";
@@ -66,6 +178,9 @@ pub fn style_properties(style: &TextStyle) -> Vec<StyleProperty<'static, RunBrus
     if let Some(lh) = style.line_height {
         props.push(StyleProperty::LineHeight(LineHeight::Absolute(lh as f32)));
     }
+    if !style.features.is_empty() {
+        props.push(StyleProperty::FontFeatures(parley::FontFeatures::Source(style.feature_css().into())));
+    }
     props
 }
 
@@ -78,12 +193,37 @@ pub fn alignment(align: TextAlign) -> Alignment {
     }
 }
 
-/// The wrap width for a layer: none for auto-sized text, otherwise its frame width.
+/// The wrap width for a layer: none for auto-sized text, otherwise its frame width less any list
+/// indent.
 pub fn wrap_width(text: &TextLayer, frame_width: f64) -> Option<f32> {
     match text.sizing {
         TextSizing::Auto => None,
-        TextSizing::FixedWidth | TextSizing::Fixed => Some(frame_width.max(1.0) as f32),
+        TextSizing::FixedWidth | TextSizing::Fixed => Some((frame_width - list_indent(&text.style)).max(1.0) as f32),
     }
+}
+
+/// Paragraph spacing and list markers for a laid-out `text` (as displayed).
+fn place(layout: &Layout, text: &str, style: &TextStyle) -> Placement {
+    let mut placement = Placement { indent: list_indent(style), ..Default::default() };
+    let mut paragraphs = 0;
+    let mut drop = 0.0;
+    for (i, line) in layout.lines().enumerate() {
+        let start = line.text_range().start;
+        let starts_paragraph = start == 0 || text.as_bytes().get(start - 1) == Some(&b'\n');
+        if starts_paragraph {
+            if paragraphs > 0 {
+                drop += style.paragraph_spacing;
+            }
+            paragraphs += 1;
+            // Empty paragraphs get no marker.
+            let empty = text[start.min(text.len())..].starts_with('\n') || start >= text.len();
+            if !empty && let Some(m) = style.list.marker(paragraphs) {
+                placement.markers.push((i, m));
+            }
+        }
+        placement.line_dy.push(drop);
+    }
+    placement
 }
 
 
@@ -148,22 +288,40 @@ impl TextEngine {
         Some(text)
     }
 
-    /// The layout for a text layer at its current frame, and the vertical offset of the text
-    /// within the frame.
-    pub fn layer_layout(&mut self, layer: &Layer) -> Option<(&Layout, f64)> {
+    /// The path a text layer is set along, unless it's being edited (when it lies flat so the
+    /// caret works), with the starting offset.
+    pub fn path_of(&self, layer: &Layer) -> Option<(PathWalker, f64)> {
+        let LayerKind::Text(t) = &layer.kind else { return None };
+        let on = t.on_path.as_ref().filter(|_| self.raw_case != Some(layer.id))?;
+        Some((PathWalker::new(&on.path.to_absolute_bez_path()), on.offset))
+    }
+
+    /// The layout for a text layer at its current frame, and where its lines go in the frame.
+    pub fn layer_layout(&mut self, layer: &Layer) -> Option<(&Layout, Placement)> {
         let text = self.effective_text(layer)?;
         let text = &text;
         let frame_h = layer.frame.height;
         let valign = text.style.vertical_alignment;
         let sizing = text.sizing;
-        let layout = self.layout(text, wrap_width(text, layer.frame.width));
-        let slack = frame_h - layout.height() as f64;
-        let dy = match (sizing, valign) {
+        let display = text.display_text();
+        // Text on a path is one unwrapped line.
+        let width = if text.on_path.is_some() { None } else { wrap_width(text, layer.frame.width) };
+        let layout = self.layout(text, width);
+        let mut placement = place(layout, &display, &text.style);
+        let slack = frame_h - layout.height() as f64 - placement.extra_height();
+        placement.dy = match (sizing, valign) {
             (TextSizing::Fixed, VerticalAlign::Middle) => slack / 2.0,
             (TextSizing::Fixed, VerticalAlign::Bottom) => slack,
             _ => 0.0,
         };
-        Some((layout, dy))
+        Some((layout, placement))
+    }
+
+    /// A list marker laid out in the style of the text it marks.
+    pub fn marker_layout(&mut self, style: &TextStyle, marker: &str) -> &Layout {
+        let mut t = TextLayer::new(marker);
+        t.style = TextStyle { list: Default::default(), paragraph_spacing: 0.0, alignment: TextAlign::Left, ..style.clone() };
+        self.layout(&t, None)
     }
 
     /// The frame size a text layer should have given its sizing mode, if it differs from the
@@ -175,13 +333,17 @@ impl TextEngine {
         let size = match text.sizing {
             TextSizing::Fixed => return None,
             TextSizing::Auto => {
+                let (indent, display) = (list_indent(&text.style), text.display_text());
                 let l = self.layout(text, None);
+                let extra = place(l, &display, &text.style).extra_height();
                 // An empty layout still gets a caret-sized box.
-                ((l.width() as f64).max(1.0), (l.height() as f64).max(text.style.font_size))
+                ((l.width() as f64 + indent).max(1.0), (l.height() as f64 + extra).max(text.style.font_size))
             }
             TextSizing::FixedWidth => {
+                let display = text.display_text();
                 let l = self.layout(text, wrap_width(text, f.width));
-                (f.width, (l.height() as f64).max(text.style.font_size))
+                let extra = place(l, &display, &text.style).extra_height();
+                (f.width, (l.height() as f64 + extra).max(text.style.font_size))
             }
         };
         let close = (size.0 - f.width).abs() < 1e-3 && (size.1 - f.height).abs() < 1e-3;
@@ -253,63 +415,134 @@ impl TextEngine {
     }
 
     /// Glyph outlines grouped by run color: `None` for text painted with the layer's fills.
+    /// List markers count as uncolored text.
     pub fn outlines_by_color(&mut self, layer: &Layer) -> Option<Vec<(Option<scrawl_core::Color>, BezPath)>> {
-        let (layout, dy) = self.layer_layout(layer)?;
+        let walker = self.path_of(layer);
+        let (layout, placement) = self.layer_layout(layer)?;
         let mut groups: Vec<(Option<scrawl_core::Color>, BezPath)> = vec![];
-        for line in layout.lines() {
-            for item in line.items() {
-                let PositionedLayoutItem::GlyphRun(run) = item else { continue };
-                let color = run.style().brush.0;
-                let i = match groups.iter().position(|(c, _)| *c == color) {
-                    Some(i) => i,
-                    None => {
-                        groups.push((color, BezPath::new()));
-                        groups.len() - 1
-                    }
-                };
-                let path = &mut groups[i].1;
-                let r = run.run();
-                let font = r.font();
-                let Ok(font_ref) = skrifa::FontRef::from_index(font.data.as_ref(), font.index) else { continue };
-                use skrifa::MetadataProvider;
-                let outlines = font_ref.outline_glyphs();
-                let coords: Vec<skrifa::instance::NormalizedCoord> =
-                    r.normalized_coords().iter().map(|&c| skrifa::instance::NormalizedCoord::from_bits(c.to_bits())).collect();
-                let size = skrifa::instance::Size::new(r.font_size());
-                let skew = r.synthesis().skew().map(|deg| Affine::skew((deg as f64).to_radians().tan(), 0.0));
-                for g in run.positioned_glyphs() {
-                    let Some(glyph) = outlines.get(skrifa::GlyphId::new(g.id)) else { continue };
-                    let mut pen = KurboPen(BezPath::new());
-                    let settings = skrifa::outline::DrawSettings::unhinted(size, coords.as_slice());
-                    if glyph.draw(settings, &mut pen).is_err() {
-                        continue;
-                    }
-                    // Font units are y-up; flip into our y-down space at the glyph's origin.
-                    let t = Affine::translate((g.x as f64, g.y as f64 + dy))
-                        * skew.unwrap_or(Affine::IDENTITY)
-                        * Affine::scale_non_uniform(1.0, -1.0);
-                    path.extend((t * pen.0).elements().iter().copied());
-                }
-                // Underlines and strikethroughs, as the renderer draws them.
-                let m = r.font_metrics();
-                let style = run.style();
-                let (x0, x1) = (run.offset() as f64, (run.offset() + run.advance()) as f64);
-                for (on, offset, thickness) in [
-                    (style.underline.is_some(), m.underline_offset, m.underline_size),
-                    (style.strikethrough.is_some(), m.strikethrough_offset, m.strikethrough_size),
-                ] {
-                    if on {
-                        let top = run.baseline() as f64 - offset as f64 + dy;
-                        let rect = Rect::new(x0, top, x1, top + (thickness as f64).max(1.0));
-                        path.extend(rect.to_path(0.1).elements().iter().copied());
-                    }
-                }
+        if let Some((walker, offset)) = walker {
+            path_outlines(layout, &walker, offset, &mut groups);
+            return Some(groups);
+        }
+        glyph_outlines(layout, |i| placement.line_offset(i), &mut groups);
+        let anchors = marker_anchors(layout, &placement);
+        let LayerKind::Text(text) = &layer.kind else { return None };
+        let style = text.style.clone();
+        for (marker, baseline, right) in anchors {
+            let m = self.marker_layout(&style, &marker);
+            let mb = m.lines().next().map_or(0.0, |l| l.metrics().baseline as f64);
+            let at = Vec2::new(right - m.width() as f64, baseline - mb);
+            let mut marked = vec![];
+            glyph_outlines(m, |_| at, &mut marked);
+            for (_, p) in marked {
+                push_group(&mut groups, None).extend(p.elements().iter().copied());
             }
         }
         if groups.is_empty() {
             groups.push((None, BezPath::new()));
         }
         Some(groups)
+    }
+}
+
+/// Each list marker with the layer-space baseline it sits on and the x its right edge aligns to.
+pub fn marker_anchors(layout: &Layout, placement: &Placement) -> Vec<(String, f64, f64)> {
+    let lines: Vec<f64> = layout.lines().map(|l| l.metrics().baseline as f64).collect();
+    let gap = placement.indent * 0.25;
+    placement
+        .markers
+        .iter()
+        .filter_map(|(i, m)| Some((m.clone(), lines.get(*i)? + placement.line_offset(*i).y, placement.indent - gap)))
+        .collect()
+}
+
+fn push_group(groups: &mut Vec<(Option<scrawl_core::Color>, BezPath)>, color: Option<scrawl_core::Color>) -> &mut BezPath {
+    let i = match groups.iter().position(|(c, _)| *c == color) {
+        Some(i) => i,
+        None => {
+            groups.push((color, BezPath::new()));
+            groups.len() - 1
+        }
+    };
+    &mut groups[i].1
+}
+
+/// A glyph's outline at the origin, y-down, with synthetic italic.
+fn glyph_path(run: &parley::GlyphRun<'_, RunBrush>, id: u32) -> Option<BezPath> {
+    use skrifa::MetadataProvider;
+    let r = run.run();
+    let font = r.font();
+    let font_ref = skrifa::FontRef::from_index(font.data.as_ref(), font.index).ok()?;
+    let coords: Vec<skrifa::instance::NormalizedCoord> =
+        r.normalized_coords().iter().map(|&c| skrifa::instance::NormalizedCoord::from_bits(c.to_bits())).collect();
+    let glyph = font_ref.outline_glyphs().get(skrifa::GlyphId::new(id))?;
+    let mut pen = KurboPen(BezPath::new());
+    glyph.draw(skrifa::outline::DrawSettings::unhinted(skrifa::instance::Size::new(r.font_size()), coords.as_slice()), &mut pen).ok()?;
+    let skew = r.synthesis().skew().map(|deg| Affine::skew((deg as f64).to_radians().tan(), 0.0)).unwrap_or(Affine::IDENTITY);
+    Some(skew * Affine::scale_non_uniform(1.0, -1.0) * pen.0)
+}
+
+/// Appends the outlines of a layout set along a path.
+fn path_outlines(layout: &Layout, walker: &PathWalker, offset: f64, groups: &mut Vec<(Option<scrawl_core::Color>, BezPath)>) {
+    let first = layout.lines().next().map_or(0.0, |l| l.metrics().baseline as f64);
+    for line in layout.lines() {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(run) = item else { continue };
+            let path = push_group(groups, run.style().brush.0);
+            for g in run.positioned_glyphs() {
+                let Some(t) = walker.place(offset, g.x as f64, g.advance as f64, g.y as f64 - first) else { continue };
+                if let Some(p) = glyph_path(&run, g.id) {
+                    path.extend((t * p).elements().iter().copied());
+                }
+            }
+        }
+    }
+}
+
+/// Appends a layout's glyph outlines (and decorations), with line `i` moved by `offset(i)`.
+fn glyph_outlines(layout: &Layout, offset: impl Fn(usize) -> Vec2, groups: &mut Vec<(Option<scrawl_core::Color>, BezPath)>) {
+    for (li, line) in layout.lines().enumerate() {
+        let o = offset(li);
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(run) = item else { continue };
+            let path = push_group(groups, run.style().brush.0);
+            let r = run.run();
+            let font = r.font();
+            let Ok(font_ref) = skrifa::FontRef::from_index(font.data.as_ref(), font.index) else { continue };
+            use skrifa::MetadataProvider;
+            let outlines = font_ref.outline_glyphs();
+            let coords: Vec<skrifa::instance::NormalizedCoord> =
+                r.normalized_coords().iter().map(|&c| skrifa::instance::NormalizedCoord::from_bits(c.to_bits())).collect();
+            let size = skrifa::instance::Size::new(r.font_size());
+            let skew = r.synthesis().skew().map(|deg| Affine::skew((deg as f64).to_radians().tan(), 0.0));
+            for g in run.positioned_glyphs() {
+                let Some(glyph) = outlines.get(skrifa::GlyphId::new(g.id)) else { continue };
+                let mut pen = KurboPen(BezPath::new());
+                let settings = skrifa::outline::DrawSettings::unhinted(size, coords.as_slice());
+                if glyph.draw(settings, &mut pen).is_err() {
+                    continue;
+                }
+                // Font units are y-up; flip into our y-down space at the glyph's origin.
+                let t = Affine::translate((g.x as f64 + o.x, g.y as f64 + o.y))
+                    * skew.unwrap_or(Affine::IDENTITY)
+                    * Affine::scale_non_uniform(1.0, -1.0);
+                path.extend((t * pen.0).elements().iter().copied());
+            }
+            // Underlines and strikethroughs, as the renderer draws them.
+            let m = r.font_metrics();
+            let style = run.style();
+            let (x0, x1) = (run.offset() as f64 + o.x, (run.offset() + run.advance()) as f64 + o.x);
+            for (on, off, thickness) in [
+                (style.underline.is_some(), m.underline_offset, m.underline_size),
+                (style.strikethrough.is_some(), m.strikethrough_offset, m.strikethrough_size),
+            ] {
+                if on {
+                    let top = run.baseline() as f64 - off as f64 + o.y;
+                    let rect = Rect::new(x0, top, x1, top + (thickness as f64).max(1.0));
+                    path.extend(rect.to_path(0.1).elements().iter().copied());
+                }
+            }
+        }
     }
 }
 
@@ -387,6 +620,118 @@ mod tests {
         assert!(b.width() > 10.0 && b.height() > 10.0, "{b:?}");
         // Glyphs sit inside the frame (allowing for side bearings).
         assert!(b.y0 >= -2.0 && b.y1 <= l.frame.height + 2.0, "{b:?} in {:?}", l.frame);
+    }
+
+    fn text_layer(s: &str, f: impl FnOnce(&mut TextLayer)) -> Layer {
+        let mut l = Layer::text(Point::ORIGIN, s);
+        if let LayerKind::Text(t) = &mut l.kind {
+            f(t);
+        }
+        l
+    }
+
+    #[test]
+    fn paragraph_spacing_adds_space_between_paragraphs() {
+        let mut e = engine();
+        let mut plain = text_layer("one\ntwo\nthree", |_| {});
+        let mut spaced = text_layer("one\ntwo\nthree", |t| t.style.paragraph_spacing = 10.0);
+        e.fit(&mut plain);
+        e.fit(&mut spaced);
+        assert!((spaced.frame.height - plain.frame.height - 20.0).abs() < 0.01, "{} vs {}", spaced.frame.height, plain.frame.height);
+        let (_, p) = e.layer_layout(&spaced).unwrap();
+        assert_eq!(p.line_dy, [0.0, 10.0, 20.0]);
+        // Wrapped lines within a paragraph don't get the spacing.
+        let mut wrapped = text_layer("one two three four five six seven eight\nnine", |t| {
+            t.style.paragraph_spacing = 10.0;
+            t.sizing = TextSizing::FixedWidth;
+        });
+        wrapped.frame.width = 60.0;
+        e.fit(&mut wrapped);
+        let (_, p) = e.layer_layout(&wrapped).unwrap();
+        let last = *p.line_dy.last().unwrap();
+        assert_eq!(last, 10.0);
+        assert!(p.line_dy.iter().filter(|&&d| d == 0.0).count() > 1);
+    }
+
+    #[test]
+    fn lists_indent_and_mark_paragraphs() {
+        let mut e = engine();
+        let mut plain = text_layer("apples\n\npears", |_| {});
+        let mut list = text_layer("apples\n\npears", |t| t.style.list = scrawl_core::text::ListStyle::Numbered);
+        e.fit(&mut plain);
+        e.fit(&mut list);
+        assert!(list.frame.width > plain.frame.width + 20.0);
+        let (_, p) = e.layer_layout(&list).unwrap();
+        // The empty middle paragraph is skipped, but still counted.
+        assert_eq!(p.markers.iter().map(|(_, m)| m.as_str()).collect::<Vec<_>>(), ["1.", "3."]);
+        // Marker glyphs sit in the indent, left of the text.
+        let b = e.outlines(&list).unwrap().bounding_box();
+        assert!(b.x0 < p.indent * 0.5, "{b:?}");
+    }
+
+    #[test]
+    fn opentype_features_change_shaping() {
+        let mut e = engine();
+        // Tabular figures make every digit as wide; proportional "1"s are usually narrower.
+        let widths = |e: &mut TextEngine, digits: &str, tnum: bool| {
+            let mut l = text_layer(digits, |t| {
+                t.style.font_family = "Helvetica Neue".into();
+                if tnum {
+                    t.style.set_feature("tnum", true);
+                }
+            });
+            e.fit(&mut l);
+            l.frame.width
+        };
+        let (p1, p0) = (widths(&mut e, "1111", false), widths(&mut e, "0000", false));
+        let (t1, t0) = (widths(&mut e, "1111", true), widths(&mut e, "0000", true));
+        // Only meaningful where the font has proportional figures by default.
+        if (p1 - p0).abs() > 0.5 {
+            assert!((t1 - t0).abs() < (p1 - p0).abs(), "tnum evens out digits: {t1}/{t0} vs {p1}/{p0}");
+        }
+        let mut s = TextStyle::default();
+        s.set_feature("liga", true);
+        assert!(s.features.is_empty(), "on by default: nothing stored");
+        s.set_feature("liga", false);
+        assert_eq!(s.feature_css(), "\"liga\" 0");
+    }
+
+    #[test]
+    fn text_follows_its_path() {
+        use kurbo::Circle;
+        let mut e = engine();
+        let circle = Circle::new((100.0, 100.0), 80.0).to_path(0.1);
+        let mut l = text_layer("Around and around the garden we go", |t| {
+            t.style.font_size = 14.0;
+            t.sizing = TextSizing::Fixed;
+            t.on_path = Some(scrawl_core::text::TextPath { path: scrawl_core::PathShape::from_bez_path(&circle), offset: 0.0 });
+        });
+        l.frame = scrawl_core::Frame::new(0.0, 0.0, 200.0, 200.0);
+        let b = e.outlines(&l).unwrap().bounding_box();
+        // About half the circle's worth of text curves round it rather than running off in a
+        // 250-point line.
+        assert!(b.width() < 220.0 && b.height() > 60.0, "{b:?}");
+        // While editing, it lies flat for the caret.
+        e.raw_case = Some(l.id);
+        let flat = e.outlines(&l).unwrap().bounding_box();
+        assert!(flat.height() < 30.0, "{flat:?}");
+        e.raw_case = None;
+        // Glyphs past the end of a short path are left out.
+        let short = kurbo::Line::new((0.0, 0.0), (30.0, 0.0)).to_path(0.1);
+        if let LayerKind::Text(t) = &mut l.kind {
+            t.on_path = Some(scrawl_core::text::TextPath { path: scrawl_core::PathShape::from_bez_path(&short), offset: 0.0 });
+        }
+        let b = e.outlines(&l).unwrap().bounding_box();
+        assert!(b.width() < 40.0, "{b:?}");
+    }
+
+    #[test]
+    fn walking_a_path() {
+        let w = PathWalker::new(&kurbo::Line::new((0.0, 0.0), (0.0, 50.0)).to_path(0.1));
+        assert!((w.length() - 50.0).abs() < 1e-9);
+        let (p, angle) = w.at(20.0).unwrap();
+        assert!((p.y - 20.0).abs() < 1e-9 && (angle - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        assert!(w.at(60.0).is_none() && w.at(-1.0).is_none());
     }
 
     #[test]

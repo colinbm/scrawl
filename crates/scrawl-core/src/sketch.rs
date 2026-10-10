@@ -297,6 +297,8 @@ fn text_style_in(a: &Value) -> (TextStyle, Option<Color>) {
             2 => TextTransform::Lowercase,
             _ => TextTransform::None,
         },
+        paragraph_spacing: num(para, "paragraphSpacing"),
+        ..TextStyle::default()
     };
     let color = a.get("MSAttributedStringColorAttribute").map(color_in);
     (style, color)
@@ -494,7 +496,7 @@ impl Importer {
                         runs.push(crate::text::TextRun { start: byte_at(loc), end: byte_at(loc + len), style: run_style });
                     }
                 }
-                let mut t = TextLayer { text: string.to_owned(), style, sizing, runs };
+                let mut t = TextLayer { text: string.to_owned(), style, sizing, runs, on_path: None };
                 t.normalize();
                 let mut layer = self.common(v, frame, LayerKind::Text(t), entry);
                 // The text color lives in the string attributes; a clear one means no fill.
@@ -833,6 +835,9 @@ fn text_attrs(ts: &TextStyle, color: Color, full: bool) -> Value {
     if let Some(lh) = ts.line_height {
         a["paragraphStyle"]["maximumLineHeight"] = json!(lh);
         a["paragraphStyle"]["minimumLineHeight"] = json!(lh);
+    }
+    if ts.paragraph_spacing != 0.0 {
+        a["paragraphStyle"]["paragraphSpacing"] = json!(ts.paragraph_spacing);
     }
     if !full && let Some(map) = a.as_object_mut() {
         for k in ["underlineStyle", "strikethroughStyle", "MSAttributedStringTextTransformAttribute"] {

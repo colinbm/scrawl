@@ -1273,3 +1273,50 @@ fn rich_text_styles_part_of_a_layer() {
     h.run();
     assert!(text_layer(&h, id).runs.is_empty(), "the whole session was one undo step");
 }
+
+#[test]
+fn clicks_find_text_moved_by_paragraph_spacing_and_lists() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let id = select(&mut h, "Body");
+    if let Some(scrawl_core::LayerKind::Text(t)) = h.state_mut().front_mut().page_mut().find_mut(id).map(|l| &mut l.kind) {
+        t.text = "first\nsecond".into();
+        t.style.paragraph_spacing = 40.0;
+        t.style.list = scrawl_core::text::ListStyle::Bullet;
+    }
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    let b = h.state().front().page().world_bounds(id).unwrap();
+    // The second paragraph sits at the bottom of the (taller) frame; click near its end.
+    click_page(&mut h, b.x1 - 4.0, b.y1 - 4.0);
+    let sel = h.state().front().canvas.text_edit.as_ref().map(|_| ());
+    assert!(sel.is_some(), "still editing");
+    h.event(egui::Event::Text("!".into()));
+    h.run();
+    assert_eq!(text_layer(&h, id).text, "first\nsecond!", "the caret landed at the end of the second paragraph");
+    save(&mut h, "paragraphs");
+}
+
+#[test]
+fn text_attaches_to_a_path_and_back() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let text = layer_named(&h, "Underlined & spaced").id;
+    let ring = layer_named(&h, "Ring").id;
+    h.state_mut().front_mut().selection = vec![text, ring];
+    h.run();
+    crate::commands::execute(h.state_mut().front_mut(), crate::commands::Command::AttachTextToPath, &egui::Context::default());
+    h.run();
+    assert!(h.state().front().error.is_none(), "{:?}", h.state().front().error);
+    assert_eq!(h.state().front().selection, [text]);
+    assert!(text_layer(&h, text).on_path.is_some());
+    // The text now covers the ring's area.
+    let (tb, rb) = (h.state().front().page().world_bounds(text).unwrap(), h.state().front().page().world_bounds(ring).unwrap());
+    assert!(tb.contains(rb.center()), "{tb:?} {rb:?}");
+    assert!(h.query_by_label("Detach from Path").is_some());
+    save(&mut h, "text_on_path");
+    h.get_by_label("Detach from Path").click();
+    h.run();
+    assert!(text_layer(&h, text).on_path.is_none());
+}
