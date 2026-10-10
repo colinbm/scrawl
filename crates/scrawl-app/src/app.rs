@@ -266,15 +266,57 @@ impl ScrawlApp {
         if !self.confirm_discard() {
             return;
         }
-        if let Some(path) = rfd::FileDialog::new().add_filter("Scrawl document", &[io::FILE_EXTENSION]).pick_file() {
+        let dialog = rfd::FileDialog::new()
+            .add_filter("Documents", &[io::FILE_EXTENSION, scrawl_core::sketch::FILE_EXTENSION])
+            .add_filter("Scrawl document", &[io::FILE_EXTENSION])
+            .add_filter("Sketch document", &[scrawl_core::sketch::FILE_EXTENSION]);
+        if let Some(path) = dialog.pick_file() {
             self.open_path(&path);
         }
     }
 
     pub fn open_path(&mut self, path: &Path) {
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(scrawl_core::sketch::FILE_EXTENSION)) {
+            self.import_sketch(path);
+            return;
+        }
         match io::load(path) {
             Ok(doc) => self.set_document(doc, Some(path.to_path_buf())),
             Err(e) => self.error = Some(format!("Couldn't open {}: {e}", path.display())),
+        }
+    }
+
+    /// Opens a design file as a new, untitled document (saving asks where to put the .scrawl).
+    pub fn import_sketch(&mut self, path: &Path) {
+        let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| scrawl_core::sketch::import(&b));
+        match result {
+            Ok(doc) => {
+                self.set_document(doc, None);
+                // Unsaved, since it isn't a Scrawl file yet.
+                self.saved = Document::default();
+                self.notify(format!("Imported {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+            }
+            Err(e) => self.error = Some(format!("Couldn't open {}: {e}", path.display())),
+        }
+    }
+
+    /// File › Save as…: writes the document as a design file.
+    pub fn save_as_sketch(&mut self) {
+        let stem = self.file_path.as_ref().and_then(|p| p.file_stem()).map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
+        let Some(mut path) = rfd::FileDialog::new()
+            .add_filter("Sketch document", &[scrawl_core::sketch::FILE_EXTENSION])
+            .set_file_name(format!("{stem}.{}", scrawl_core::sketch::FILE_EXTENSION))
+            .save_file()
+        else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension(scrawl_core::sketch::FILE_EXTENSION);
+        }
+        let result = scrawl_core::sketch::export(&self.doc).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
+        match result {
+            Ok(()) => self.notify(format!("Saved {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()))),
+            Err(e) => self.error = Some(format!("Couldn't save {}: {e}", path.display())),
         }
     }
 

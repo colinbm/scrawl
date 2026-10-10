@@ -251,7 +251,7 @@ impl BooleanOp {
         }
     }
 
-    fn sweep_op(self) -> linesweeper::BinaryOp {
+    pub(crate) fn sweep_op(self) -> linesweeper::BinaryOp {
         match self {
             Self::Union => linesweeper::BinaryOp::Union,
             Self::Subtract => linesweeper::BinaryOp::Difference,
@@ -263,7 +263,7 @@ impl BooleanOp {
 
 /// Applies `op` to two paths. Inputs are interpreted with the even-odd rule, which matches
 /// non-zero for the simple shapes Scrawl produces and is exact for nested boolean results.
-fn path_boolean(a: &BezPath, b: &BezPath, op: linesweeper::BinaryOp) -> Result<BezPath, String> {
+pub(crate) fn path_boolean(a: &BezPath, b: &BezPath, op: linesweeper::BinaryOp) -> Result<BezPath, String> {
     let contours = linesweeper::binary_op(a, b, linesweeper::FillRule::EvenOdd, op).map_err(|e| e.to_string())?;
     let mut out = BezPath::new();
     for c in contours.contours() {

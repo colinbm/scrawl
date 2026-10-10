@@ -10,6 +10,7 @@ cargo run -p scrawl-core --example sample demo.scrawl  # generate a sample file
 cargo run -p scrawl-app --release -- demo.scrawl       # open it
 cargo test --workspace
 cargo run -p scrawl-render --example render -- demo.scrawl out.png 2   # headless PNG render
+cargo run -p scrawl-core --example sketch -- demo.scrawl demo.sketch   # convert to/from a design file
 ```
 
 UI tests run the whole app offscreen with egui_kittest (wgpu); set `SCRAWL_UI_SHOTS=dir` to save
@@ -19,9 +20,9 @@ a PNG of each test's final frame. GPU tests skip themselves when no adapter is a
 
 | Crate | Role |
 |---|---|
-| `scrawl-core` | UI-agnostic document model: layer tree, geometry (kurbo), editing ops, hit testing, snapshot undo, `.scrawl` file format (zip + JSON). |
+| `scrawl-core` | UI-agnostic document model: layer tree, geometry (kurbo), editing ops, hit testing, snapshot undo, `.scrawl` file format (zip + JSON + images), design-file import/export, CSS. |
 | `scrawl-text` | Text layout (parley) with a layout cache, frame fitting, font listing, glyph outlines (skrifa). |
-| `scrawl-render` | Turns a page into a [Vello](https://github.com/linebender/vello) scene (GPU compute 2D renderer). |
+| `scrawl-render` | Turns a page into a [Vello](https://github.com/linebender/vello) scene (GPU compute 2D renderer); headless export to PNG/JPG/WEBP, SVG writer and import (usvg), PDF (svg2pdf). |
 | `scrawl-app` | Desktop shell: eframe/egui (winit + wgpu) for panels; the canvas is Vello rendered to a wgpu texture shown by egui, with selection overlays painted by egui. |
 
 Key conventions:

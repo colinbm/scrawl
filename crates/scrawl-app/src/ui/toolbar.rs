@@ -43,6 +43,9 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
             if item(ui, "Save As…", Some(shortcuts::SAVE_AS), true) {
                 app.save_as();
             }
+            if item(ui, "Save as Sketch…", None, true) {
+                app.save_as_sketch();
+            }
             ui.separator();
             if item(ui, "Export Selection…", Some(shortcuts::EXPORT), has_sel) {
                 let sel = app.selection.clone();

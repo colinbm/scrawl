@@ -21,6 +21,7 @@ pub mod library;
 pub mod ops;
 pub mod path;
 pub mod sample;
+pub mod sketch;
 pub mod snap;
 pub mod style;
 pub mod symbols;

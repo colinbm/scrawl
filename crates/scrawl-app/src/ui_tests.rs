@@ -737,3 +737,23 @@ fn svg_files_and_pasted_svg_become_layers() {
     h.run();
     assert_eq!(layer_count(&h), before + 3);
 }
+
+#[test]
+fn opening_a_sketch_file_imports_it() {
+    let Some(mut h) = harness() else { return };
+    let dir = std::env::temp_dir().join(format!("scrawl-ui-sketch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Design.sketch");
+    std::fs::write(&path, scrawl_core::sketch::export(&scrawl_core::sample::sample_document()).unwrap()).unwrap();
+
+    h.state_mut().open_path(&path);
+    h.step();
+    let app = h.state();
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(app.doc.pages.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Home", "Symbols"]);
+    assert!(app.file_path.is_none() && app.is_dirty(), "imported, not yet saved as Scrawl");
+    assert_eq!(instance_text(&layer_named(&h, "Learn more")), ["Learn more"]);
+    assert!(h.query_by_label("Imported Design.sketch").is_some());
+    save(&mut h, "sketch_import");
+    std::fs::remove_dir_all(&dir).ok();
+}

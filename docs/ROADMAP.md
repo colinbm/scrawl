@@ -67,9 +67,11 @@
 - ⬜ Watch library files for changes; relative library paths; gradient stops linked to variables
 
 ## Milestone 7 — Export & interop
-- ⬜ Exportable slices / layer export: PNG, JPG, WEBP, SVG, PDF at multiple scales
-- ⬜ Copy as SVG/CSS; Import SVG and images (drag-drop)
-- ⬜ Design-file import (open format spec), then export
+- ✅ Export formats per layer (scale, suffix, type) and slices (S): PNG, JPG, WEBP via the headless renderer; SVG via a structure-preserving writer; PDF from that SVG (svg2pdf)
+- ✅ Copy as SVG / CSS; import images and SVG files by drag-and-drop, Insert › Image… (⇧⌘K) or pasting SVG markup
+- ✅ Design-file import (File › Open) and export (File › Save as…): pages, artboards, shapes, paths, text, images, symbols with overrides, shared styles, swatches, library components, export formats. Exports validate against the published file-format schema; imports checked against real saved files and their previews
+- ⬜ SVG: angular gradients, line-end markers and shadow spread are approximated or dropped; SVG text import needs fonts
+- ⬜ Design files: multi-style text runs, live boolean shape groups (flattened on import), blurs, noise fills, prototyping links
 
 ## Milestone 8 — Prototyping & platform
 - ⬜ Prototype links, hotspots, flows, animations, preview window
