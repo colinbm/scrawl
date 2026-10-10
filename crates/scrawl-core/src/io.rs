@@ -50,7 +50,11 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Document, FileError> {
     if meta.format_version > FORMAT_VERSION {
         return Err(FileError::TooNew(meta.format_version));
     }
-    Ok(serde_json::from_slice(&read_entry(&mut zip, DOCUMENT)?)?)
+    let mut doc: Document = serde_json::from_slice(&read_entry(&mut zip, DOCUMENT)?)?;
+    // Instance contents aren't saved. Rebuild them so the document renders as-is; text in them is
+    // sized once a text engine refits the document.
+    crate::symbols::sync_instances(&mut doc, &mut |_| {});
+    Ok(doc)
 }
 
 fn read_entry(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<Vec<u8>, FileError> {

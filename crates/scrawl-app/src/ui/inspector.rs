@@ -8,6 +8,9 @@ use scrawl_core::{
     PointMode, Shadow,
 };
 
+use scrawl_core::symbols::{OverridableKind, Symbols};
+use scrawl_core::{OverrideValue, SymbolId, SymbolInstance};
+
 use crate::app::ScrawlApp;
 use crate::canvas::{GradientTarget, Tool};
 use crate::ui::paint::{PaintTarget, Palette, paint_button};
@@ -199,6 +202,7 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         }
         LayerKind::Text(text) => text_section(ui, text, &mut app.text),
         LayerKind::Group(g) => stack_section(ui, g),
+        LayerKind::Symbol(inst) => symbol_section(app, ui, layer.id, inst),
         LayerKind::Star(star) => {
             section(ui, "Star");
             ui.horizontal(|ui| {
@@ -215,6 +219,11 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         _ => {}
     }
 
+    if let LayerKind::Artboard(ab) = &mut layer.kind
+        && let Some(symbol) = ab.symbol_id
+    {
+        master_section(app, ui, ab, symbol);
+    }
     if let LayerKind::Artboard(ab) = &mut layer.kind {
         section(ui, "Artboard");
         let mut has_bg = ab.background.is_some();
@@ -247,6 +256,9 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
     });
     if !layer.is_artboard() && !layer.is_group() {
         ui.checkbox(&mut layer.is_mask, "Use as mask").on_hover_text("Clips the layers above it in the same group");
+    }
+    // Instances take their look from the master; overrides cover the rest.
+    if !layer.is_artboard() && !layer.is_group() && !layer.is_symbol_instance() {
         shared_style_row(app, ui, layer);
         style_sections(app, ui, layer);
     }
@@ -405,7 +417,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                     let target = PaintTarget { swatch: Some(&mut shadow.swatch), ..PaintTarget::color(&mut shadow.color) };
                     paint_button(ui, "shadow", target, swatches);
                     if let Some(name) = variable_name(swatches, shadow.swatch) {
-                        ui.label(format!("◆ {name}"));
+                        crate::ui::paint::variable_label(ui, &name);
                     }
                     if icons::small_button(ui, Icon::Minus, "Remove shadow").clicked() {
                         remove = Some(i);
@@ -447,7 +459,7 @@ fn variable_name(palette: &Palette<'_>, link: Option<scrawl_core::SwatchId>) -> 
 fn paint_summary(ui: &mut Ui, fill_type: FillType, color: &mut Color, gradient: &scrawl_core::Gradient, variable: Option<String>) {
     match (fill_type, variable) {
         (FillType::Color, Some(name)) => {
-            ui.add(egui::Label::new(format!("◆ {name}")).truncate()).on_hover_text("Color variable");
+            crate::ui::paint::variable_label(ui, &name).on_hover_text("Color variable");
         }
         (FillType::Color, None) => {
             hex_field(ui, color);
@@ -863,6 +875,127 @@ fn resizing_widget(ui: &mut Ui, r: &mut scrawl_core::constraints::Resizing) {
                 *r = Default::default();
             }
         });
+    });
+}
+
+/// Masters by name, for symbol pickers.
+fn master_names(app: &ScrawlApp) -> Vec<(SymbolId, String)> {
+    app.doc.symbol_masters().into_iter().filter_map(|(_, l)| Some((l.master_of()?, l.name.clone()))).collect()
+}
+
+fn symbol_section(app: &mut ScrawlApp, ui: &mut Ui, id: scrawl_core::LayerId, inst: &mut SymbolInstance) {
+    let masters = master_names(app);
+    let name_of = |s: SymbolId| masters.iter().find(|(m, _)| *m == s).map_or("Missing symbol".to_owned(), |(_, n)| n.clone());
+    section(ui, "Symbol");
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("instance_symbol").selected_text(name_of(inst.symbol_id)).width(150.0).show_ui(ui, |ui| {
+            for (symbol, name) in &masters {
+                ui.selectable_value(&mut inst.symbol_id, *symbol, name);
+            }
+        });
+    });
+    ui.horizontal(|ui| {
+        if ui.button("Edit Master").clicked() {
+            app.edit_master(inst.symbol_id);
+        }
+        if ui.button("Detach").on_hover_text("Replace with a group of its layers (⌥⌘B)").clicked() {
+            app.selection = vec![id];
+            app.detach_selection();
+        }
+    });
+
+    let items = Symbols::new(&app.doc).overridables(inst);
+    if items.is_empty() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        section(ui, "Overrides");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add_enabled(!inst.overrides.is_empty(), egui::Button::new("Reset").small()).clicked() {
+                inst.overrides.clear();
+            }
+        });
+    });
+    for item in items {
+        ui.push_id(&item.path, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(item.depth as f32 * 10.0);
+                ui.add_sized([72.0, 18.0], egui::Label::new(RichText::new(&item.name).small()).truncate());
+                let current = inst.override_for(&item.path).cloned();
+                // Choosing the default value clears the override.
+                let mut set = |value: OverrideValue, default: bool| inst.set_override(item.path.clone(), (!default).then_some(value));
+                match &item.kind {
+                    OverridableKind::Text(default) => {
+                        let mut text = match current {
+                            Some(OverrideValue::Text(t)) => t,
+                            _ => default.clone(),
+                        };
+                        let edit = egui::TextEdit::singleline(&mut text).hint_text(default.as_str()).desired_width(f32::INFINITY);
+                        if ui.add(edit).changed() {
+                            let is_default = text == *default;
+                            set(OverrideValue::Text(text), is_default);
+                        }
+                    }
+                    OverridableKind::Symbol(default) => {
+                        let shown = match current {
+                            Some(OverrideValue::Symbol(s)) => s,
+                            _ => Some(*default),
+                        };
+                        let label = shown.map_or("None".to_owned(), name_of);
+                        egui::ComboBox::from_id_salt("swap").selected_text(label).width(120.0).show_ui(ui, |ui| {
+                            if ui.selectable_label(shown.is_none(), "None").clicked() {
+                                set(OverrideValue::Symbol(None), false);
+                            }
+                            for (symbol, name) in &masters {
+                                if ui.selectable_label(shown == Some(*symbol), name).clicked() {
+                                    set(OverrideValue::Symbol(Some(*symbol)), symbol == default);
+                                }
+                            }
+                        });
+                    }
+                    OverridableKind::Style { style, text } => {
+                        let shown = match current {
+                            Some(OverrideValue::Style(s)) => s,
+                            _ => *style,
+                        };
+                        let list = if *text { &app.doc.text_styles } else { &app.doc.layer_styles };
+                        let label = list.iter().find(|s| s.id == shown).map_or("Missing style", |s| s.name.as_str());
+                        egui::ComboBox::from_id_salt("style").selected_text(label).width(120.0).show_ui(ui, |ui| {
+                            for s in list {
+                                if ui.selectable_label(shown == s.id, &s.name).clicked() {
+                                    set(OverrideValue::Style(s.id), s.id == *style);
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+        });
+    }
+}
+
+fn master_section(app: &mut ScrawlApp, ui: &mut Ui, ab: &mut scrawl_core::Artboard, symbol: SymbolId) {
+    section(ui, "Symbol Master");
+    let mut count = 0;
+    for page in &app.doc.pages {
+        page.walk(|l| {
+            if matches!(&l.kind, LayerKind::Symbol(i) if i.symbol_id == symbol) {
+                count += 1;
+            }
+        });
+    }
+    ui.weak(match count {
+        1 => "1 instance".to_owned(),
+        n => format!("{n} instances"),
+    });
+    ui.horizontal(|ui| {
+        if ui.button("Insert Instance").clicked() {
+            app.insert_symbol(symbol);
+        }
+        if ui.button("Convert to Artboard").on_hover_text("Detach every instance and make this a plain artboard").clicked() {
+            scrawl_core::symbols::detach_all(&mut app.doc, symbol);
+            ab.symbol_id = None;
+        }
     });
 }
 

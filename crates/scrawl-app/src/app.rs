@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use egui::{Key, KeyboardShortcut, Modifiers};
 use scrawl_core::kurbo::Vec2;
 use scrawl_core::ops::{self, Align, BooleanOp, Reorder};
-use scrawl_core::{Document, Frame, History, Layer, LayerId, Page, PageId, PointMode, io};
+use scrawl_core::kurbo::Point;
+use scrawl_core::symbols::{self, SymbolId};
+use scrawl_core::{Document, Frame, History, Layer, LayerId, LayerKind, Page, PageId, PointMode, io};
 use serde_json::json;
 
 use crate::canvas::{CanvasState, Tool};
@@ -60,6 +62,8 @@ pub mod shortcuts {
     pub const DISTRIBUTE_V: KeyboardShortcut = cmd_ctrl(Key::V);
     pub const TIDY: KeyboardShortcut = cmd_ctrl(Key::T);
     pub const FIND: KeyboardShortcut = cmd(Key::F);
+    pub const CREATE_SYMBOL: KeyboardShortcut = cmd_alt(Key::Y);
+    pub const DETACH_SYMBOL: KeyboardShortcut = cmd_alt(Key::B);
 
     pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
         match op {
@@ -340,7 +344,57 @@ impl ScrawlApp {
 
     pub fn delete_selection(&mut self) {
         let sel = std::mem::take(&mut self.selection);
+        // Deleting a master detaches its instances first, so they keep their look.
+        let masters: Vec<_> = sel.iter().filter_map(|&id| self.page().find(id).and_then(Layer::master_of)).collect();
+        for symbol in masters {
+            symbols::detach_all(&mut self.doc, symbol);
+        }
         ops::delete(self.page_mut(), &sel);
+    }
+
+    // ---- Symbols -----------------------------------------------------------------------------
+
+    /// Turns the selection into a symbol, replacing it with an instance.
+    pub fn create_symbol(&mut self) {
+        let sel = self.selection.clone();
+        match symbols::create_symbol(&mut self.doc, self.page, &sel) {
+            Some(created) => self.selection = vec![created.instance.unwrap_or(created.master)],
+            None => self.error = Some("Select layers or a single artboard to create a symbol.".into()),
+        }
+    }
+
+    /// Replaces selected instances with groups of their contents.
+    pub fn detach_selection(&mut self) {
+        let sel = self.selection.clone();
+        let page = self.page_mut();
+        let out: Vec<LayerId> = sel.iter().map(|&id| symbols::detach(page, id).unwrap_or(id)).collect();
+        self.selection = out;
+    }
+
+    /// Shows the master of `symbol`, selected, on its page.
+    pub fn edit_master(&mut self, symbol: SymbolId) {
+        let Some((page, id)) = self.doc.find_master(symbol) else {
+            self.error = Some("This symbol's master is missing.".into());
+            return;
+        };
+        self.set_page(page);
+        self.selection = vec![id];
+        self.tool = Tool::Select;
+        self.zoom_to_selection(1.0);
+    }
+
+    /// Places an instance of `symbol` at the center of the view, inside the artboard there.
+    pub fn insert_symbol(&mut self, symbol: SymbolId) {
+        let Some(master) = symbols::Symbols::new(&self.doc).master(symbol).cloned() else { return };
+        let center = self.viewport().to_page(self.canvas.rect, self.canvas.rect.center());
+        let origin = Point::new(
+            (center.x - master.frame.width / 2.0).round(),
+            (center.y - master.frame.height / 2.0).round(),
+        );
+        let Some(instance) = Layer::instance_of(&master, origin) else { return };
+        let id = ops::insert_drawn(self.page_mut(), instance);
+        self.selection = vec![id];
+        self.tool = Tool::Select;
     }
 
     pub fn duplicate_selection(&mut self) {
@@ -425,6 +479,12 @@ impl ScrawlApp {
     /// Starts editing a layer: text in place, or the points of a shape (converting it to a path
     /// first if needed).
     pub fn enter_vector_edit(&mut self, id: LayerId) {
+        // Double-clicking an instance opens its master.
+        if let Some(LayerKind::Symbol(inst)) = self.page().find(id).map(|l| &l.kind) {
+            let symbol = inst.symbol_id;
+            self.edit_master(symbol);
+            return;
+        }
         if self.page().find(id).is_some_and(Layer::is_text) {
             crate::text_edit::begin(self, id, true);
             return;
@@ -651,6 +711,12 @@ impl ScrawlApp {
         if pressed(MASK) {
             self.use_as_mask();
         }
+        if pressed(CREATE_SYMBOL) {
+            self.create_symbol();
+        }
+        if pressed(DETACH_SYMBOL) {
+            self.detach_selection();
+        }
         if pressed(UNGROUP) {
             self.ungroup_selection();
         }
@@ -794,6 +860,13 @@ impl ScrawlApp {
         // Keep text frames fitted to their content.
         let page_id = self.page;
         let dragging = self.canvas.dragging();
+        // Instances follow their masters and overrides.
+        let text = &mut self.text;
+        if symbols::sync_instances(&mut self.doc, &mut |layers| {
+            text.fit_all(layers);
+        }) {
+            ctx.request_repaint();
+        }
         if let Some(page) = self.doc.page_mut(page_id) {
             let fitted = self.text.fit_all(&mut page.layers);
             // Stacks re-flow after their contents change, except while a child is dragged.

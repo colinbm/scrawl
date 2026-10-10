@@ -142,7 +142,7 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
         && let Some(var) = link.and_then(|id| palette.variables.iter().find(|v| v.id == id))
     {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("◆ {}", var.name)).strong());
+            variable_label(ui, &var.name);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("Detach").on_hover_text("Stop following this color variable").clicked() {
                     *link = None;
@@ -246,6 +246,19 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
 
     ui.data_mut(|d| d.insert_temp(stop_id, selected_stop));
     is_gradient
+}
+
+/// A color variable's name with a variable marker (a ringed dot), as shown where a color is linked.
+pub fn variable_label(ui: &mut Ui, name: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+        let color = ui.visuals().text_color();
+        ui.painter().circle_stroke(rect.center(), 4.5, Stroke::new(1.0, color));
+        ui.painter().circle_filled(rect.center(), 2.0, color);
+        ui.add(egui::Label::new(name).truncate())
+    })
+    .inner
 }
 
 /// A small clickable color square; `selected` rings it in the accent color.

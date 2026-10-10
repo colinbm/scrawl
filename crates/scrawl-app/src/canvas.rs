@@ -686,6 +686,9 @@ fn entered_groups(page: &Page, selection: &[LayerId]) -> Vec<LayerId> {
     selection.iter().filter_map(|&id| page.ancestors(id)).flatten().collect()
 }
 
+/// The color symbol masters and instances are marked with.
+pub const SYMBOL: Color32 = Color32::from_rgb(0xA0, 0x7C, 0xFF);
+
 fn title_hit(app: &ScrawlApp, screen: Pos2) -> Option<LayerId> {
     app.canvas.title_hits.iter().rev().find(|(r, _)| r.contains(screen)).map(|&(_, id)| id)
 }
@@ -1061,6 +1064,16 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
     for l in page.layers.iter().filter(|l| l.is_artboard() && l.visible) {
         let pos = to_pos(to_screen * l.frame.origin()) - vec2(0.0, 4.0);
         let color = if app.selection.contains(&l.id) { ACCENT } else { text_color };
+        // Symbol masters get a symbol icon and colored title, like the usual purple ones.
+        let (pos, color) = match l.master_of() {
+            Some(_) => {
+                let color = if app.selection.contains(&l.id) { ACCENT } else { SYMBOL };
+                let icon = ERect::from_min_size(pos - vec2(0.0, 11.0), vec2(11.0, 11.0));
+                crate::ui::icons::paint(p, icon, crate::ui::icons::Icon::Symbol, color);
+                (pos + vec2(14.0, 0.0), color)
+            }
+            None => (pos, color),
+        };
         let r = p.text(pos, egui::Align2::LEFT_BOTTOM, &l.name, egui::FontId::proportional(11.0), color);
         app.canvas.title_hits.push((r.expand(2.0), l.id));
     }

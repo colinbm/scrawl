@@ -81,6 +81,8 @@ pub enum LayerKind {
     Star(Star),
     Path(PathShape),
     Text(TextLayer),
+    /// An instance of a symbol master.
+    Symbol(crate::symbols::SymbolInstance),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -103,6 +105,9 @@ pub struct Artboard {
     pub grid: crate::grid::SquareGrid,
     #[serde(default)]
     pub layout: crate::grid::LayoutGrid,
+    /// Makes this artboard a symbol master: its children are what instances show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_id: Option<crate::symbols::SymbolId>,
 }
 
 impl Artboard {
@@ -115,6 +120,7 @@ impl Artboard {
             guides: vec![],
             grid: Default::default(),
             layout: Default::default(),
+            symbol_id: None,
         }
     }
 }
@@ -176,6 +182,7 @@ fn is_line(p: &PathShape) -> bool {
 impl LayerKind {
     pub fn type_name(&self) -> &'static str {
         match self {
+            Self::Artboard(a) if a.symbol_id.is_some() => "Symbol Master",
             Self::Artboard(_) => "Artboard",
             Self::Group(_) => "Group",
             Self::Rectangle(_) => "Rectangle",
@@ -186,6 +193,7 @@ impl LayerKind {
             Self::Text(_) => "Text",
             Self::Path(p) if is_line(p) => "Line",
             Self::Path(_) => "Path",
+            Self::Symbol(_) => "Symbol",
         }
     }
 }
@@ -306,6 +314,18 @@ impl Layer {
         matches!(self.kind, LayerKind::Group(_))
     }
 
+    pub fn is_symbol_instance(&self) -> bool {
+        matches!(self.kind, LayerKind::Symbol(_))
+    }
+
+    /// The symbol this artboard is the master of.
+    pub fn master_of(&self) -> Option<crate::symbols::SymbolId> {
+        match &self.kind {
+            LayerKind::Artboard(a) => a.symbol_id,
+            _ => None,
+        }
+    }
+
     /// Maps this layer's local space into its parent's space.
     pub fn local_transform(&self) -> Affine {
         let f = self.frame;
@@ -342,8 +362,8 @@ impl Layer {
                 Some(fitted_polygon(r, &regular_vertices(st.points.max(3) * 2, &[1.0, st.inner_ratio.clamp(0.01, 1.0)])))
             }
             LayerKind::Path(p) => Some(p.to_bez_path(r.width(), r.height())),
-            // A text layer's geometry, for selection and bounds, is its frame.
-            LayerKind::Text(_) => Some(r.to_path(PATH_TOLERANCE)),
+            // A text layer's or symbol instance's geometry, for selection and bounds, is its frame.
+            LayerKind::Text(_) | LayerKind::Symbol(_) => Some(r.to_path(PATH_TOLERANCE)),
         }
     }
 
@@ -405,7 +425,7 @@ impl Layer {
     }
 
     /// Applies resizing constraints after the parent's size changed from `old` to `new`.
-    fn fit_to_parent(&mut self, old: (f64, f64), new: (f64, f64)) {
+    pub(crate) fn fit_to_parent(&mut self, old: (f64, f64), new: (f64, f64)) {
         let rs = self.resizing;
         let f = self.frame;
         let (x, w) = Resizing::axis(f.x, f.width, old.0, new.0, rs.left, rs.right, rs.fix_width);
@@ -447,7 +467,7 @@ impl Layer {
     pub fn editable_path(&self) -> Option<PathShape> {
         match &self.kind {
             LayerKind::Path(p) => Some(p.scaled(self.frame.width, self.frame.height)),
-            LayerKind::Artboard(_) | LayerKind::Group(_) | LayerKind::Text(_) => None,
+            LayerKind::Artboard(_) | LayerKind::Group(_) | LayerKind::Text(_) | LayerKind::Symbol(_) => None,
             _ => Some(PathShape::from_bez_path(&self.local_path()?)),
         }
     }
@@ -481,6 +501,12 @@ impl Layer {
 
     fn regenerate_ids(&mut self) {
         self.id = LayerId::new();
+        // A copied master defines a new symbol.
+        if let LayerKind::Artboard(a) = &mut self.kind
+            && a.symbol_id.is_some()
+        {
+            a.symbol_id = Some(crate::symbols::SymbolId::new());
+        }
         if let Some(children) = self.children_mut() {
             children.iter_mut().for_each(Layer::regenerate_ids);
         }

@@ -3,11 +3,13 @@
 
 use kurbo::Point;
 
+use crate::constraints::Resizing;
 use crate::ops::{self, BooleanOp};
+use crate::symbols::{OverrideValue, SymbolId, SymbolInstance};
 use crate::text::{TextAlign, TextSizing};
 use crate::{
     BlendMode, Border, BorderPosition, Color, Document, Fill, FillType, Frame, Gradient, GradientKind, GradientStop, Layer,
-    LayerKind, Marker, Rectangle, Shadow,
+    LayerId, LayerKind, Marker, Rectangle, Shadow, Style,
 };
 
 fn hex(s: &str) -> Color {
@@ -162,7 +164,102 @@ pub fn sample_document() -> Document {
     ops::insert_drawn(page, outlined);
 
     add_shared_components(&mut doc);
+    add_symbols(&mut doc);
+    crate::symbols::sync_instances(&mut doc, &mut |_| {});
     doc
+}
+
+/// A master on the Symbols page.
+fn master(doc: &mut Document, name: &str, frame: Frame, children: Vec<Layer>) -> (SymbolId, LayerId) {
+    let symbol = SymbolId::new();
+    let mut m = Layer::artboard(name, frame);
+    if let LayerKind::Artboard(a) = &mut m.kind {
+        a.children = children;
+        a.symbol_id = Some(symbol);
+        a.background = Some(Color::TRANSPARENT);
+    }
+    let page = doc.symbols_page();
+    (symbol, ops::insert_root(doc.page_mut(page).expect("symbols page"), m))
+}
+
+/// A centered label that stretches with its symbol.
+fn label(text: &str, frame: Frame) -> Layer {
+    let mut l = Layer::text(frame.origin(), text);
+    l.frame = frame;
+    l.name = "Label".into();
+    l.style.fills = vec![Fill::solid(Color::WHITE)];
+    l.resizing = Resizing { left: true, right: true, fix_height: true, ..Default::default() };
+    set_text(&mut l, |t| {
+        t.sizing = TextSizing::FixedWidth;
+        t.style.alignment = TextAlign::Center;
+        t.style.font_size = 15.0;
+        t.style.font_weight = 600;
+    });
+    l
+}
+
+/// Symbols: icons, a button, and an icon button nesting an icon. Instances go on a second
+/// artboard on the first page.
+fn add_symbols(doc: &mut Document) {
+    let blue = doc.swatches.iter().find(|s| s.name == "Brand Blue").map(|s| (s.id, s.color));
+    let pill = |w: f64| {
+        let mut bg = Layer::rectangle(Frame::new(0.0, 0.0, w, 44.0));
+        bg.kind = LayerKind::Rectangle(Rectangle { corner_radius: 22.0, corner_radii: None });
+        bg.name = "Background".into();
+        bg.style.borders.clear();
+        if let Some((id, color)) = blue {
+            bg.style.fills = vec![Fill { swatch: Some(id), ..Fill::solid(color) }];
+        }
+        bg.resizing = Resizing { left: true, right: true, top: true, bottom: true, ..Default::default() };
+        bg
+    };
+
+    let mut star = Layer::star(Frame::new(0.0, 0.0, 20.0, 20.0));
+    star.style = Style { fills: vec![Fill::solid(hex("FFD23F"))], ..Default::default() };
+    let (star_icon, _) = master(doc, "Icon/Star", Frame::new(0.0, 0.0, 20.0, 20.0), vec![star]);
+    let mut dot = Layer::oval(Frame::new(3.0, 3.0, 14.0, 14.0));
+    dot.style = Style { fills: vec![Fill::solid(hex("2EC4B6"))], ..Default::default() };
+    let (dot_icon, _) = master(doc, "Icon/Dot", Frame::new(60.0, 0.0, 20.0, 20.0), vec![dot]);
+
+    let (button, _) = master(doc, "Button", Frame::new(0.0, 80.0, 160.0, 44.0), vec![pill(160.0), label("Button", Frame::new(12.0, 12.0, 136.0, 20.0))]);
+
+    let mut icon = Layer::new("Icon", Frame::new(16.0, 12.0, 20.0, 20.0), LayerKind::Symbol(SymbolInstance::new(star_icon)));
+    icon.resizing = Resizing { left: true, fix_width: true, fix_height: true, ..Default::default() };
+    let icon_id = icon.id;
+    let (icon_button, _) = master(
+        doc,
+        "Icon Button",
+        Frame::new(0.0, 160.0, 180.0, 44.0),
+        vec![pill(180.0), icon, label("Favorite", Frame::new(40.0, 12.0, 124.0, 20.0))],
+    );
+
+    let page = &mut doc.pages[0];
+    let mut ab = Layer::artboard("Buttons", Frame::new(493.0, 0.0, 393.0, 260.0));
+    let instance = |name: &str, symbol, frame| Layer::new(name, frame, LayerKind::Symbol(SymbolInstance::new(symbol)));
+    let wide = instance("Learn more", button, Frame::new(24.0, 92.0, 240.0, 44.0));
+    let mut swapped = instance("Icon Button (dot)", icon_button, Frame::new(24.0, 172.0, 220.0, 44.0));
+    if let LayerKind::Symbol(s) = &mut swapped.kind {
+        s.set_override(vec![icon_id], Some(OverrideValue::Symbol(Some(dot_icon))));
+    }
+    if let LayerKind::Artboard(a) = &mut ab.kind {
+        a.children = vec![instance("Button", button, Frame::new(24.0, 24.0, 160.0, 44.0)), wide, swapped];
+    }
+    page.layers.push(ab);
+    // Text overrides need the masters' label ids.
+    let labels: Vec<(SymbolId, LayerId)> = doc
+        .symbol_masters()
+        .iter()
+        .filter_map(|(_, m)| Some((m.master_of()?, m.children()?.iter().find(|c| c.name == "Label")?.id)))
+        .collect();
+    let label_of = |symbol| labels.iter().find(|(s, _)| *s == symbol).map(|&(_, id)| id);
+    for (name, symbol, text) in [("Learn more", button, "Learn more"), ("Icon Button (dot)", icon_button, "Saved")] {
+        let Some(lid) = label_of(symbol) else { continue };
+        let Some(ab) = doc.pages[0].layers.last_mut() else { continue };
+        let Some(l) = ab.children_mut().and_then(|c| c.iter_mut().find(|l| l.name == name)) else { continue };
+        if let LayerKind::Symbol(s) = &mut l.kind {
+            s.set_override(vec![lid], Some(OverrideValue::Text(text.into())));
+        }
+    }
 }
 
 /// Color variables and shared styles, linked to some of the layers above.

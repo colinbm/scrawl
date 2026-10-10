@@ -1,7 +1,7 @@
-//! Left sidebar's Components tab: shared text and layer styles, and color variables.
+//! Left sidebar's Components tab: symbols, shared text and layer styles, and color variables.
 
 use egui::{Color32, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
-use scrawl_core::{Fill, LayerId, LayerKind, SharedStyle, StyleId, SwatchId, ops};
+use scrawl_core::{Fill, LayerId, LayerKind, SharedStyle, StyleId, SwatchId, SymbolId, ops};
 
 use crate::app::ScrawlApp;
 use crate::ui::icons::{self, Icon};
@@ -11,6 +11,7 @@ const ROW_HEIGHT: f32 = 26.0;
 
 pub fn show(app: &mut ScrawlApp, ui: &mut Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        symbols(app, ui);
         styles(app, ui, true);
         styles(app, ui, false);
         color_variables(app, ui);
@@ -52,6 +53,67 @@ fn row(ui: &mut Ui, name: &str, preview: impl FnOnce(&egui::Painter, Rect)) -> e
     let galley = ui.painter().layout_no_wrap(name.to_owned(), FontId::proportional(13.0), visuals.text_color());
     ui.painter().galley(pos2(rect.left() + 36.0, rect.center().y - galley.size().y / 2.0), galley, visuals.text_color());
     resp
+}
+
+/// Symbol masters. Clicking one inserts an instance.
+fn symbols(app: &mut ScrawlApp, ui: &mut Ui) {
+    if header(ui, "SYMBOLS", "Create a symbol from the selection (⌥⌘Y)", !app.selection.is_empty()) {
+        app.create_symbol();
+    }
+    let masters: Vec<(SymbolId, String, f64, f64)> = app
+        .doc
+        .symbol_masters()
+        .into_iter()
+        .filter_map(|(_, l)| Some((l.master_of()?, l.name.clone(), l.frame.width, l.frame.height)))
+        .collect();
+    if masters.is_empty() {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.weak("Select layers and press + to make a reusable symbol.");
+        });
+    }
+    for (symbol, name, w, h) in masters {
+        ui.push_id(symbol, |ui| {
+            let resp = row(ui, &name, |p, r| {
+                icons::paint(p, r.shrink(2.0), Icon::Symbol, crate::canvas::SYMBOL);
+            })
+            .on_hover_text(format!("{w:.0}×{h:.0} — click to insert"));
+            if resp.clicked() {
+                app.insert_symbol(symbol);
+            }
+            resp.context_menu(|ui| symbol_menu(app, ui, symbol));
+        });
+    }
+}
+
+fn symbol_menu(app: &mut ScrawlApp, ui: &mut Ui, symbol: SymbolId) {
+    if let Some((page, id)) = app.doc.find_master(symbol)
+        && let Some(l) = app.doc.page_mut(page).and_then(|p| p.find_mut(id))
+    {
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            ui.text_edit_singleline(&mut l.name);
+        });
+    }
+    if ui.button("Edit Master").clicked() {
+        app.edit_master(symbol);
+        ui.close();
+    }
+    if ui.button("Select Instances").clicked() {
+        let mut ids = vec![];
+        app.page().walk(|l| {
+            if matches!(&l.kind, LayerKind::Symbol(i) if i.symbol_id == symbol) {
+                ids.push(l.id);
+            }
+        });
+        app.selection = ids;
+        ui.close();
+    }
+    if ui.button("Delete Symbol").on_hover_text("Instances become groups").clicked() {
+        scrawl_core::symbols::remove_symbol(&mut app.doc, symbol);
+        app.sanitize_selection();
+        ui.close();
+    }
 }
 
 /// Text styles (`text`) or layer styles. Clicking one applies it to the selection.

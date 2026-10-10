@@ -473,7 +473,7 @@ fn picking_a_color_unlinks_the_variable() {
     let Some(mut h) = harness() else { return };
     h.run();
     select(&mut h, "Stripe");
-    assert!(h.query_by_label("◆ Sunshine").is_some());
+    assert!(h.query_by_label("Sunshine").is_some());
     // Simulate a hand edit through the inspector's write-back path.
     let id = layer_named(&h, "Stripe").id;
     h.state_mut().page_mut().find_mut(id).unwrap().style.fills[0].color = scrawl_core::Color::WHITE;
@@ -483,4 +483,106 @@ fn picking_a_color_unlinks_the_variable() {
     h.run();
     let fill = &layer_named(&h, "Stripe").style.fills[0];
     assert_eq!(fill.swatch, None, "a color that no longer matches its variable is unlinked");
+}
+
+fn instance_text(layer: &scrawl_core::Layer) -> Vec<String> {
+    let scrawl_core::LayerKind::Symbol(i) = &layer.kind else { panic!("not an instance") };
+    let mut out = vec![];
+    for c in &i.expanded {
+        c.walk(&mut |l| {
+            if let scrawl_core::LayerKind::Text(t) = &l.kind {
+                out.push(t.text.clone());
+            }
+        });
+    }
+    out
+}
+
+#[test]
+fn instance_overrides_edit_text_and_swap() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    select(&mut h, "Learn more");
+    for label in ["SYMBOL", "OVERRIDES", "Edit Master", "Detach", "Label"] {
+        assert!(h.query_by_label(label).is_some(), "missing {label}");
+    }
+    assert_eq!(instance_text(&layer_named(&h, "Learn more")), ["Learn more"]);
+    save(&mut h, "instance_overrides");
+
+    // The instance with a swapped icon lists the nested symbol's overrides too.
+    select(&mut h, "Icon Button (dot)");
+    assert!(h.query_by_label("Icon").is_some());
+    assert_eq!(instance_text(&layer_named(&h, "Icon Button (dot)")), ["Saved"]);
+
+    // Resetting overrides restores the master's text.
+    h.get_by_label("Reset").click();
+    h.run();
+    h.run();
+    assert_eq!(instance_text(&layer_named(&h, "Icon Button (dot)")), ["Favorite"]);
+}
+
+#[test]
+fn create_symbol_detach_and_edit_master() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let a = select(&mut h, "Tile (Normal)");
+    let b = layer_named(&h, "Tile (Multiply)").id;
+    h.state_mut().selection = vec![a, b];
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::ALT, egui::Key::Y);
+    h.run();
+    h.run();
+    let app = h.state();
+    let [inst] = app.selection[..] else { panic!("instance selected") };
+    let layer = app.page().find(inst).unwrap().clone();
+    assert_eq!(layer.kind.type_name(), "Symbol");
+    assert!(!app.page().contains(a));
+    let scrawl_core::LayerKind::Symbol(i) = &layer.kind else { unreachable!() };
+    assert_eq!(i.expanded.len(), 2, "instance shows the moved tiles");
+    let symbol = i.symbol_id;
+    assert!(app.doc.find_master(symbol).is_some());
+
+    // Enter (like double-click) on an instance opens its master on the Symbols page.
+    h.key_press(egui::Key::Enter);
+    h.run();
+    let app = h.state();
+    assert_eq!(app.page().name, "Symbols");
+    assert_eq!(app.selection, vec![app.doc.find_master(symbol).unwrap().1]);
+    save(&mut h, "symbol_master");
+
+    // Back on the first page, detaching leaves a group of the tiles.
+    let home = h.state().doc.pages[0].id;
+    h.state_mut().set_page(home);
+    h.state_mut().selection = vec![inst];
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::ALT, egui::Key::B);
+    h.run();
+    let app = h.state();
+    let group = app.page().find(app.selection[0]).unwrap();
+    assert!(group.is_group());
+    assert_eq!(group.children().unwrap().len(), 2);
+}
+
+#[test]
+fn deleting_a_master_detaches_instances() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let symbols = h.state().doc.pages.iter().position(|p| p.name == "Symbols").unwrap();
+    let page = h.state().doc.pages[symbols].id;
+    h.state_mut().set_page(page);
+    let master = layer_named(&h, "Button").id;
+    h.state_mut().selection = vec![master];
+    h.run();
+    assert!(h.query_by_label("SYMBOL MASTER").is_some());
+    assert!(h.query_by_label("2 instances").is_some());
+    h.key_press(egui::Key::Backspace);
+    h.run();
+    let home = &h.state().doc.pages[0];
+    let mut groups = 0;
+    home.walk(|l| {
+        if l.name == "Learn more" {
+            assert!(l.is_group(), "instance became a group");
+            groups += 1;
+        }
+    });
+    assert_eq!(groups, 1);
 }

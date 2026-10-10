@@ -37,6 +37,7 @@ pub enum Icon {
     AlignBottom,
     FlipH,
     FlipV,
+    Symbol,
 }
 
 /// Paints `icon` centered in `rect`.
@@ -209,6 +210,11 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_filled(bar(10.0, -5.0), 0.5, color.gamma_multiply(0.75));
             p.rect_filled(bar(6.0, 1.5), 0.5, color.gamma_multiply(0.75));
         }
+        Icon::Symbol => {
+            // A diamond around a smaller filled one.
+            p.add(egui::Shape::closed_line(vec![at(0.0, -6.5), at(6.5, 0.0), at(0.0, 6.5), at(-6.5, 0.0)], st));
+            p.add(egui::Shape::convex_polygon(vec![at(0.0, -2.8), at(2.8, 0.0), at(0.0, 2.8), at(-2.8, 0.0)], color, Stroke::NONE));
+        }
         Icon::FlipH => {
             p.line_segment([at(0.0, -7.0), at(0.0, 7.0)], Stroke::new(st.width * 0.7, color.gamma_multiply(0.6)));
             p.add(egui::Shape::convex_polygon(vec![at(-2.0, -5.0), at(-2.0, 5.0), at(-7.0, 5.0)], color, Stroke::NONE));
@@ -255,7 +261,9 @@ fn icon_button_sized(ui: &mut egui::Ui, icon: Icon, selected: bool, tooltip: &st
 pub fn for_layer(kind: &scrawl_core::LayerKind) -> Icon {
     use scrawl_core::LayerKind as K;
     match kind {
+        K::Artboard(a) if a.symbol_id.is_some() => Icon::Symbol,
         K::Artboard(_) => Icon::Artboard,
+        K::Symbol(_) => Icon::Symbol,
         K::Group(_) => Icon::Group,
         K::Rectangle(_) => Icon::Rectangle,
         K::Oval => Icon::Oval,

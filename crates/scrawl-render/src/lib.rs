@@ -111,7 +111,12 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, text: &mut Tex
     let needs_group = layer.opacity < 1.0 || layer.blend_mode != SBlend::Normal;
     if needs_group {
         // The group's clip is the layer's painted bounds in its parent space.
-        let Some(bounds) = layer.bounds_in(Affine::IDENTITY) else { return };
+        let Some(mut bounds) = layer.bounds_in(Affine::IDENTITY) else { return };
+        if let LayerKind::Symbol(s) = &layer.kind {
+            // Instance contents (e.g. long override text) may spill out of the frame.
+            let t = layer.local_transform();
+            bounds = s.expanded.iter().filter_map(|c| c.bounds_in(t)).fold(bounds, |a, b| a.union(b));
+        }
         let pad = max_paint_outset(layer) + 1.0;
         scene.push_layer(Fill::NonZero, to_mix(layer.blend_mode), layer.opacity as f32, parent, &bounds.inflate(pad, pad));
     }
@@ -129,6 +134,7 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, text: &mut Tex
             }
         }
         LayerKind::Group(g) => render_children(scene, &g.children, t, text),
+        LayerKind::Symbol(s) => render_children(scene, &s.expanded, t, text),
         LayerKind::Text(_) => render_text(scene, layer, parent, text),
         _ => {
             if let Some(path) = layer.local_path() {
@@ -145,7 +151,11 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, text: &mut Tex
 /// The furthest a layer or any descendant paints outside its own geometry.
 fn max_paint_outset(layer: &Layer) -> f64 {
     let own = layer.style.paint_outset();
-    layer.children().map_or(own, |c| c.iter().map(max_paint_outset).fold(own, f64::max))
+    let children = match &layer.kind {
+        LayerKind::Symbol(s) => Some(&s.expanded),
+        _ => layer.children(),
+    };
+    children.map_or(own, |c| c.iter().map(max_paint_outset).fold(own, f64::max))
 }
 
 fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine) {

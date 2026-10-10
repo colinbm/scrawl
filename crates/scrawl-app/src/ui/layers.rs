@@ -32,10 +32,12 @@ pub enum KindFilter {
     Shapes,
     Groups,
     Artboards,
+    Symbols,
 }
 
 impl KindFilter {
-    const ALL: [KindFilter; 5] = [KindFilter::All, KindFilter::Text, KindFilter::Shapes, KindFilter::Groups, KindFilter::Artboards];
+    const ALL: [KindFilter; 6] =
+        [KindFilter::All, KindFilter::Text, KindFilter::Shapes, KindFilter::Groups, KindFilter::Artboards, KindFilter::Symbols];
 
     fn label(self) -> &'static str {
         match self {
@@ -44,6 +46,7 @@ impl KindFilter {
             KindFilter::Shapes => "Shapes",
             KindFilter::Groups => "Groups",
             KindFilter::Artboards => "Artboards",
+            KindFilter::Symbols => "Symbols",
         }
     }
 
@@ -53,7 +56,10 @@ impl KindFilter {
             KindFilter::Text => matches!(kind, LayerKind::Text(_)),
             KindFilter::Groups => matches!(kind, LayerKind::Group(_)),
             KindFilter::Artboards => matches!(kind, LayerKind::Artboard(_)),
-            KindFilter::Shapes => !matches!(kind, LayerKind::Text(_) | LayerKind::Group(_) | LayerKind::Artboard(_)),
+            KindFilter::Symbols => matches!(kind, LayerKind::Symbol(_)) || matches!(kind, LayerKind::Artboard(a) if a.symbol_id.is_some()),
+            KindFilter::Shapes => {
+                !matches!(kind, LayerKind::Text(_) | LayerKind::Group(_) | LayerKind::Artboard(_) | LayerKind::Symbol(_))
+            }
         }
     }
 }

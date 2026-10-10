@@ -200,6 +200,9 @@ impl TextEngine {
                 changed |= self.fit(l);
             }
             let group = l.is_group();
+            if let LayerKind::Symbol(inst) = &mut l.kind {
+                changed |= self.fit_all(&mut inst.expanded);
+            }
             if let Some(children) = l.children_mut() {
                 let child_changed = self.fit_all(children);
                 if child_changed && group {
@@ -211,8 +214,11 @@ impl TextEngine {
         changed
     }
 
-    /// Fits the text layers on every page of a document.
+    /// Fits the text layers on every page of a document, after rebuilding symbol instances.
     pub fn fit_document(&mut self, doc: &mut scrawl_core::Document) {
+        scrawl_core::symbols::sync_instances(doc, &mut |layers| {
+            self.fit_all(layers);
+        });
         for page in &mut doc.pages {
             self.fit_all(&mut page.layers);
         }

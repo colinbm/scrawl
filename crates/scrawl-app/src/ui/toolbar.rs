@@ -82,6 +82,18 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                     app.tool = tool;
                 }
             }
+            ui.separator();
+            let masters: Vec<_> =
+                app.doc.symbol_masters().into_iter().filter_map(|(_, l)| Some((l.master_of()?, l.name.clone()))).collect();
+            ui.add_enabled_ui(!masters.is_empty(), |ui| {
+                ui.menu_button("Symbol", |ui| {
+                    for (symbol, name) in masters {
+                        if ui.button(name).clicked() {
+                            app.insert_symbol(symbol);
+                        }
+                    }
+                });
+            });
         });
         ui.menu_button("Arrange", |ui| {
             for (label, sc, how) in [
@@ -136,6 +148,26 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
             if item(ui, "Use as Mask", Some(shortcuts::MASK), has_sel) {
                 app.use_as_mask();
             }
+            ui.separator();
+            let instance = match app.selection[..] {
+                [id] => match app.page().find(id).map(|l| &l.kind) {
+                    Some(scrawl_core::LayerKind::Symbol(i)) => Some(i.symbol_id),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if item(ui, "Create Symbol", Some(shortcuts::CREATE_SYMBOL), has_sel) {
+                app.create_symbol();
+            }
+            if item(ui, "Detach from Symbol", Some(shortcuts::DETACH_SYMBOL), instance.is_some()) {
+                app.detach_selection();
+            }
+            if item(ui, "Edit Master", None, instance.is_some())
+                && let Some(symbol) = instance
+            {
+                app.edit_master(symbol);
+            }
+            ui.separator();
             ui.menu_button("Path", |ui| {
                 if item(ui, "Edit Points", None, app.selection.len() == 1) {
                     app.enter_vector_edit(app.selection[0]);

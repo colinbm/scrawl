@@ -24,6 +24,7 @@ macro_rules! id_type {
         }
     };
 }
+pub(crate) use id_type;
 
 id_type!(
     /// Identifies a shared layer or text style.

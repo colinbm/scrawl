@@ -19,10 +19,12 @@ pub mod path;
 pub mod sample;
 pub mod snap;
 pub mod style;
+pub mod symbols;
 pub mod text;
 
 pub use color::Color;
 pub use components::{SharedStyle, StyleId, Swatch, SwatchId};
+pub use symbols::{Override, OverrideValue, SymbolId, SymbolInstance};
 pub use document::{Document, Page, PageId};
 pub use geometry::Frame;
 pub use history::History;
