@@ -1,6 +1,6 @@
 //! Left sidebar: pages and the layer tree.
 
-use egui::{FontId, Id, Rect, Sense, Stroke, Ui, pos2, vec2};
+use egui::{FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 use scrawl_core::{Layer, LayerId, LayerKind, PageId, ops};
 
 use crate::app::{RenameTarget, ScrawlApp};
@@ -276,7 +276,7 @@ fn collect_rows(layers: &[Layer], depth: usize, app: &ScrawlApp, out: &mut Vec<R
 
 fn layer_tree(app: &mut ScrawlApp, ui: &mut Ui) {
     // Reveal newly selected layers by expanding their ancestors.
-    let reveal_id = Id::new("layers_revealed_selection");
+    let reveal_id = app.id("layers_revealed_selection");
     let last: Vec<LayerId> = ui.data(|d| d.get_temp(reveal_id)).unwrap_or_default();
     if last != app.selection {
         for &id in &app.selection {
@@ -303,7 +303,7 @@ fn layer_tree(app: &mut ScrawlApp, ui: &mut Ui) {
         return;
     }
 
-    let drag_id = Id::new("layer_drag");
+    let drag_id = app.id("layer_drag");
     let dragging: Option<LayerId> = ui.data(|d| d.get_temp(drag_id));
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let mut actions = vec![];

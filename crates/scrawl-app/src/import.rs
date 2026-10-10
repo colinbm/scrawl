@@ -97,6 +97,14 @@ pub fn handle_drops(app: &mut ScrawlApp, ctx: &egui::Context) {
     }
     let mut files = vec![];
     for f in dropped {
+        // Documents open (in a window of their own unless this one is empty); the rest import.
+        let is_document = f.path().extension().is_some_and(|e| {
+            e.eq_ignore_ascii_case(scrawl_core::io::FILE_EXTENSION) || e.eq_ignore_ascii_case(scrawl_core::sketch::FILE_EXTENSION)
+        });
+        if is_document {
+            app.requests.push(crate::commands::Request::Open(f.path().to_path_buf()));
+            continue;
+        }
         let name = f.path().to_string_lossy().into_owned();
         match f.bytes() {
             Ok(bytes) => files.push((name, bytes)),

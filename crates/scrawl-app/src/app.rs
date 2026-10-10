@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use egui::{Key, KeyboardShortcut, Modifiers};
+use egui::Key;
 use scrawl_core::kurbo::Vec2;
 use scrawl_core::ops::{self, Align, BooleanOp, Reorder};
 use scrawl_core::kurbo::Point;
@@ -11,73 +11,13 @@ use scrawl_core::{Document, Frame, History, Layer, LayerId, LayerKind, Page, Pag
 use serde_json::json;
 
 use crate::canvas::{CanvasState, Tool};
+use crate::commands::{Command, MenuContext, Request};
 use crate::gpu::VelloCanvas;
 use crate::ui;
 use crate::viewport::Viewport;
 
 /// Prefix identifying Scrawl layers on the system clipboard.
 const CLIPBOARD_TAG: &str = "scrawl-layers";
-
-pub mod shortcuts {
-    use super::*;
-    const fn cmd(key: Key) -> KeyboardShortcut {
-        KeyboardShortcut::new(Modifiers::COMMAND, key)
-    }
-    const fn cmd_shift(key: Key) -> KeyboardShortcut {
-        KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), key)
-    }
-    const fn cmd_alt(key: Key) -> KeyboardShortcut {
-        KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::ALT), key)
-    }
-    pub const NEW: KeyboardShortcut = cmd(Key::N);
-    pub const OPEN: KeyboardShortcut = cmd(Key::O);
-    pub const SAVE: KeyboardShortcut = cmd(Key::S);
-    pub const SAVE_AS: KeyboardShortcut = cmd_shift(Key::S);
-    pub const UNDO: KeyboardShortcut = cmd(Key::Z);
-    pub const REDO: KeyboardShortcut = cmd_shift(Key::Z);
-    pub const DUPLICATE: KeyboardShortcut = cmd(Key::D);
-    pub const SELECT_ALL: KeyboardShortcut = cmd(Key::A);
-    pub const GROUP: KeyboardShortcut = cmd(Key::G);
-    pub const UNGROUP: KeyboardShortcut = cmd_shift(Key::G);
-    pub const FORWARD: KeyboardShortcut = cmd(Key::CloseBracket);
-    pub const BACKWARD: KeyboardShortcut = cmd(Key::OpenBracket);
-    pub const TO_FRONT: KeyboardShortcut = cmd_alt(Key::CloseBracket);
-    pub const TO_BACK: KeyboardShortcut = cmd_alt(Key::OpenBracket);
-    pub const ZOOM_IN: KeyboardShortcut = cmd(Key::Equals);
-    pub const ZOOM_IN_PLUS: KeyboardShortcut = cmd(Key::Plus);
-    pub const ZOOM_OUT: KeyboardShortcut = cmd(Key::Minus);
-    pub const ACTUAL_SIZE: KeyboardShortcut = cmd(Key::Num0);
-    pub const ZOOM_FIT: KeyboardShortcut = cmd(Key::Num1);
-    pub const ZOOM_SELECTION: KeyboardShortcut = cmd(Key::Num2);
-    pub const UNION: KeyboardShortcut = cmd_alt(Key::U);
-    pub const SUBTRACT: KeyboardShortcut = cmd_alt(Key::S);
-    pub const INTERSECT: KeyboardShortcut = cmd_alt(Key::I);
-    pub const DIFFERENCE: KeyboardShortcut = cmd_alt(Key::X);
-    pub const CONVERT_TO_PATH: KeyboardShortcut = cmd_alt(Key::F);
-    pub const OUTLINE: KeyboardShortcut = cmd_shift(Key::O);
-    const fn cmd_ctrl(key: Key) -> KeyboardShortcut {
-        KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::CTRL), key)
-    }
-    pub const MASK: KeyboardShortcut = cmd_ctrl(Key::M);
-    pub const DISTRIBUTE_H: KeyboardShortcut = cmd_ctrl(Key::H);
-    pub const DISTRIBUTE_V: KeyboardShortcut = cmd_ctrl(Key::V);
-    pub const TIDY: KeyboardShortcut = cmd_ctrl(Key::T);
-    pub const FIND: KeyboardShortcut = cmd(Key::F);
-    pub const CREATE_SYMBOL: KeyboardShortcut = cmd_alt(Key::Y);
-    pub const DETACH_SYMBOL: KeyboardShortcut = cmd_alt(Key::B);
-    pub const PLACE_IMAGE: KeyboardShortcut = cmd_shift(Key::K);
-    pub const EXPORT: KeyboardShortcut = cmd_shift(Key::E);
-    pub const PREVIEW: KeyboardShortcut = cmd(Key::P);
-
-    pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
-        match op {
-            BooleanOp::Union => UNION,
-            BooleanOp::Subtract => SUBTRACT,
-            BooleanOp::Intersect => INTERSECT,
-            BooleanOp::Difference => DIFFERENCE,
-        }
-    }
-}
 
 pub struct ScrawlApp {
     /// Distinguishes this document's windows from other documents'.
@@ -133,6 +73,24 @@ pub struct ScrawlApp {
     pub fit_pending: bool,
     window_title: String,
     pub dev: crate::dev::DevHooks,
+    /// Things for the workspace to do after this window's frame.
+    pub requests: Vec<Request>,
+    /// What the menus show beyond this window, kept up to date by the workspace.
+    pub menu_context: MenuContext,
+    /// Input events from native menu commands, delivered at the start of the next frame.
+    pub injected: Vec<egui::Event>,
+    /// Commands from native menus to run at the start of the next frame.
+    pub pending: Vec<Command>,
+    /// The document as of the last autosave, to skip unchanged ones.
+    pub autosaved: Option<Document>,
+    /// When this window's document was last autosaved (egui time).
+    pub autosave_time: f64,
+    /// The version browser, when open.
+    pub versions: Option<crate::versions::Browser>,
+    /// Scrawl's own folder (preferences, autosaves, versions), if there is one.
+    pub support: Option<PathBuf>,
+    /// Names this window's autosave file.
+    pub autosave_name: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,11 +106,11 @@ pub enum RenameTarget {
 }
 
 impl ScrawlApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
-        crate::style::apply(&cc.egui_ctx);
+    /// A window with an empty document. Every window shares the workspace's `render_state`.
+    pub fn new(render_state: Option<egui_wgpu::RenderState>) -> Self {
         let doc = Document::default();
         static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let mut app = Self {
+        Self {
             uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             page: doc.pages[0].id,
             history: History::new(&doc),
@@ -164,7 +122,7 @@ impl ScrawlApp {
             canvas: CanvasState::default(),
             gpu: None,
             gpu_error: None,
-            render_state: cc.wgpu_render_state.clone(),
+            render_state,
             preview: None,
             show_links: false,
             scene: vello::Scene::new(),
@@ -188,12 +146,50 @@ impl ScrawlApp {
             error: None,
             fit_pending: false,
             window_title: String::new(),
-            dev: crate::dev::DevHooks::from_env(),
-        };
-        if let Some(path) = path {
-            app.open_path(&path);
+            dev: crate::dev::DevHooks::default(),
+            requests: vec![],
+            menu_context: MenuContext::default(),
+            injected: vec![],
+            pending: vec![],
+            autosaved: None,
+            autosave_time: 0.0,
+            versions: None,
+            support: None,
+            autosave_name: uuid::Uuid::new_v4().to_string(),
         }
-        app
+    }
+
+    /// The window title: the file name, "Untitled", and whether it has unsaved changes.
+    pub fn title(&self) -> String {
+        let name = self.file_path.as_ref().and_then(|p| p.file_stem()).map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
+        if self.is_dirty() { format!("{name} — Edited") } else { name }
+    }
+
+    /// Treats the document as having unsaved changes: unlike the file it belongs to (if any).
+    pub fn mark_unsaved(&mut self) {
+        self.saved = match self.file_path.as_ref().and_then(|p| io::load(p).ok()) {
+            Some(mut doc) => {
+                self.text.fit_document(&mut doc);
+                doc
+            }
+            None => Document::default(),
+        };
+    }
+
+    /// An id for one of this window's panels or popups, distinct from other windows' (which may
+    /// share a viewport when windows are embedded).
+    pub fn id(&self, name: &str) -> egui::Id {
+        egui::Id::new(name).with(self.uid)
+    }
+
+    /// Makes the next frame set the window title, e.g. after moving to another viewport.
+    pub fn window_title_changed(&mut self) {
+        self.window_title.clear();
+    }
+
+    /// An untitled, unedited, empty document: one that opening a file may replace.
+    pub fn is_pristine(&self) -> bool {
+        self.file_path.is_none() && !self.is_dirty() && !self.history.can_undo() && self.doc.pages.iter().all(|p| p.layers.is_empty())
     }
 
     /// The render state, creating the Vello renderer on first use. `None` (with `gpu_error` set)
@@ -281,29 +277,41 @@ impl ScrawlApp {
         }
     }
 
-    pub fn open_sample(&mut self) {
-        if self.confirm_discard() {
-            self.set_document(scrawl_core::sample::sample_document(), None);
-        }
-    }
-
-    pub fn new_document(&mut self) {
-        if self.confirm_discard() {
-            self.set_document(Document::default(), None);
-        }
-    }
-
+    /// File › Open…: asks for a file, which the workspace opens (here if this window is empty).
     pub fn open(&mut self) {
-        if !self.confirm_discard() {
-            return;
-        }
         let dialog = rfd::FileDialog::new()
             .add_filter("Documents", &[io::FILE_EXTENSION, scrawl_core::sketch::FILE_EXTENSION])
             .add_filter("Scrawl document", &[io::FILE_EXTENSION])
             .add_filter("Sketch document", &[scrawl_core::sketch::FILE_EXTENSION]);
         if let Some(path) = dialog.pick_file() {
-            self.open_path(&path);
+            self.requests.push(Request::Open(path));
         }
+    }
+
+    /// File › Revert to Saved: reloads the file, as an undoable change.
+    pub fn revert_to_saved(&mut self) {
+        let Some(path) = self.file_path.clone() else { return };
+        match io::load(&path) {
+            Ok(mut doc) => {
+                self.text.fit_document(&mut doc);
+                self.reset_modes();
+                self.history.commit(&self.doc);
+                self.saved = doc.clone();
+                self.doc = doc;
+                self.after_history_change();
+            }
+            Err(e) => self.error = Some(format!("Couldn't open {}: {e}", path.display())),
+        }
+    }
+
+    /// Replaces the document with `doc` as one undoable step, keeping the file it's saved to.
+    pub fn replace_document(&mut self, mut doc: Document) {
+        self.text.fit_document(&mut doc);
+        self.reset_modes();
+        self.history.commit(&self.doc);
+        self.doc = doc;
+        self.after_history_change();
+        self.reload_libraries();
     }
 
     pub fn open_path(&mut self, path: &Path) {
@@ -380,10 +388,15 @@ impl ScrawlApp {
 
     fn save_to(&mut self, path: &Path) -> bool {
         self.history.commit(&self.doc);
+        // Keep what's being overwritten as a version.
+        if let Some(support) = &self.support {
+            crate::versions::keep(support, path);
+        }
         match io::save(&self.doc, path) {
             Ok(()) => {
                 self.saved = self.doc.clone();
                 self.file_path = Some(path.to_path_buf());
+                self.requests.push(Request::Saved(path.to_path_buf()));
                 true
             }
             Err(e) => {
@@ -482,17 +495,20 @@ impl ScrawlApp {
 
     /// Exports `jobs` into `dir`. Layers without formats get 1× PNG when `default_png` is set.
     /// Returns the files written.
-    pub fn export_to(&mut self, dir: &Path, jobs: &[(PageId, LayerId)], default_png: bool) -> Vec<PathBuf> {
+    /// The offscreen renderer, started on first use.
+    pub fn exporter(&mut self) -> Result<&mut scrawl_render::export::Exporter, String> {
         if self.exporter.is_none() {
-            match scrawl_render::export::Exporter::new() {
-                Ok(ex) => self.exporter = Some(ex),
-                Err(e) => {
-                    self.error = Some(format!("Couldn't start the exporter: {e}"));
-                    return vec![];
-                }
-            }
+            self.exporter = Some(scrawl_render::export::Exporter::new()?);
         }
-        let ex = self.exporter.as_mut().expect("created above");
+        Ok(self.exporter.as_mut().expect("created above"))
+    }
+
+    pub fn export_to(&mut self, dir: &Path, jobs: &[(PageId, LayerId)], default_png: bool) -> Vec<PathBuf> {
+        if let Err(e) = self.exporter() {
+            self.error = Some(format!("Couldn't start the exporter: {e}"));
+            return vec![];
+        }
+        let ex = self.exporter.as_mut().expect("started above");
         let (mut written, mut errors) = (vec![], vec![]);
         for &(page_id, id) in jobs {
             let Some(page) = self.doc.page(page_id) else { continue };
@@ -897,18 +913,17 @@ impl ScrawlApp {
     // ---- Frame loop --------------------------------------------------------------------------
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        use shortcuts::*;
         // File and history shortcuts work everywhere except in text fields (which have their own
         // undo); editing shortcuts only when the canvas has keyboard focus.
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        let pressed = |sc: egui::KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&sc));
         // While editing text, keys go to the text (undo ends editing first).
         if self.canvas.text_edit.is_some() {
-            if ctx.input_mut(|i| i.consume_shortcut(&UNDO)) {
-                crate::text_edit::end(self);
-                self.undo();
-            } else if ctx.input_mut(|i| i.consume_shortcut(&SAVE)) {
+            if pressed(Command::Undo.shortcut().expect("undo has a shortcut")) {
+                crate::commands::execute(self, Command::Undo, ctx);
+            } else if pressed(Command::Save.shortcut().expect("save has a shortcut")) {
                 self.save();
             } else {
                 crate::text_edit::handle_keys(self, ctx);
@@ -924,110 +939,10 @@ impl ScrawlApp {
                 _ => {}
             }
         }
-        let pressed = |sc: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&sc));
-        if pressed(NEW) {
-            self.new_document();
-        }
-        if pressed(OPEN) {
-            self.open();
-        }
-        if pressed(SAVE_AS) {
-            self.save_as();
-        }
-        if pressed(SAVE) {
-            self.save();
-        }
-        if pressed(REDO) {
-            self.redo();
-        }
-        if pressed(UNDO) {
-            self.undo();
-        }
-        if pressed(DUPLICATE) {
-            self.duplicate_selection();
-        }
-        if pressed(SELECT_ALL) {
-            if self.canvas.edit.is_some() {
-                crate::vector::select_all_points(self);
-            } else {
-                self.select_all();
+        for (command, shortcut) in crate::commands::keyboard_commands() {
+            if pressed(shortcut) {
+                crate::commands::execute(self, command, ctx);
             }
-        }
-        for op in BooleanOp::ALL {
-            if pressed(boolean(op)) {
-                self.boolean(op);
-            }
-        }
-        if pressed(DISTRIBUTE_H) {
-            self.distribute(scrawl_core::snap::Axis::X);
-        }
-        if pressed(DISTRIBUTE_V) {
-            self.distribute(scrawl_core::snap::Axis::Y);
-        }
-        if pressed(TIDY) {
-            self.tidy();
-        }
-        if pressed(FIND) {
-            self.sidebar = Sidebar::Layers;
-            self.layer_filter.focus = true;
-        }
-        if pressed(CONVERT_TO_PATH) {
-            self.convert_to_paths();
-        }
-        if pressed(OUTLINE) {
-            self.outline_strokes();
-        }
-        if pressed(MASK) {
-            self.use_as_mask();
-        }
-        if pressed(CREATE_SYMBOL) {
-            self.create_symbol();
-        }
-        if pressed(DETACH_SYMBOL) {
-            self.detach_selection();
-        }
-        if pressed(PLACE_IMAGE) {
-            crate::import::choose_images(self);
-        }
-        if pressed(PREVIEW) {
-            crate::preview::open(self);
-        }
-        if pressed(EXPORT) {
-            let sel = self.selection.clone();
-            self.export_layers(&sel);
-        }
-        if pressed(UNGROUP) {
-            self.ungroup_selection();
-        }
-        if pressed(GROUP) {
-            self.group_selection();
-        }
-        if pressed(TO_FRONT) {
-            self.reorder(Reorder::ToFront);
-        }
-        if pressed(TO_BACK) {
-            self.reorder(Reorder::ToBack);
-        }
-        if pressed(FORWARD) {
-            self.reorder(Reorder::Forward);
-        }
-        if pressed(BACKWARD) {
-            self.reorder(Reorder::Backward);
-        }
-        if pressed(ZOOM_IN) || pressed(ZOOM_IN_PLUS) {
-            self.step_zoom(true);
-        }
-        if pressed(ZOOM_OUT) {
-            self.step_zoom(false);
-        }
-        if pressed(ACTUAL_SIZE) {
-            self.actual_size();
-        }
-        if pressed(ZOOM_FIT) {
-            self.zoom_to_fit();
-        }
-        if pressed(ZOOM_SELECTION) {
-            self.zoom_to_selection(crate::viewport::MAX_ZOOM);
         }
 
         // Single-key shortcuts: no command modifier.
@@ -1042,17 +957,8 @@ impl ScrawlApp {
         if mods.command {
             return;
         }
-        // ⌃R, ⌃G and ⌃L toggle rulers, grid and layout.
+        // ⌃R, ⌃G, ⌃L and ⌃P are commands (above); no single-key shortcuts with ⌃.
         if mods.ctrl {
-            for key in keys {
-                match key {
-                    Key::R => self.show_rulers ^= true,
-                    Key::G => self.show_grid ^= true,
-                    Key::L => self.show_layout ^= true,
-                    Key::P => self.show_links ^= true,
-                    _ => {}
-                }
-            }
             return;
         }
         let step = if mods.shift { 10.0 } else { 1.0 };
@@ -1184,19 +1090,10 @@ impl ScrawlApp {
             self.history.commit(&self.doc);
         }
 
-        let name = self
-            .file_path
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
-        let title = if self.is_dirty() { format!("{name} — Edited") } else { name };
+        let title = self.title();
         if title != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
-        }
-
-        if ctx.input(|i| i.viewport().close_requested()) && self.is_dirty() && !self.dev.active() && !self.confirm_discard() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
     }
 }
@@ -1204,6 +1101,7 @@ impl ScrawlApp {
 impl ScrawlApp {
     /// Shows the latest notice at the bottom of the canvas for a few seconds.
     fn show_notice(&mut self, ctx: &egui::Context) {
+        let id = self.id("notice");
         let Some((msg, posted)) = &mut self.notice else { return };
         let now = ctx.input(|i| i.time);
         if posted.is_nan() {
@@ -1214,26 +1112,34 @@ impl ScrawlApp {
             return;
         }
         let pos = egui::pos2(self.canvas.rect.center().x, self.canvas.rect.bottom() - 24.0);
-        egui::Area::new(egui::Id::new("notice")).fixed_pos(pos).pivot(egui::Align2::CENTER_BOTTOM).show(ctx, |ui| {
+        egui::Area::new(id).fixed_pos(pos).pivot(egui::Align2::CENTER_BOTTOM).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(msg.as_str()));
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 }
 
-impl eframe::App for ScrawlApp {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        crate::dev::DevHooks::inject(self, raw_input);
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl ScrawlApp {
+    /// Draws this document's window into `ui` (the root viewport, or its own).
+    pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Native menu commands arrive between frames: as key presses (so text fields get theirs)
+        // or to run directly.
+        if !self.injected.is_empty() {
+            let events = std::mem::take(&mut self.injected);
+            ctx.input_mut(|i| i.events.extend(events));
+        }
+        for command in std::mem::take(&mut self.pending) {
+            crate::commands::execute(self, command, &ctx);
+        }
         self.handle_shortcuts(&ctx);
         crate::import::handle_drops(self, &ctx);
 
-        egui::Panel::top("menu_bar").show(ui, |ui| ui::toolbar::menu_bar(self, ui));
-        egui::Panel::top("toolbar").show(ui, |ui| ui::toolbar::toolbar(self, ui));
-        egui::Panel::left("layers").resizable(true).default_size(240.0).min_size(180.0).show(ui, |ui| {
+        if !self.menu_context.native {
+            egui::Panel::top(self.id("menu_bar")).show(ui, |ui| ui::toolbar::menu_bar(self, ui));
+        }
+        egui::Panel::top(self.id("toolbar")).show(ui, |ui| ui::toolbar::toolbar(self, ui));
+        egui::Panel::left(self.id("layers")).resizable(true).default_size(240.0).min_size(180.0).show(ui, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.sidebar, Sidebar::Layers, "Layers");
@@ -1245,7 +1151,7 @@ impl eframe::App for ScrawlApp {
                 Sidebar::Components => ui::components::show(self, ui),
             }
         });
-        egui::Panel::right("inspector").resizable(false).exact_size(264.0).show(ui, |ui| {
+        egui::Panel::right(self.id("inspector")).resizable(false).exact_size(264.0).show(ui, |ui| {
             ui::inspector::show(self, ui);
         });
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
@@ -1253,7 +1159,7 @@ impl eframe::App for ScrawlApp {
         });
 
         if let Some(msg) = self.error.clone() {
-            egui::Modal::new(egui::Id::new("error")).show(&ctx, |ui| {
+            egui::Modal::new(self.id("error")).show(&ctx, |ui| {
                 ui.set_max_width(360.0);
                 ui.heading("Something went wrong");
                 ui.label(msg);
@@ -1265,7 +1171,7 @@ impl eframe::App for ScrawlApp {
 
         self.show_notice(&ctx);
         crate::preview::show(self, &ctx);
+        crate::versions::show(self, &ctx);
         self.end_frame(&ctx);
-        crate::dev::DevHooks::on_frame(self, &ctx);
     }
 }

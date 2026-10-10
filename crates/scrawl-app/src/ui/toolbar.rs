@@ -1,21 +1,10 @@
-use egui::{KeyboardShortcut, Ui};
+use egui::Ui;
 use scrawl_core::ops::{Align, BooleanOp, Reorder};
 
-use crate::app::{ScrawlApp, shortcuts};
+use crate::app::ScrawlApp;
+use crate::commands::{self, Command, Entry};
 use crate::canvas::Tool;
 use crate::ui::icons::{self, Icon};
-
-fn item(ui: &mut Ui, label: &str, shortcut: Option<KeyboardShortcut>, enabled: bool) -> bool {
-    let mut b = egui::Button::new(label);
-    if let Some(sc) = shortcut {
-        b = b.shortcut_text(ui.ctx().format_shortcut(&sc));
-    }
-    ui.add_enabled(enabled, b).clicked()
-}
-
-fn key_item(ui: &mut Ui, label: &str, key: &str) -> bool {
-    ui.add(egui::Button::new(label).shortcut_text(key)).clicked()
-}
 
 pub fn boolean_icon(op: BooleanOp) -> Icon {
     match op {
@@ -26,250 +15,56 @@ pub fn boolean_icon(op: BooleanOp) -> Icon {
     }
 }
 
+/// The in-window menu bar, used where there's no native one.
 pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
-    let has_sel = !app.selection.is_empty();
+    let menus = commands::menus(app, &app.menu_context);
+    let mut chosen = None;
     egui::MenuBar::new().ui(ui, |ui| {
-        ui.menu_button("File", |ui| {
-            if item(ui, "New", Some(shortcuts::NEW), true) {
-                app.new_document();
-            }
-            if item(ui, "Open…", Some(shortcuts::OPEN), true) {
-                app.open();
-            }
-            ui.separator();
-            if item(ui, "Save", Some(shortcuts::SAVE), true) {
-                app.save();
-            }
-            if item(ui, "Save As…", Some(shortcuts::SAVE_AS), true) {
-                app.save_as();
-            }
-            if item(ui, "Save as Sketch…", None, true) {
-                app.save_as_sketch();
-            }
-            ui.separator();
-            if item(ui, "Export Selection…", Some(shortcuts::EXPORT), has_sel) {
-                let sel = app.selection.clone();
-                app.export_layers(&sel);
-            }
-            if item(ui, "Export All…", None, true) {
-                app.export_all();
-            }
-        });
-        ui.menu_button("Edit", |ui| {
-            if item(ui, "Find Layer…", Some(shortcuts::FIND), true) {
-                app.layer_filter.focus = true;
-            }
-            ui.separator();
-            if item(ui, "Undo", Some(shortcuts::UNDO), app.history.can_undo() || app.history.is_dirty(&app.doc)) {
-                app.undo();
-            }
-            if item(ui, "Redo", Some(shortcuts::REDO), app.history.can_redo()) {
-                app.redo();
-            }
-            ui.separator();
-            if item(ui, "Cut", None, has_sel) {
-                app.cut(ui.ctx());
-            }
-            if item(ui, "Copy", None, has_sel) {
-                app.copy(ui.ctx());
-            }
-            if item(ui, "Paste", None, true) {
-                app.paste(None);
-            }
-            ui.menu_button("Copy As", |ui| {
-                if item(ui, "SVG", None, has_sel) {
-                    app.copy_as_svg(ui.ctx());
-                }
-                if item(ui, "CSS", None, has_sel) {
-                    app.copy_as_css(ui.ctx());
-                }
-            });
-            if item(ui, "Duplicate", Some(shortcuts::DUPLICATE), has_sel) {
-                app.duplicate_selection();
-            }
-            if item(ui, "Delete", None, has_sel) {
-                app.delete_selection();
-            }
-            ui.separator();
-            if item(ui, "Select All", Some(shortcuts::SELECT_ALL), true) {
-                app.select_all();
-            }
-        });
-        ui.menu_button("Insert", |ui| {
-            for tool in Tool::INSERT {
-                if key_item(ui, tool.label(), tool.key()) {
-                    app.tool = tool;
-                }
-            }
-            ui.separator();
-            if item(ui, "Image…", Some(shortcuts::PLACE_IMAGE), true) {
-                crate::import::choose_images(app);
-            }
-            let masters: Vec<_> =
-                app.doc.symbol_masters().into_iter().filter_map(|(_, l)| Some((l.master_of()?, l.name.clone()))).collect();
-            ui.add_enabled_ui(!masters.is_empty(), |ui| {
-                ui.menu_button("Symbol", |ui| {
-                    for (symbol, name) in masters {
-                        if ui.button(name).clicked() {
-                            app.insert_symbol(symbol);
-                        }
-                    }
-                });
-            });
-        });
-        ui.menu_button("Arrange", |ui| {
-            for (label, sc, how) in [
-                ("Bring Forward", shortcuts::FORWARD, Reorder::Forward),
-                ("Bring to Front", shortcuts::TO_FRONT, Reorder::ToFront),
-                ("Send Backward", shortcuts::BACKWARD, Reorder::Backward),
-                ("Send to Back", shortcuts::TO_BACK, Reorder::ToBack),
-            ] {
-                if item(ui, label, Some(sc), has_sel) {
-                    app.reorder(how);
-                }
-            }
-            ui.separator();
-            if item(ui, "Group", Some(shortcuts::GROUP), has_sel) {
-                app.group_selection();
-            }
-            if item(ui, "Ungroup", Some(shortcuts::UNGROUP), has_sel) {
-                app.ungroup_selection();
-            }
-            ui.separator();
-            ui.menu_button("Align", |ui| {
-                for (label, how) in ALIGNMENTS.map(|(_, l, a)| (l, a)) {
-                    if item(ui, label, None, has_sel) {
-                        app.align(how);
-                    }
-                }
-            });
-            let three = app.selection.len() >= 3;
-            if item(ui, "Distribute Horizontally", Some(shortcuts::DISTRIBUTE_H), three) {
-                app.distribute(scrawl_core::snap::Axis::X);
-            }
-            if item(ui, "Distribute Vertically", Some(shortcuts::DISTRIBUTE_V), three) {
-                app.distribute(scrawl_core::snap::Axis::Y);
-            }
-            if item(ui, "Tidy", Some(shortcuts::TIDY), app.selection.len() >= 2) {
-                app.tidy();
-            }
-            ui.separator();
-            if item(ui, "Create Stack", None, has_sel) {
-                app.make_stack();
-            }
-        });
-        ui.menu_button("Layer", |ui| {
-            let multi = app.selection.len() > 1;
-            ui.menu_button("Combine", |ui| {
-                for op in BooleanOp::ALL {
-                    if item(ui, op.label(), Some(shortcuts::boolean(op)), multi) {
-                        app.boolean(op);
-                    }
-                }
-            });
-            if item(ui, "Use as Mask", Some(shortcuts::MASK), has_sel) {
-                app.use_as_mask();
-            }
-            ui.separator();
-            let instance = match app.selection[..] {
-                [id] => match app.page().find(id).map(|l| &l.kind) {
-                    Some(scrawl_core::LayerKind::Symbol(i)) => Some(i.symbol_id),
-                    _ => None,
-                },
-                _ => None,
-            };
-            if item(ui, "Create Symbol", Some(shortcuts::CREATE_SYMBOL), has_sel) {
-                app.create_symbol();
-            }
-            if item(ui, "Detach from Symbol", Some(shortcuts::DETACH_SYMBOL), instance.is_some()) {
-                app.detach_selection();
-            }
-            if item(ui, "Edit Master", None, instance.is_some())
-                && let Some(symbol) = instance
-            {
-                app.edit_master(symbol);
-            }
-            ui.separator();
-            ui.menu_button("Path", |ui| {
-                if item(ui, "Edit Points", None, app.selection.len() == 1) {
-                    app.enter_vector_edit(app.selection[0]);
-                }
-                if item(ui, "Convert to Path", Some(shortcuts::CONVERT_TO_PATH), has_sel) {
-                    app.convert_to_paths();
-                }
-                if item(ui, "Convert to Outlines", Some(shortcuts::OUTLINE), has_sel) {
-                    app.outline_strokes();
-                }
-                if item(ui, "Reverse Path Direction", None, has_sel) {
-                    app.reverse_paths();
-                }
-            });
-        });
-        ui.menu_button("Prototype", |ui| prototype_menu(app, ui));
-        ui.menu_button("Help", |ui| {
-            if item(ui, "Open Sample Document", None, true) {
-                app.open_sample();
-            }
-        });
-        ui.menu_button("View", |ui| {
-            if item(ui, "Zoom In", Some(shortcuts::ZOOM_IN), true) {
-                app.step_zoom(true);
-            }
-            if item(ui, "Zoom Out", Some(shortcuts::ZOOM_OUT), true) {
-                app.step_zoom(false);
-            }
-            if item(ui, "Actual Size", Some(shortcuts::ACTUAL_SIZE), true) {
-                app.actual_size();
-            }
-            if item(ui, "Zoom to Fit", Some(shortcuts::ZOOM_FIT), true) {
-                app.zoom_to_fit();
-            }
-            if item(ui, "Zoom to Selection", Some(shortcuts::ZOOM_SELECTION), has_sel) {
-                app.zoom_to_selection(crate::viewport::MAX_ZOOM);
-            }
-            ui.separator();
-            ui.add(egui::Checkbox::new(&mut app.show_rulers, "Show Rulers")).on_hover_text("⌃R");
-            ui.add(egui::Checkbox::new(&mut app.show_grid, "Show Grid")).on_hover_text("⌃G");
-            ui.add(egui::Checkbox::new(&mut app.show_layout, "Show Layout")).on_hover_text("⌃L");
-            ui.checkbox(&mut app.snap_to_layers, "Snap to Layers")
-                .on_hover_text("Hold ⌃ while dragging to snap temporarily off");
-        });
+        for menu in &menus {
+            ui.menu_button(menu.title, |ui| entries(ui, &menu.entries, &mut chosen));
+        }
     });
+    if let Some(command) = chosen {
+        commands::execute(app, command, ui.ctx());
+    }
 }
 
-fn prototype_menu(app: &mut ScrawlApp, ui: &mut Ui) {
-    let has_sel = !app.selection.is_empty();
-    if item(ui, "Preview", Some(shortcuts::PREVIEW), true) {
-        crate::preview::open(app);
+fn entries(ui: &mut Ui, list: &[Entry], chosen: &mut Option<Command>) {
+    for entry in list {
+        match entry {
+            Entry::Separator => {
+                ui.separator();
+            }
+            Entry::Submenu { label, entries: sub, enabled } => {
+                ui.add_enabled_ui(*enabled, |ui| {
+                    ui.menu_button(label, |ui| entries(ui, sub, chosen));
+                });
+            }
+            Entry::Item(item) => {
+                let clicked = match item.checked {
+                    Some(on) => {
+                        let mut on = on;
+                        let tip = item.shortcut.map(|s| ui.ctx().format_shortcut(&s)).unwrap_or_default();
+                        let r = ui.add_enabled(item.enabled, egui::Checkbox::new(&mut on, &item.label));
+                        if tip.is_empty() { r.clicked() } else { r.on_hover_text(tip).clicked() }
+                    }
+                    None => {
+                        let mut b = egui::Button::new(&item.label);
+                        if let Some(sc) = item.shortcut {
+                            b = b.shortcut_text(ui.ctx().format_shortcut(&sc));
+                        } else if !item.hint.is_empty() {
+                            b = b.shortcut_text(item.hint);
+                        }
+                        ui.add_enabled(item.enabled, b).clicked()
+                    }
+                };
+                if clicked {
+                    *chosen = Some(item.command.clone());
+                    ui.close();
+                }
+            }
+        }
     }
-    ui.separator();
-    if key_item(ui, "Add Link…", "W") {
-        crate::prototyping::start_linking(app);
-    }
-    let sel = app.selection.clone();
-    if item(ui, "Link Back", None, has_sel) {
-        crate::prototyping::set_links(app, &sel, Some(scrawl_core::prototype::Destination::Back));
-    }
-    if item(ui, "Remove Link", None, has_sel) {
-        crate::prototyping::set_links(app, &sel, None);
-    }
-    if key_item(ui, "Hotspot", "H") {
-        app.tool = Tool::Hotspot;
-    }
-    ui.separator();
-    let artboard = match app.selection[..] {
-        [id] => app.page().find(id).filter(|l| l.is_artboard() && l.master_of().is_none()).map(|l| l.id),
-        _ => None,
-    };
-    let is_start = artboard.and_then(|id| app.page().find(id)).is_some_and(|l| matches!(&l.kind, scrawl_core::LayerKind::Artboard(a) if a.flow_home));
-    let label = if is_start { "Remove Start Point" } else { "Use Artboard as Start Point" };
-    if item(ui, label, None, artboard.is_some())
-        && let Some(id) = artboard
-        && let Some(scrawl_core::LayerKind::Artboard(a)) = app.page_mut().find_mut(id).map(|l| &mut l.kind)
-    {
-        a.flow_home = !is_start;
-    }
-    ui.add(egui::Checkbox::new(&mut app.show_links, "Show All Links")).on_hover_text("⌃P");
 }
 
 pub const ALIGNMENTS: [(Icon, &str, Align); 6] = [
@@ -310,7 +105,7 @@ pub fn toolbar(app: &mut ScrawlApp, ui: &mut Ui) {
         ui.separator();
         ui.add_enabled_ui(app.selection.len() > 1, |ui| {
             for op in BooleanOp::ALL {
-                let tip = format!("{} ({})", op.label(), ui.ctx().format_shortcut(&shortcuts::boolean(op)));
+                let tip = format!("{} ({})", op.label(), Command::Boolean(op).shortcut().map(|s| ui.ctx().format_shortcut(&s)).unwrap_or_default());
                 if icons::button(ui, boolean_icon(op), false, &tip).clicked() {
                     app.boolean(op);
                 }
@@ -318,7 +113,7 @@ pub fn toolbar(app: &mut ScrawlApp, ui: &mut Ui) {
         });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let tip = format!("Preview ({})", ui.ctx().format_shortcut(&shortcuts::PREVIEW));
+            let tip = format!("Preview ({})", Command::Preview.shortcut().map(|s| ui.ctx().format_shortcut(&s)).unwrap_or_default());
             if icons::button(ui, Icon::Play, app.preview.is_some(), &tip).clicked() {
                 if app.preview.is_some() {
                     app.preview = None;

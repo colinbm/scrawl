@@ -76,7 +76,9 @@
 ## Milestone 8 — Prototyping & platform
 - ✅ Prototyping: links on any layer (W, or pick in the inspector) to an artboard or Back, with slide animations; hotspots (H); flow start points; links drawn on the canvas (⌃P shows all); fix position when scrolling
 - ✅ Preview window (⌘P): follows links with slide transitions, Back and Restart, artboard picker, scrolling for tall artboards, hotspot flash on missed clicks
+- ✅ Native macOS menu bar (muda) from the same command model as the in-window menu bar and shortcuts
+- ✅ Multi-window documents (⌘N, ⌘W, Window menu), Open Recent, autosave with crash recovery, versions kept on each save (File › Browse Versions…, Revert to Saved)
 - ⬜ Prototyping: overlays, fixed headers inside groups, more animations (dissolve, push), device frames, flows across pages
-- ⬜ Native menus (muda), multi-window documents, recent files, autosave/versions
+- ⬜ Native menus on Windows/Linux (in-window menu bar there for now); macOS document browser and Versions integration
 - ⬜ Plugins/scripting (likely WASM or JS)
 - ⬜ Collaboration (CRDT doc model) — out of scope until the model stabilises

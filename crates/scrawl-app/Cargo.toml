@@ -23,6 +23,12 @@ log.workspace = true
 png.workspace = true
 image.workspace = true
 env_logger.workspace = true
+serde.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21", default-features = false }
+arboard = { version = "3", default-features = false }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36.2", features = ["wgpu", "snapshot", "eframe"] }

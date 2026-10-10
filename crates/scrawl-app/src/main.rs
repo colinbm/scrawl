@@ -1,8 +1,13 @@
 mod app;
+mod autosave;
 mod canvas;
+mod commands;
 mod dev;
 mod gpu;
 mod import;
+#[cfg(target_os = "macos")]
+mod native_menu;
+mod prefs;
 mod preview;
 mod prototyping;
 mod rulers;
@@ -13,11 +18,13 @@ mod ui;
 #[cfg(test)]
 mod ui_tests;
 mod vector;
+mod versions;
 mod viewport;
+mod workspace;
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-    let path = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+    let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(std::path::PathBuf::from).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Scrawl")
@@ -26,5 +33,16 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native("Scrawl", options, Box::new(|cc| Ok(Box::new(app::ScrawlApp::new(cc, path)))))
+    eframe::run_native("Scrawl", options, Box::new(|cc| {
+            // Scripted runs (dev hooks) keep their files out of the user's own folder.
+            let support = match std::env::var_os("SCRAWL_SUPPORT") {
+                Some(dir) => Some(std::path::PathBuf::from(dir)),
+                None if dev::DevHooks::from_env().active() => None,
+                None => prefs::support_dir(),
+            };
+            let mut ws = workspace::Workspace::new(cc, paths, support);
+            ws.install_native_menu(&cc.egui_ctx);
+            Ok(Box::new(ws))
+        }),
+    )
 }
