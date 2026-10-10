@@ -32,7 +32,7 @@
 - ✅ Border options: dash/gap, caps, joins; start/end markers (arrows, circles, squares, line) on open paths
 - ✅ Layer blend modes (16 modes); "Use as Mask" ⌃⌘M (outline masks clip layers above in the same group)
 - ✅ Headless GPU exporter (`scrawl_render::export`) with pixel tests; whole-app UI tests in egui_kittest
-- ⬜ Image fills and image layers (needs asset storage in the file format)
+- ✅ Image layers and image fills (fill, fit, stretch, tile); images stored in the `.scrawl` archive
 - ⬜ True GPU blur pass (replace banded shadows; enables layer and background blur)
 - ⬜ Alpha/luminance masks, "ignore underlying mask"
 - ⬜ Noise fills, pattern fills, gradient interpolation options

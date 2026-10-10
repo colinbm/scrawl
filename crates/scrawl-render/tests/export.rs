@@ -54,3 +54,35 @@ fn fills_masks_and_shadows() {
     assert!(close(px(&img, 55, 20), [0, 0, 255, 255]), "inside mask: {:?}", px(&img, 55, 20));
     assert!(close(px(&img, 65, 20), [255, 255, 255, 255]), "outside mask: {:?}", px(&img, 65, 20));
 }
+
+/// A 2×1 PNG: red on the left, blue on the right.
+fn two_pixel_png() -> Vec<u8> {
+    let img = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255]).unwrap();
+    let mut out = std::io::Cursor::new(vec![]);
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[test]
+fn image_layers_and_fills() {
+    let Some(mut ex) = exporter() else { return };
+    let mut doc = scrawl_core::Document::default();
+    let id = doc.assets.add_image(two_pixel_png()).unwrap();
+    let page = &mut doc.pages[0];
+    // The bitmap stretched over a 40×20 frame.
+    ops::insert_drawn(page, Layer::image(id.clone(), Frame::new(0.0, 0.0, 40.0, 20.0)));
+    // A fitted image fill in a 40×40 square: the image is 40×20, centered vertically.
+    let mut square = Layer::rectangle(Frame::new(60.0, 0.0, 40.0, 40.0));
+    square.style.fills = vec![Fill::image(id, scrawl_core::ImageMode::Fit)];
+    square.style.borders.clear();
+    ops::insert_drawn(page, square);
+
+    ex.images.load(&doc.assets);
+    let img = ex.render_page(&doc.pages[0], Rect::new(0.0, 0.0, 100.0, 40.0), 1.0, peniko::Color::WHITE).unwrap();
+    assert!(close(px(&img, 5, 10), [255, 0, 0, 255]), "{:?}", px(&img, 5, 10));
+    assert!(close(px(&img, 35, 10), [0, 0, 255, 255]));
+    assert!(close(px(&img, 65, 20), [255, 0, 0, 255]));
+    assert!(close(px(&img, 95, 20), [0, 0, 255, 255]));
+    // Fit leaves the rest of the square empty.
+    assert!(close(px(&img, 80, 3), [255, 255, 255, 255]), "{:?}", px(&img, 80, 3));
+}

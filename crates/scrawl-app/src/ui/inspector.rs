@@ -13,7 +13,7 @@ use scrawl_core::{OverrideValue, SymbolId, SymbolInstance};
 
 use crate::app::ScrawlApp;
 use crate::canvas::{GradientTarget, Tool};
-use crate::ui::paint::{PaintTarget, Palette, paint_button};
+use crate::ui::paint::{ImageTarget, PaintTarget, Palette, paint_button};
 use crate::ui::icons::{self, Icon};
 use crate::ui::toolbar::ALIGNMENTS;
 
@@ -203,6 +203,7 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         LayerKind::Text(text) => text_section(ui, text, &mut app.text),
         LayerKind::Group(g) => stack_section(ui, g),
         LayerKind::Symbol(inst) => symbol_section(app, ui, layer.id, inst),
+        LayerKind::Image(img) => image_section(app, ui, &mut layer.frame, img),
         LayerKind::Star(star) => {
             section(ui, "Star");
             ui.horizontal(|ui| {
@@ -328,6 +329,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                         gradient: Some(&mut fill.gradient),
                         blend: Some(&mut fill.blend_mode),
                         swatch: Some(&mut fill.swatch),
+                        image: Some(ImageTarget { id: &mut fill.image, mode: &mut fill.image_mode, scale: &mut fill.image_scale }),
                     };
                     if paint_button(ui, "fill", target, swatches).editing_gradient {
                         gradient_target = Some(GradientTarget { layer: id, border: false, index: i });
@@ -373,6 +375,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                     gradient: Some(&mut border.gradient),
                     blend: None,
                     swatch: Some(&mut border.swatch),
+                    image: None,
                 };
                 if paint_button(ui, "border", target, swatches).editing_gradient {
                     gradient_target = Some(GradientTarget { layer: id, border: true, index: i });
@@ -464,6 +467,9 @@ fn paint_summary(ui: &mut Ui, fill_type: FillType, color: &mut Color, gradient: 
         }
         (FillType::Gradient, _) => {
             ui.label(format!("{} gradient", gradient.kind.label()));
+        }
+        (FillType::Image, _) => {
+            ui.label("Image");
         }
     }
 }
@@ -975,6 +981,31 @@ fn symbol_section(app: &mut ScrawlApp, ui: &mut Ui, id: scrawl_core::LayerId, in
             });
         });
     }
+}
+
+fn image_section(app: &mut ScrawlApp, ui: &mut Ui, frame: &mut scrawl_core::Frame, img: &mut scrawl_core::ImageLayer) {
+    section(ui, "Image");
+    let size = app.images.size(&img.image);
+    ui.horizontal(|ui| {
+        match size {
+            Some((w, h)) => ui.weak(format!("{w}×{h} px")),
+            None => ui.colored_label(ui.visuals().warn_fg_color, "Missing image"),
+        };
+        if let Some((w, h)) = size
+            && ui.button("Original Size").clicked()
+        {
+            frame.width = w as f64;
+            frame.height = h as f64;
+        }
+        if ui.button("Replace…").clicked()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Images", &crate::import::IMAGE_EXTENSIONS).pick_file()
+        {
+            match std::fs::read(&path).ok().and_then(|b| app.doc.assets.add_image(b)) {
+                Some(id) => img.image = id,
+                None => app.error = Some(format!("Couldn't read {} as an image", path.display())),
+            }
+        }
+    });
 }
 
 fn master_section(app: &mut ScrawlApp, ui: &mut Ui, ab: &mut scrawl_core::Artboard, symbol: SymbolId) {

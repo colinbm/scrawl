@@ -83,6 +83,14 @@ pub enum LayerKind {
     Text(TextLayer),
     /// An instance of a symbol master.
     Symbol(crate::symbols::SymbolInstance),
+    /// A bitmap, stretched to the frame.
+    Image(ImageLayer),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageLayer {
+    /// The asset id of the encoded image.
+    pub image: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -194,6 +202,7 @@ impl LayerKind {
             Self::Path(p) if is_line(p) => "Line",
             Self::Path(_) => "Path",
             Self::Symbol(_) => "Symbol",
+            Self::Image(_) => "Image",
         }
     }
 }
@@ -274,6 +283,11 @@ impl Layer {
         );
         l.style.fills = vec![crate::Fill::solid(Color::BLACK)];
         l
+    }
+
+    /// An image layer showing asset `image` at `frame`.
+    pub fn image(image: impl Into<String>, frame: Frame) -> Self {
+        Self::new("Image", frame, LayerKind::Image(ImageLayer { image: image.into() }))
     }
 
     pub fn is_text(&self) -> bool {
@@ -363,7 +377,7 @@ impl Layer {
             }
             LayerKind::Path(p) => Some(p.to_bez_path(r.width(), r.height())),
             // A text layer's or symbol instance's geometry, for selection and bounds, is its frame.
-            LayerKind::Text(_) | LayerKind::Symbol(_) => Some(r.to_path(PATH_TOLERANCE)),
+            LayerKind::Text(_) | LayerKind::Symbol(_) | LayerKind::Image(_) => Some(r.to_path(PATH_TOLERANCE)),
         }
     }
 
@@ -467,7 +481,7 @@ impl Layer {
     pub fn editable_path(&self) -> Option<PathShape> {
         match &self.kind {
             LayerKind::Path(p) => Some(p.scaled(self.frame.width, self.frame.height)),
-            LayerKind::Artboard(_) | LayerKind::Group(_) | LayerKind::Text(_) | LayerKind::Symbol(_) => None,
+            LayerKind::Artboard(_) | LayerKind::Group(_) | LayerKind::Text(_) | LayerKind::Symbol(_) | LayerKind::Image(_) => None,
             _ => Some(PathShape::from_bez_path(&self.local_path()?)),
         }
     }

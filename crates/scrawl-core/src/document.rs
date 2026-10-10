@@ -44,6 +44,9 @@ pub struct Document {
     /// Color variables copied in from libraries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub foreign_swatches: Vec<Foreign<Swatch>>,
+    /// Images, saved as separate files in the archive.
+    #[serde(skip)]
+    pub assets: crate::assets::Assets,
 }
 
 impl Default for Document {
@@ -58,6 +61,7 @@ impl Default for Document {
             foreign_symbols: vec![],
             foreign_styles: vec![],
             foreign_swatches: vec![],
+            assets: Default::default(),
         }
     }
 }
@@ -69,6 +73,34 @@ impl Document {
 
     pub fn page_mut(&mut self, id: PageId) -> Option<&mut Page> {
         self.pages.iter_mut().find(|p| p.id == id)
+    }
+
+    /// Ids of the assets something in the document refers to: image layers and image fills, on
+    /// pages, in shared styles and in library copies.
+    pub fn used_assets(&self) -> std::collections::BTreeSet<String> {
+        let mut used = std::collections::BTreeSet::new();
+        let mut style = |s: &crate::Style| used.extend(s.fills.iter().filter_map(|f| f.image.clone()));
+        let library = self.foreign_symbols.iter().map(|f| &f.item);
+        let mut layers = vec![];
+        for page in &self.pages {
+            page.walk(|l| layers.push(l));
+        }
+        for m in library {
+            m.walk(&mut |l| layers.push(l));
+        }
+        let mut images = vec![];
+        for l in layers {
+            style(&l.style);
+            if let crate::LayerKind::Image(i) = &l.kind {
+                images.push(i.image.clone());
+            }
+        }
+        let shared = self.layer_styles.iter().chain(&self.text_styles).chain(self.foreign_styles.iter().map(|f| &f.item));
+        for s in shared {
+            style(&s.style);
+        }
+        used.extend(images);
+        used
     }
 
     /// A page name not yet used in this document, e.g. "Page 3".

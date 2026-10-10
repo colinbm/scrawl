@@ -4,7 +4,8 @@
 use egui::color_picker::{Alpha, color_picker_hsva_2d};
 use egui::ecolor::Hsva;
 use egui::{Color32, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use scrawl_core::{BlendMode, Color, FillType, Gradient, GradientKind, Swatch, SwatchId};
+use scrawl_core::assets::Assets;
+use scrawl_core::{BlendMode, Color, FillType, Gradient, GradientKind, ImageMode, Swatch, SwatchId};
 
 /// What a paint popover edits. Gradients and blend modes are optional (shadows have neither),
 /// as is the color-variable link (artboard backgrounds have none).
@@ -14,12 +15,21 @@ pub struct PaintTarget<'a> {
     pub gradient: Option<&'a mut Gradient>,
     pub blend: Option<&'a mut BlendMode>,
     pub swatch: Option<&'a mut Option<SwatchId>>,
+    /// Image fill settings, for fills.
+    pub image: Option<ImageTarget<'a>>,
+}
+
+/// The parts of a fill an image fill uses.
+pub struct ImageTarget<'a> {
+    pub id: &'a mut Option<String>,
+    pub mode: &'a mut ImageMode,
+    pub scale: &'a mut f64,
 }
 
 impl<'a> PaintTarget<'a> {
     /// A plain color with no gradient, blend mode or variable link.
     pub fn color(color: &'a mut Color) -> Self {
-        Self { fill_type: None, color, gradient: None, blend: None, swatch: None }
+        Self { fill_type: None, color, gradient: None, blend: None, swatch: None, image: None }
     }
 }
 
@@ -31,12 +41,14 @@ pub struct Palette<'a> {
     pub variables: &'a mut Vec<Swatch>,
     /// Color variables from libraries, used the same way but edited in their library.
     pub library: Vec<Swatch>,
+    /// Where chosen images are stored.
+    pub assets: &'a mut Assets,
 }
 
 impl<'a> Palette<'a> {
     pub fn new(doc: &'a mut scrawl_core::Document) -> Self {
         let library = doc.foreign_swatches.iter().map(|f| f.item.clone()).collect();
-        Self { colors: &mut doc.colors, variables: &mut doc.swatches, library }
+        Self { colors: &mut doc.colors, variables: &mut doc.swatches, library, assets: &mut doc.assets }
     }
 
     /// A color variable by id, local or from a library.
@@ -97,6 +109,10 @@ fn paint_gradient_bar(p: &egui::Painter, rect: Rect, g: &Gradient) {
 fn paint_swatch(p: &egui::Painter, rect: Rect, fill_type: FillType, color: Color, gradient: Option<&Gradient>) {
     match (fill_type, gradient) {
         (FillType::Gradient, Some(g)) => paint_gradient_bar(p, rect, g),
+        (FillType::Image, _) => {
+            p.rect_filled(rect, 0.0, Color32::from_gray(225));
+            crate::ui::icons::paint(p, rect.shrink(3.0), crate::ui::icons::Icon::Image, Color32::from_gray(90));
+        }
         _ => {
             checkerboard(p, rect);
             p.rect_filled(rect, 0.0, to_color32(color));
@@ -125,7 +141,7 @@ pub fn paint_button(ui: &mut Ui, id_salt: &str, target: PaintTarget<'_>, palette
 }
 
 fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'_>) -> bool {
-    let PaintTarget { mut fill_type, color, mut gradient, blend, mut swatch } = target;
+    let PaintTarget { mut fill_type, color, mut gradient, blend, mut swatch, image } = target;
     let stop_id = id.with("stop");
     let mut selected_stop: usize = ui.data(|d| d.get_temp(stop_id)).unwrap_or(0);
 
@@ -145,8 +161,24 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
                     g.kind = kind;
                 }
             }
+            if image.is_some() && ui.selectable_label(*ft == FillType::Image, "Image").clicked() {
+                *ft = FillType::Image;
+            }
         });
         ui.separator();
+    }
+
+    if fill_type.as_deref() == Some(&FillType::Image)
+        && let Some(image) = image
+    {
+        image_fill(ui, image, palette.assets);
+        if let Some(blend) = blend {
+            ui.horizontal(|ui| {
+                ui.label("Blend");
+                blend_combo(ui, id.with("blend"), blend);
+            });
+        }
+        return false;
     }
 
     let is_gradient = fill_type.as_deref() == Some(&FillType::Gradient) && gradient.is_some();
@@ -275,6 +307,37 @@ pub fn variable_label(ui: &mut Ui, name: &str) -> egui::Response {
         ui.add(egui::Label::new(name).truncate())
     })
     .inner
+}
+
+/// The image fill controls: the chosen image, how it covers the shape, and the tile scale.
+fn image_fill(ui: &mut Ui, image: ImageTarget<'_>, assets: &mut Assets) {
+    ui.horizontal(|ui| {
+        let label = if image.id.is_some() { "Replace Image…" } else { "Choose Image…" };
+        if ui.button(label).clicked()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Images", &crate::import::IMAGE_EXTENSIONS).pick_file()
+            && let Ok(bytes) = std::fs::read(path)
+            && let Some(id) = assets.add_image(bytes)
+        {
+            *image.id = Some(id);
+        }
+        if image.id.is_none() {
+            ui.weak("No image");
+        }
+    });
+    ui.horizontal(|ui| {
+        for mode in ImageMode::ALL {
+            ui.selectable_value(image.mode, mode, mode.label());
+        }
+    });
+    if *image.mode == ImageMode::Tile {
+        ui.horizontal(|ui| {
+            ui.label("Scale");
+            let mut pct = *image.scale * 100.0;
+            if ui.add(egui::DragValue::new(&mut pct).range(1.0..=1000.0).suffix("%")).changed() {
+                *image.scale = pct / 100.0;
+            }
+        });
+    }
 }
 
 /// A small clickable color square; `selected` rings it in the accent color.

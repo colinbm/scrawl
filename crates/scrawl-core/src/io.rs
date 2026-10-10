@@ -1,5 +1,5 @@
-//! The `.scrawl` file format: a zip archive holding `meta.json` and `document.json`.
-//! Binary assets (images, fonts) will live alongside them in later versions.
+//! The `.scrawl` file format: a zip archive holding `meta.json`, `document.json`, and the images
+//! the document uses under `images/`, named by asset id.
 
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
@@ -14,6 +14,7 @@ pub const FORMAT_VERSION: u32 = 1;
 
 const META: &str = "meta.json";
 const DOCUMENT: &str = "document.json";
+const IMAGES: &str = "images/";
 
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
@@ -41,6 +42,15 @@ pub fn to_bytes(doc: &Document) -> Result<Vec<u8>, FileError> {
     zip.write_all(&serde_json::to_vec_pretty(&meta)?)?;
     zip.start_file(DOCUMENT, opts)?;
     zip.write_all(&serde_json::to_vec(doc)?)?;
+    // Only what's in use: undo may keep others alive in memory, but they needn't be saved.
+    // Images are already compressed.
+    let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for id in doc.used_assets() {
+        if let Some(bytes) = doc.assets.get(&id) {
+            zip.start_file(format!("{IMAGES}{id}"), stored)?;
+            zip.write_all(bytes)?;
+        }
+    }
     Ok(zip.finish()?.into_inner())
 }
 
@@ -51,6 +61,15 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Document, FileError> {
         return Err(FileError::TooNew(meta.format_version));
     }
     let mut doc: Document = serde_json::from_slice(&read_entry(&mut zip, DOCUMENT)?)?;
+    let images: Vec<String> = zip
+        .file_names()
+        .filter_map(|n| n.ok().map(|n| n.into_owned()))
+        .filter(|n| n.starts_with(IMAGES) && n.len() > IMAGES.len())
+        .collect();
+    for name in images {
+        let bytes = read_entry(&mut zip, &name)?;
+        doc.assets.insert(name[IMAGES.len()..].to_owned(), bytes.into());
+    }
     // Instance contents aren't saved. Rebuild them so the document renders as-is; text in them is
     // sized once a text engine refits the document.
     crate::symbols::sync_instances(&mut doc, &mut |_| {});
@@ -95,6 +114,19 @@ mod tests {
 
         let back = from_bytes(&to_bytes(&doc).unwrap()).unwrap();
         assert_eq!(back, doc);
+    }
+
+    #[test]
+    fn images_are_stored_beside_the_document() {
+        let mut doc = Document::default();
+        let png = [0x89, b'P', b'N', b'G', 0, 1, 2, 3].to_vec();
+        let id = doc.assets.add_image(png.clone()).unwrap();
+        doc.assets.add_image([0xFF, 0xD8, 0xFF, 0].to_vec());
+        doc.pages[0].layers.push(Layer::image(id.clone(), Frame::new(0.0, 0.0, 10.0, 10.0)));
+        let back = from_bytes(&to_bytes(&doc).unwrap()).unwrap();
+        assert_eq!(back.assets.len(), 1, "unused images aren't saved");
+        assert_eq!(&back.assets.get(&id).unwrap()[..], &png[..]);
+        assert_eq!(back.pages, doc.pages);
     }
 
     #[test]

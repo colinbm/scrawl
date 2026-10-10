@@ -79,6 +79,36 @@ pub enum FillType {
     #[default]
     Color,
     Gradient,
+    /// An image asset (fills only).
+    Image,
+}
+
+/// How an image fill covers the layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImageMode {
+    /// Scale to cover the whole frame, cropping the overflow.
+    #[default]
+    Fill,
+    /// Scale to fit inside the frame.
+    Fit,
+    /// Stretch to the frame, ignoring the aspect ratio.
+    Stretch,
+    /// Repeat at natural size, scaled by `image_scale`.
+    Tile,
+}
+
+impl ImageMode {
+    pub const ALL: [Self; 4] = [Self::Fill, Self::Fit, Self::Stretch, Self::Tile];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fill => "Fill",
+            Self::Fit => "Fit",
+            Self::Stretch => "Stretch",
+            Self::Tile => "Tile",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -94,6 +124,26 @@ pub struct Fill {
     /// The color variable `color` follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swatch: Option<SwatchId>,
+    /// The image asset for image fills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub image_mode: ImageMode,
+    /// Tile scale for tiled image fills.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub image_scale: f64,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
 }
 
 impl Fill {
@@ -105,13 +155,24 @@ impl Fill {
             gradient: Gradient::default(),
             blend_mode: BlendMode::Normal,
             swatch: None,
+            image: None,
+            image_mode: ImageMode::Fill,
+            image_scale: 1.0,
         }
     }
 
+    /// A fill showing image asset `id`.
+    pub fn image(id: impl Into<String>, mode: ImageMode) -> Self {
+        Self { fill_type: FillType::Image, image: Some(id.into()), image_mode: mode, ..Self::solid(Color::WHITE) }
+    }
+
     pub fn paint(&self) -> Paint<'_> {
-        match self.fill_type {
-            FillType::Color => Paint::Color(self.color),
-            FillType::Gradient => Paint::Gradient(&self.gradient),
+        match (self.fill_type, &self.image) {
+            (FillType::Gradient, _) => Paint::Gradient(&self.gradient),
+            (FillType::Image, Some(id)) => Paint::Image { id, mode: self.image_mode, scale: self.image_scale },
+            // An image fill without an image shows nothing.
+            (FillType::Image, None) => Paint::Color(Color::TRANSPARENT),
+            (FillType::Color, _) => Paint::Color(self.color),
         }
     }
 }
@@ -121,6 +182,7 @@ impl Fill {
 pub enum Paint<'a> {
     Color(Color),
     Gradient(&'a Gradient),
+    Image { id: &'a str, mode: ImageMode, scale: f64 },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,8 +309,9 @@ impl Border {
 
     pub fn paint(&self) -> Paint<'_> {
         match self.fill_type {
-            FillType::Color => Paint::Color(self.color),
             FillType::Gradient => Paint::Gradient(&self.gradient),
+            // Borders can't paint images.
+            FillType::Color | FillType::Image => Paint::Color(self.color),
         }
     }
 }

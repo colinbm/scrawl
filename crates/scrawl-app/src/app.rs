@@ -65,6 +65,7 @@ pub mod shortcuts {
     pub const FIND: KeyboardShortcut = cmd(Key::F);
     pub const CREATE_SYMBOL: KeyboardShortcut = cmd_alt(Key::Y);
     pub const DETACH_SYMBOL: KeyboardShortcut = cmd_alt(Key::B);
+    pub const PLACE_IMAGE: KeyboardShortcut = cmd_shift(Key::K);
 
     pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
         match op {
@@ -88,6 +89,8 @@ pub struct ScrawlApp {
     pub gpu_error: Option<String>,
     pub scene: vello::Scene,
     pub text: scrawl_text::TextEngine,
+    /// Decoded image assets for the canvas.
+    pub images: scrawl_render::ImageCache,
     /// Containers expanded in the layer list.
     pub expanded: HashSet<LayerId>,
     /// Layer or page currently being renamed, with the edit buffer.
@@ -147,6 +150,7 @@ impl ScrawlApp {
             gpu_error: None,
             scene: vello::Scene::new(),
             text: scrawl_text::TextEngine::new(),
+            images: Default::default(),
             expanded: HashSet::new(),
             renaming: None,
             lock_aspect: false,
@@ -772,6 +776,9 @@ impl ScrawlApp {
         if pressed(DETACH_SYMBOL) {
             self.detach_selection();
         }
+        if pressed(PLACE_IMAGE) {
+            crate::import::choose_images(self);
+        }
         if pressed(UNGROUP) {
             self.ungroup_selection();
         }
@@ -969,6 +976,7 @@ impl eframe::App for ScrawlApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_shortcuts(&ctx);
+        crate::import::handle_drops(self, &ctx);
 
         egui::Panel::top("menu_bar").show(ui, |ui| ui::toolbar::menu_bar(self, ui));
         egui::Panel::top("toolbar").show(ui, |ui| ui::toolbar::toolbar(self, ui));

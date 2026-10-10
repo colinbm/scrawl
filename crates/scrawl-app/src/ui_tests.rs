@@ -634,3 +634,33 @@ fn library_symbols_insert_and_update() {
     assert!(h.query_by_label_contains("updates available").is_none());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// An encoded PNG of `w`×`h` pixels in one color.
+fn png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(w, h, image::Rgba(rgba));
+    let mut out = std::io::Cursor::new(vec![]);
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[test]
+fn importing_images_makes_image_layers() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let files = vec![("/tmp/Photo.png".to_owned(), png(64, 32, [255, 0, 0, 255])), ("bad.txt".to_owned(), b"nope".to_vec())];
+    crate::import::import_files(h.state_mut(), files, scrawl_core::kurbo::Point::new(100.0, 600.0));
+    h.run();
+    h.run();
+    let app = h.state();
+    assert!(app.error.as_deref().is_some_and(|e| e.contains("bad.txt")));
+    let [id] = app.selection[..] else { panic!("one image added") };
+    let layer = app.page().find(id).unwrap();
+    assert_eq!(layer.name, "Photo");
+    assert_eq!(layer.kind.type_name(), "Image");
+    assert_eq!((layer.frame.width, layer.frame.height), (64.0, 32.0));
+    assert_eq!(app.page().parent(id), Some(Some(app.page().layers[0].id)), "dropped into the artboard");
+    h.state_mut().error = None;
+    h.run();
+    assert!(h.query_by_label("64×32 px").is_some());
+    save(&mut h, "image_layer");
+}

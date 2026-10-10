@@ -83,6 +83,9 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                 }
             }
             ui.separator();
+            if item(ui, "Image…", Some(shortcuts::PLACE_IMAGE), true) {
+                crate::import::choose_images(app);
+            }
             let masters: Vec<_> =
                 app.doc.symbol_masters().into_iter().filter_map(|(_, l)| Some((l.master_of()?, l.name.clone()))).collect();
             ui.add_enabled_ui(!masters.is_empty(), |ui| {

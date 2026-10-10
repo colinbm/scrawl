@@ -1000,8 +1000,9 @@ fn paint_canvas(app: &mut ScrawlApp, ui: &egui::Ui, frame: &mut eframe::Frame, r
     let (w, h) = ((rect.width() * ppp).round() as u32, (rect.height() * ppp).round() as u32);
     app.scene.reset();
     let view = Affine::scale(ppp as f64) * app.viewport().transform();
+    app.images.load(&app.doc.assets);
     let page = app.doc.page(app.page).unwrap_or(&app.doc.pages[0]);
-    scrawl_render::render_page(&mut app.scene, page, view, &mut app.text);
+    scrawl_render::render_page(&mut app.scene, page, view, &mut app.text, &app.images);
 
     let bg = canvas_background(ui);
     let gpu = app.gpu.as_mut().expect("initialized above");

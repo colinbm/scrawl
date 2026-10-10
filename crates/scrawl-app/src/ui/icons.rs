@@ -38,6 +38,7 @@ pub enum Icon {
     FlipH,
     FlipV,
     Symbol,
+    Image,
 }
 
 /// Paints `icon` centered in `rect`.
@@ -215,6 +216,12 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.add(egui::Shape::closed_line(vec![at(0.0, -6.5), at(6.5, 0.0), at(0.0, 6.5), at(-6.5, 0.0)], st));
             p.add(egui::Shape::convex_polygon(vec![at(0.0, -2.8), at(2.8, 0.0), at(0.0, 2.8), at(-2.8, 0.0)], color, Stroke::NONE));
         }
+        Icon::Image => {
+            // A framed landscape: mountains and a sun.
+            p.rect_stroke(r(-6.5, -5.5, 6.5, 5.5), 1.0, st, StrokeKind::Middle);
+            p.add(egui::Shape::convex_polygon(vec![at(-5.5, 4.5), at(-1.5, -0.5), at(1.5, 2.5), at(5.5, 4.5)], color, Stroke::NONE));
+            p.circle_filled(at(3.0, -2.5), 1.4 * u, color);
+        }
         Icon::FlipH => {
             p.line_segment([at(0.0, -7.0), at(0.0, 7.0)], Stroke::new(st.width * 0.7, color.gamma_multiply(0.6)));
             p.add(egui::Shape::convex_polygon(vec![at(-2.0, -5.0), at(-2.0, 5.0), at(-7.0, 5.0)], color, Stroke::NONE));
@@ -264,6 +271,7 @@ pub fn for_layer(kind: &scrawl_core::LayerKind) -> Icon {
         K::Artboard(a) if a.symbol_id.is_some() => Icon::Symbol,
         K::Artboard(_) => Icon::Artboard,
         K::Symbol(_) => Icon::Symbol,
+        K::Image(_) => Icon::Image,
         K::Group(_) => Icon::Group,
         K::Rectangle(_) => Icon::Rectangle,
         K::Oval => Icon::Oval,

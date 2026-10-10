@@ -1,7 +1,10 @@
 //! Builds Vello scenes from Scrawl documents.
 
 pub mod export;
+pub mod images;
 mod shadow;
+
+pub use images::ImageCache;
 
 use scrawl_core::style::stroke_style;
 use scrawl_core::{
@@ -39,11 +42,25 @@ pub fn to_mix(b: SBlend) -> Mix {
     }
 }
 
+/// What rendering needs beyond the page: text layout, and decoded images.
+struct Resources<'a> {
+    text: &'a mut TextEngine,
+    images: &'a ImageCache,
+}
+
 /// A brush for `paint` on a layer of the given size, plus the brush transform that maps the
-/// gradient's normalized (0..1) geometry onto the frame.
-pub fn brush(paint: Paint<'_>, width: f64, height: f64) -> (Brush, Option<Affine>) {
+/// gradient's normalized (0..1) geometry or the image onto the frame, and the area to paint when
+/// it's smaller than the shape (a fitted image).
+pub fn brush(paint: Paint<'_>, width: f64, height: f64, images: &ImageCache) -> (Brush, Option<Affine>, Option<Rect>) {
     match paint {
-        Paint::Color(c) => (Brush::Solid(to_peniko(c)), None),
+        Paint::Color(c) => (Brush::Solid(to_peniko(c)), None, None),
+        Paint::Image { id, mode, scale } => match images.get(id) {
+            Some(image) => {
+                let (brush, t, area) = images::fill_brush(image, mode, scale, width, height);
+                (brush, Some(t), area)
+            }
+            None => (Brush::Solid(peniko::Color::TRANSPARENT), None, None),
+        },
         Paint::Gradient(g) => {
             let stops: Vec<(f32, peniko::Color)> = g.stops.iter().map(|s| (s.position as f32, to_peniko(s.color))).collect();
             let gradient = match g.kind {
@@ -57,7 +74,7 @@ pub fn brush(paint: Paint<'_>, width: f64, height: f64) -> (Brush, Option<Affine
             .with_stops(stops.as_slice());
             // Degenerate dimensions (lines) would make the transform singular.
             let scale = Affine::scale_non_uniform(width.max(1e-3), height.max(1e-3));
-            (Brush::Gradient(gradient), Some(scale))
+            (Brush::Gradient(gradient), Some(scale), None)
         }
     }
 }
@@ -70,7 +87,8 @@ fn fill_rule(layer: &Layer) -> Fill {
 }
 
 /// Appends `page` to `scene`, with `view` mapping page space to target pixels.
-pub fn render_page(scene: &mut Scene, page: &Page, view: Affine, text: &mut TextEngine) {
+pub fn render_page(scene: &mut Scene, page: &Page, view: Affine, text: &mut TextEngine, images: &ImageCache) {
+    let res = &mut Resources { text, images };
     // Artboard drop shadows go underneath everything.
     for layer in page.layers.iter().filter(|l| l.visible && l.is_artboard()) {
         let t = view * layer.local_transform();
@@ -82,14 +100,14 @@ pub fn render_page(scene: &mut Scene, page: &Page, view: Affine, text: &mut Text
             2.0,
         );
     }
-    render_children(scene, &page.layers, view, text);
+    render_children(scene, &page.layers, view, res);
 }
 
 /// Renders siblings bottom to top. A mask layer clips everything above it in the same parent.
-fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, text: &mut TextEngine) {
+fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, res: &mut Resources<'_>) {
     let mut clips = 0;
     for child in children {
-        render_layer(scene, child, parent, text);
+        render_layer(scene, child, parent, res);
         if child.is_mask
             && child.visible
             && let Some(path) = child.local_path()
@@ -103,7 +121,7 @@ fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, text: 
     }
 }
 
-fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, text: &mut TextEngine) {
+fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resources<'_>) {
     if !layer.visible || layer.opacity <= 0.0 {
         return;
     }
@@ -128,17 +146,18 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, text: &mut Tex
             if ab.clip_content {
                 scene.push_clip_layer(Fill::NonZero, t, &rect);
             }
-            render_children(scene, &ab.children, t, text);
+            render_children(scene, &ab.children, t, res);
             if ab.clip_content {
                 scene.pop_layer();
             }
         }
-        LayerKind::Group(g) => render_children(scene, &g.children, t, text),
-        LayerKind::Symbol(s) => render_children(scene, &s.expanded, t, text),
-        LayerKind::Text(_) => render_text(scene, layer, parent, text),
+        LayerKind::Group(g) => render_children(scene, &g.children, t, res),
+        LayerKind::Symbol(s) => render_children(scene, &s.expanded, t, res),
+        LayerKind::Text(_) => render_text(scene, layer, parent, res),
+        LayerKind::Image(img) => render_image(scene, layer, &img.image, parent, res.images),
         _ => {
             if let Some(path) = layer.local_path() {
-                render_shape(scene, layer, &path, parent);
+                render_shape(scene, layer, &path, parent, res.images);
             }
         }
     }
@@ -158,7 +177,48 @@ fn max_paint_outset(layer: &Layer) -> f64 {
     children.map_or(own, |c| c.iter().map(max_paint_outset).fold(own, f64::max))
 }
 
-fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine) {
+/// A bitmap stretched to the frame, with the layer's shadows and borders. Missing images show a
+/// crossed-out placeholder.
+fn render_image(scene: &mut Scene, layer: &Layer, id: &str, parent: Affine, images: &ImageCache) {
+    let t = parent * layer.local_transform();
+    let rect = layer.frame.local_rect();
+    for s in layer.style.shadows.iter().filter(|s| s.enabled) {
+        shadow::drop_shadow(scene, layer, &rect.to_path(0.1), Fill::NonZero, parent, s);
+    }
+    match images.get(id) {
+        Some(image) => {
+            let fit = Affine::scale_non_uniform(rect.width() / image.width.max(1) as f64, rect.height() / image.height.max(1) as f64);
+            scene.draw_image(image, t * fit);
+        }
+        None => {
+            let grey = peniko::Color::new([0.85, 0.85, 0.85, 1.0]);
+            scene.fill(Fill::NonZero, t, grey, None, &rect);
+            let stroke = vello::kurbo::Stroke::new(1.0);
+            let dark = peniko::Color::new([0.6, 0.6, 0.6, 1.0]);
+            scene.stroke(&stroke, t, dark, None, &Line::new((rect.x0, rect.y0), (rect.x1, rect.y1)));
+            scene.stroke(&stroke, t, dark, None, &Line::new((rect.x1, rect.y0), (rect.x0, rect.y1)));
+        }
+    }
+    // Fills and borders paint over the bitmap, as usual for image layers.
+    let mut over = layer.clone();
+    over.style.shadows.clear();
+    render_shape(scene, &over, &rect.to_path(0.1), parent, images);
+}
+
+/// Fills `path` with a brush, clipped to `area` when the paint covers only part of the shape.
+#[allow(clippy::too_many_arguments)]
+fn fill_with(scene: &mut Scene, rule: Fill, t: Affine, brush: &Brush, bt: Option<Affine>, path: &BezPath, area: Option<Rect>) {
+    match area {
+        Some(area) => {
+            scene.push_clip_layer(rule, t, path);
+            scene.fill(Fill::NonZero, t, brush, bt, &area);
+            scene.pop_layer();
+        }
+        None => scene.fill(rule, t, brush, bt, path),
+    }
+}
+
+fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine, images: &ImageCache) {
     let t = parent * layer.local_transform();
     let rule = fill_rule(layer);
     let (w, h) = (layer.frame.width, layer.frame.height);
@@ -170,12 +230,12 @@ fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine
 
     if layer.is_closed() {
         for fill in style.fills.iter().filter(|f| f.enabled) {
-            let (brush, bt) = brush(fill.paint(), w, h);
+            let (brush, bt, area) = brush(fill.paint(), w, h, images);
             if fill.blend_mode == SBlend::Normal {
-                scene.fill(rule, t, &brush, bt, path);
+                fill_with(scene, rule, t, &brush, bt, path, area);
             } else {
                 scene.push_layer(rule, to_mix(fill.blend_mode), 1.0, t, path);
-                scene.fill(rule, t, &brush, bt, path);
+                fill_with(scene, rule, t, &brush, bt, path, area);
                 scene.pop_layer();
             }
         }
@@ -186,7 +246,7 @@ fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine
 
     let opts = &style.border_options;
     for border in style.borders.iter().filter(|b| b.enabled && b.thickness > 0.0) {
-        let (brush, bt) = brush(border.paint(), w, h);
+        let (brush, bt, _) = brush(border.paint(), w, h, images);
         // Open paths have no inside or outside, so their borders are always centered.
         let position = if layer.is_closed() { border.position } else { BorderPosition::Center };
         match position {
@@ -216,7 +276,8 @@ fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine
     }
 }
 
-fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, engine: &mut TextEngine) {
+fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resources<'_>) {
+    let (engine, images) = (&mut *res.text, res.images);
     let style = &layer.style;
     let t = parent * layer.local_transform();
     let (w, h) = (layer.frame.width, layer.frame.height);
@@ -233,7 +294,7 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, engine: &mut Te
     let Some((layout, dy)) = engine.layer_layout(layer) else { return };
     let text_t = t * Affine::translate((0.0, dy));
     for fill in style.fills.iter().filter(|f| f.enabled) {
-        let (brush, bt) = brush(fill.paint(), w, h);
+        let (brush, bt, _) = brush(fill.paint(), w, h, images);
         // Gradients map onto the frame, not the (vertically offset) text block.
         let bt = bt.map(|b| Affine::translate((0.0, -dy)) * b);
         if fill.blend_mode == SBlend::Normal {
@@ -251,7 +312,7 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, engine: &mut Te
         }
     }
     for border in style.borders.iter().filter(|b| b.enabled && b.thickness > 0.0) {
-        let (brush, bt) = brush(border.paint(), w, h);
+        let (brush, bt, _) = brush(border.paint(), w, h, images);
         let bt = bt.map(|b| Affine::translate((0.0, -dy)) * b);
         let stroke = stroke_style(border.thickness, &style.border_options);
         draw_layout(scene, layout, text_t, &brush, bt, (&stroke).into());

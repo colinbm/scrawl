@@ -132,7 +132,19 @@ impl Document {
                 }
             }
         }
+        self.copy_missing_assets(source);
         self.has_component(c)
+    }
+
+    /// Copies images the document now refers to but doesn't have from `source`.
+    fn copy_missing_assets(&mut self, source: &Document) {
+        for id in self.used_assets() {
+            if !self.assets.contains(&id)
+                && let Some(bytes) = source.assets.get(&id)
+            {
+                self.assets.insert(id, bytes.clone());
+            }
+        }
     }
 
     /// Copies from library `lib` that differ from `source`, its current document.
@@ -191,6 +203,7 @@ impl Document {
                 }
             }
         }
+        self.copy_missing_assets(source);
         updates.len()
     }
 

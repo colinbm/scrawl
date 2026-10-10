@@ -13,6 +13,7 @@ fn main() -> Result<(), String> {
     let mut doc = scrawl_core::io::load(std::path::Path::new(input)).map_err(|e| e.to_string())?;
     let mut exporter = Exporter::new()?;
     exporter.text.fit_document(&mut doc);
+    exporter.images.load(&doc.assets);
     let page = &doc.pages[0];
     let area = page.content_bounds().ok_or("page is empty")?.inflate(40.0, 40.0);
     let image = exporter.render_page(page, area, scale, Color::new([0.93, 0.93, 0.94, 1.0]))?;
