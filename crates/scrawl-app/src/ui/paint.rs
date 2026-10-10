@@ -29,6 +29,20 @@ pub struct Palette<'a> {
     pub colors: &'a mut Vec<Color>,
     /// Color variables, which colors link to.
     pub variables: &'a mut Vec<Swatch>,
+    /// Color variables from libraries, used the same way but edited in their library.
+    pub library: Vec<Swatch>,
+}
+
+impl<'a> Palette<'a> {
+    pub fn new(doc: &'a mut scrawl_core::Document) -> Self {
+        let library = doc.foreign_swatches.iter().map(|f| f.item.clone()).collect();
+        Self { colors: &mut doc.colors, variables: &mut doc.swatches, library }
+    }
+
+    /// A color variable by id, local or from a library.
+    pub fn find(&self, id: SwatchId) -> Option<&Swatch> {
+        self.variables.iter().chain(&self.library).find(|v| v.id == id)
+    }
 }
 
 pub struct PaintResponse {
@@ -139,7 +153,7 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
     // Only solid colors link to variables; gradient stops just take their value.
     let link = if is_gradient { None } else { swatch.as_deref_mut() };
     if let Some(link) = link
-        && let Some(var) = link.and_then(|id| palette.variables.iter().find(|v| v.id == id))
+        && let Some(var) = link.and_then(|id| palette.find(id))
     {
         ui.horizontal(|ui| {
             variable_label(ui, &var.name);
@@ -197,9 +211,11 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
     });
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-        for v in palette.variables.iter() {
+        let library_ids: Vec<SwatchId> = palette.library.iter().map(|v| v.id).collect();
+        for v in palette.variables.iter().chain(&palette.library) {
             let linked = !is_gradient && swatch.as_deref().is_some_and(|l| *l == Some(v.id));
-            let resp = swatch_chip(ui, v.color, linked).on_hover_text(&v.name);
+            let tip = if library_ids.contains(&v.id) { format!("{} (library)", v.name) } else { v.name.clone() };
+            let resp = swatch_chip(ui, v.color, linked).on_hover_text(tip);
             if resp.clicked() {
                 *editing = v.color;
                 if !is_gradient && let Some(link) = swatch.as_deref_mut() {
@@ -207,7 +223,7 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
                 }
             }
         }
-        if palette.variables.is_empty() {
+        if palette.variables.is_empty() && palette.library.is_empty() {
             ui.weak("None yet");
         }
     });

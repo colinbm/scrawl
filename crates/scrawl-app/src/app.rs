@@ -5,6 +5,7 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use scrawl_core::kurbo::Vec2;
 use scrawl_core::ops::{self, Align, BooleanOp, Reorder};
 use scrawl_core::kurbo::Point;
+use scrawl_core::library::{Component, LibraryId};
 use scrawl_core::symbols::{self, SymbolId};
 use scrawl_core::{Document, Frame, History, Layer, LayerId, LayerKind, Page, PageId, PointMode, io};
 use serde_json::json;
@@ -100,6 +101,8 @@ pub struct ScrawlApp {
     pub layer_filter: crate::ui::layers::LayerFilter,
     /// What the left sidebar shows.
     pub sidebar: Sidebar,
+    /// Linked libraries' documents as last read from disk, or why they couldn't be.
+    pub libraries: HashMap<LibraryId, Result<Document, String>>,
     /// The gradient whose handles are shown on the canvas.
     pub gradient_edit: Option<crate::canvas::GradientTarget>,
     pub file_path: Option<PathBuf>,
@@ -153,6 +156,7 @@ impl ScrawlApp {
             show_layout: false,
             layer_filter: Default::default(),
             sidebar: Sidebar::Layers,
+            libraries: HashMap::new(),
             gradient_edit: None,
             file_path: None,
             clipboard: vec![],
@@ -211,6 +215,7 @@ impl ScrawlApp {
         self.renaming = None;
         self.reset_modes();
         self.fit_pending = true;
+        self.reload_libraries();
     }
 
     // ---- File --------------------------------------------------------------------------------
@@ -352,6 +357,52 @@ impl ScrawlApp {
         ops::delete(self.page_mut(), &sel);
     }
 
+    // ---- Libraries ---------------------------------------------------------------------------
+
+    /// Re-reads every linked library from disk.
+    pub fn reload_libraries(&mut self) {
+        self.libraries.clear();
+        for lib in self.doc.libraries.clone() {
+            let loaded = io::load(Path::new(&lib.path)).map_err(|e| e.to_string());
+            self.libraries.insert(lib.id, loaded);
+        }
+    }
+
+    /// Asks for a library file to link.
+    pub fn add_library(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("Scrawl document", &[io::FILE_EXTENSION]).pick_file() {
+            self.add_library_path(&path);
+        }
+    }
+
+    pub fn add_library_path(&mut self, path: &Path) {
+        if self.file_path.as_deref() == Some(path) {
+            self.error = Some("A document can't be a library of itself.".into());
+            return;
+        }
+        let name = path.file_stem().map_or_else(|| "Library".to_owned(), |s| s.to_string_lossy().into_owned());
+        self.doc.add_library(name, path.to_string_lossy());
+        self.reload_libraries();
+    }
+
+    /// The loaded document of library `lib`, if it could be read.
+    pub fn library_doc(&self, lib: LibraryId) -> Option<&Document> {
+        self.libraries.get(&lib).and_then(|r| r.as_ref().ok())
+    }
+
+    /// Copies a component from a library into the document. Returns whether it's now here.
+    pub fn import_component(&mut self, lib: LibraryId, c: Component) -> bool {
+        let Some(source) = self.libraries.get(&lib).and_then(|r| r.as_ref().ok()) else { return false };
+        self.doc.import(lib, source, c)
+    }
+
+    /// Brings library `lib`'s copies up to date with its file.
+    pub fn update_library(&mut self, lib: LibraryId) {
+        if let Some(Ok(source)) = self.libraries.get(&lib) {
+            self.doc.update_library(lib, source);
+        }
+    }
+
     // ---- Symbols -----------------------------------------------------------------------------
 
     /// Turns the selection into a symbol, replacing it with an instance.
@@ -374,7 +425,11 @@ impl ScrawlApp {
     /// Shows the master of `symbol`, selected, on its page.
     pub fn edit_master(&mut self, symbol: SymbolId) {
         let Some((page, id)) = self.doc.find_master(symbol) else {
-            self.error = Some("This symbol's master is missing.".into());
+            let library = self.doc.foreign_symbols.iter().find(|f| f.item.master_of() == Some(symbol)).and_then(|f| self.doc.library(f.library));
+            self.error = Some(match library {
+                Some(lib) => format!("This symbol comes from the library “{}”. Open {} to edit it.", lib.name, lib.path),
+                None => "This symbol's master is missing.".into(),
+            });
             return;
         };
         self.set_page(page);

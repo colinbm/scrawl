@@ -59,9 +59,12 @@
 - ⬜ Stack padding, wrapping and per-item sizing; constraints for rotated layers
 
 ## Milestone 6 — Components
-- ⬜ Shared layer & text styles
-- ⬜ Symbols: masters, instances, overrides, nested symbols, swaps
-- ⬜ Libraries (linked documents), color variables
+- ✅ Shared layer & text styles: link, detect drift, update or reset, apply from the Components tab
+- ✅ Color variables on fills, borders and shadows; editing one recolors every linked color
+- ✅ Symbols: masters (artboards), instances resized by constraints, text / nested-swap / style overrides, nested symbols, Create Symbol ⌥⌘Y, Detach ⌥⌘B, Edit Master
+- ✅ Libraries: link other `.scrawl` files, use their symbols, styles and variables (copied in with dependencies), update when the library changes, unlink to keep them locally
+- ⬜ Per-master override controls (choose which layers are overridable), image and color overrides
+- ⬜ Watch library files for changes; relative library paths; gradient stops linked to variables
 
 ## Milestone 7 — Export & interop
 - ⬜ Exportable slices / layer export: PNG, JPG, WEBP, SVG, PDF at multiple scales

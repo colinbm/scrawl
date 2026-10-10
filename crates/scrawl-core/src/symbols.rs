@@ -116,12 +116,14 @@ pub struct Symbols {
 impl Symbols {
     pub fn new(doc: &Document) -> Self {
         let mut masters = HashMap::new();
-        for (_, master) in doc.symbol_masters() {
+        let library = doc.foreign_symbols.iter().map(|f| &f.item);
+        for master in doc.symbol_masters().into_iter().map(|(_, l)| l).chain(library) {
             if let Some(id) = master.master_of() {
                 masters.entry(id).or_insert_with(|| master.clone());
             }
         }
-        let styles = doc.layer_styles.iter().chain(&doc.text_styles).map(|s| (s.id, s.clone())).collect();
+        let library = doc.foreign_styles.iter().map(|f| &f.item);
+        let styles = doc.layer_styles.iter().chain(&doc.text_styles).chain(library).map(|s| (s.id, s.clone())).collect();
         Self { masters, styles }
     }
 
@@ -301,6 +303,12 @@ impl Document {
     /// Every symbol master, with the page it's on.
     pub fn symbol_masters(&self) -> Vec<(PageId, &Layer)> {
         self.pages.iter().flat_map(|p| p.layers.iter().filter(|l| l.master_of().is_some()).map(move |l| (p.id, l))).collect()
+    }
+
+    /// Every symbol, local or from a library, by id and name.
+    pub fn all_symbols(&self) -> Vec<(SymbolId, String)> {
+        let library = self.foreign_symbols.iter().map(|f| &f.item);
+        self.symbol_masters().into_iter().map(|(_, l)| l).chain(library).filter_map(|l| Some((l.master_of()?, l.name.clone()))).collect()
     }
 
     /// Where the master of `symbol` is: its page and layer.

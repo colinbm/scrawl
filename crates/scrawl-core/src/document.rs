@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{SharedStyle, Swatch};
+use crate::library::{Foreign, LibraryRef};
 use crate::{Layer, LayerId, geometry::union_rects};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -31,11 +32,33 @@ pub struct Document {
     /// Color variables.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub swatches: Vec<Swatch>,
+    /// Linked library documents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<LibraryRef>,
+    /// Symbol masters copied in from libraries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub foreign_symbols: Vec<Foreign<Layer>>,
+    /// Shared layer and text styles copied in from libraries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub foreign_styles: Vec<Foreign<SharedStyle>>,
+    /// Color variables copied in from libraries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub foreign_swatches: Vec<Foreign<Swatch>>,
 }
 
 impl Default for Document {
     fn default() -> Self {
-        Self { pages: vec![Page::new("Page 1")], colors: vec![], layer_styles: vec![], text_styles: vec![], swatches: vec![] }
+        Self {
+            pages: vec![Page::new("Page 1")],
+            colors: vec![],
+            layer_styles: vec![],
+            text_styles: vec![],
+            swatches: vec![],
+            libraries: vec![],
+            foreign_symbols: vec![],
+            foreign_styles: vec![],
+            foreign_swatches: vec![],
+        }
     }
 }
 

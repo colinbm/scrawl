@@ -14,6 +14,7 @@ pub mod history;
 pub mod io;
 pub mod layout;
 pub mod layer;
+pub mod library;
 pub mod ops;
 pub mod path;
 pub mod sample;

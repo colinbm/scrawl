@@ -1,6 +1,8 @@
-//! Left sidebar's Components tab: symbols, shared text and layer styles, and color variables.
+//! Left sidebar's Components tab: symbols, shared text and layer styles, color variables, and
+//! linked libraries offering more of each.
 
 use egui::{Color32, FontId, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use scrawl_core::library::{Component, LibraryId};
 use scrawl_core::{Fill, LayerId, LayerKind, SharedStyle, StyleId, SwatchId, SymbolId, ops};
 
 use crate::app::ScrawlApp;
@@ -15,6 +17,7 @@ pub fn show(app: &mut ScrawlApp, ui: &mut Ui) {
         styles(app, ui, true);
         styles(app, ui, false);
         color_variables(app, ui);
+        libraries(app, ui);
     });
 }
 
@@ -29,6 +32,13 @@ fn header(ui: &mut Ui, title: &str, add_tip: &str, can_add: bool) -> bool {
         .inner
     })
     .inner
+}
+
+/// A short, wrapping explanation shown in place of an empty list.
+fn hint(ui: &mut Ui, text: &str) {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 8, right: 4, top: 0, bottom: 2 }).show(ui, |ui| {
+        ui.add(egui::Label::new(RichText::new(text).weak()).wrap());
+    });
 }
 
 /// Top-level selected layers, excluding containers, which have no style of their own.
@@ -67,10 +77,7 @@ fn symbols(app: &mut ScrawlApp, ui: &mut Ui) {
         .filter_map(|(_, l)| Some((l.master_of()?, l.name.clone(), l.frame.width, l.frame.height)))
         .collect();
     if masters.is_empty() {
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.weak("Select layers and press + to make a reusable symbol.");
-        });
+        hint(ui, "Select layers and press + to make a reusable symbol.");
     }
     for (symbol, name, w, h) in masters {
         ui.push_id(symbol, |ui| {
@@ -136,10 +143,7 @@ fn styles(app: &mut ScrawlApp, ui: &mut Ui, text: bool) {
     }
     let list = if text { app.doc.text_styles.clone() } else { app.doc.layer_styles.clone() };
     if list.is_empty() {
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.weak(if text { "Select a text layer and press + to share its style." } else { "Select a shape and press + to share its style." });
-        });
+        hint(ui, if text { "Select a text layer and press + to share its style." } else { "Select a shape and press + to share its style." });
     }
     for s in list {
         ui.push_id(s.id, |ui| {
@@ -218,10 +222,7 @@ fn color_variables(app: &mut ScrawlApp, ui: &mut Ui) {
     }
     let vars = app.doc.swatches.clone();
     if vars.is_empty() {
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.weak("Colors used across the document. Fills and borders can link to them.");
-        });
+        hint(ui, "Colors used across the document. Fills and borders can link to them.");
     }
     for v in vars {
         ui.push_id(v.id, |ui| {
@@ -285,4 +286,89 @@ fn variable_menu(app: &mut ScrawlApp, ui: &mut Ui, id: SwatchId) {
         app.doc.remove_swatch(id);
         ui.close();
     }
+}
+
+fn libraries(app: &mut ScrawlApp, ui: &mut Ui) {
+    if header(ui, "LIBRARIES", "Add a library…", true) {
+        app.add_library();
+    }
+    let libs = app.doc.libraries.clone();
+    if libs.is_empty() {
+        hint(ui, "Link another Scrawl document to use its symbols, styles and colors.");
+        return;
+    }
+    for lib in libs {
+        ui.push_id(lib.id, |ui| library(app, ui, lib.id, &lib.name, &lib.path));
+    }
+}
+
+/// One library: its status, and what it offers. Using an item copies it in.
+fn library(app: &mut ScrawlApp, ui: &mut Ui, id: LibraryId, name: &str, path: &str) {
+    let resp = egui::CollapsingHeader::new(RichText::new(name).strong()).id_salt(("library", id)).default_open(true).show(ui, |ui| {
+        // Just what's listed, so the library document isn't borrowed while the app changes.
+        let listing = app.library_doc(id).map(|source| {
+            let symbols: Vec<(SymbolId, String)> =
+                source.symbol_masters().into_iter().filter_map(|(_, m)| Some((m.master_of()?, m.name.clone()))).collect();
+            let styles: Vec<SharedStyle> = source.text_styles.iter().chain(&source.layer_styles).cloned().collect();
+            (symbols, styles, source.swatches.clone(), app.doc.library_updates(id, source).len())
+        });
+        let Some((symbols, styles, swatches, updates)) = listing else {
+            let why = match app.libraries.get(&id) {
+                Some(Err(e)) => e.clone(),
+                _ => "Not loaded".into(),
+            };
+            ui.colored_label(ui.visuals().warn_fg_color, format!("Can't read {path}: {why}"));
+            return;
+        };
+        if updates > 0 {
+            ui.horizontal(|ui| {
+                ui.label(match updates {
+                    1 => "1 update available".to_owned(),
+                    n => format!("{n} updates available"),
+                });
+                if ui.button("Update").clicked() {
+                    app.update_library(id);
+                }
+            });
+        }
+        for (symbol, name) in symbols {
+            let resp = row(ui, &name, |p, r| icons::paint(p, r.shrink(2.0), Icon::Symbol, crate::canvas::SYMBOL))
+                .on_hover_text("Click to insert");
+            if resp.clicked() && app.import_component(id, Component::Symbol(symbol)) {
+                app.insert_symbol(symbol);
+            }
+        }
+        for s in &styles {
+            let resp = row(ui, &s.name, |p, r| style_preview(p, r, s)).on_hover_text("Click to apply to the selection");
+            if resp.clicked()
+                && app.import_component(id, Component::Style(s.id))
+                && let Some(s) = app.doc.shared_style(s.id).cloned()
+            {
+                apply_style(app, &s);
+            }
+        }
+        if !swatches.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                ui.add_space(8.0);
+                for v in &swatches {
+                    let resp = crate::ui::paint::swatch_chip(ui, v.color, false).on_hover_text(format!("{} — click to fill the selection", v.name));
+                    if resp.clicked() && app.import_component(id, Component::Swatch(v.id)) {
+                        apply_variable(app, v.id, v.color);
+                    }
+                }
+            });
+        }
+    });
+    resp.header_response.on_hover_text(path).context_menu(|ui| {
+        if ui.button("Reload").clicked() {
+            app.reload_libraries();
+            ui.close();
+        }
+        if ui.button("Remove Library").on_hover_text("Components in use stay, as local ones").clicked() {
+            app.doc.remove_library(id);
+            app.libraries.remove(&id);
+            ui.close();
+        }
+    });
 }

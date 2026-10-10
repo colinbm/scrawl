@@ -5,7 +5,6 @@
 //! value pushes it to every linked layer.
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{Color, Document, Layer, LayerKind, Style, TextStyle};
 
@@ -14,12 +13,12 @@ macro_rules! id_type {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
         #[serde(transparent)]
-        pub struct $name(pub Uuid);
+        pub struct $name(pub uuid::Uuid);
 
         impl $name {
             #[allow(clippy::new_without_default)]
             pub fn new() -> Self {
-                Self(Uuid::new_v4())
+                Self(uuid::Uuid::new_v4())
             }
         }
     };
@@ -117,16 +116,19 @@ pub fn unique_name<'a>(base: &str, taken: impl Iterator<Item = &'a str> + Clone)
 }
 
 impl Document {
+    /// A shared style, local or from a library.
     pub fn shared_style(&self, id: StyleId) -> Option<&SharedStyle> {
-        self.layer_styles.iter().chain(&self.text_styles).find(|s| s.id == id)
+        let library = self.foreign_styles.iter().map(|f| &f.item);
+        self.layer_styles.iter().chain(&self.text_styles).chain(library).find(|s| s.id == id)
     }
 
     fn shared_style_mut(&mut self, id: StyleId) -> Option<&mut SharedStyle> {
         self.layer_styles.iter_mut().chain(&mut self.text_styles).find(|s| s.id == id)
     }
 
+    /// A color variable, local or from a library.
     pub fn swatch(&self, id: SwatchId) -> Option<&Swatch> {
-        self.swatches.iter().find(|s| s.id == id)
+        self.swatches.iter().chain(self.foreign_swatches.iter().map(|f| &f.item)).find(|s| s.id == id)
     }
 
     /// Visits every layer on every page.
@@ -136,10 +138,12 @@ impl Document {
         }
     }
 
-    /// Visits every style in the document: on layers and in shared styles.
+    /// Visits every style in the document: on layers and in shared styles (including library
+    /// ones, which may use library color variables).
     pub fn styles_mut(&mut self, mut f: impl FnMut(&mut Style)) {
         self.walk_layers_mut(|l| f(&mut l.style));
-        for s in self.layer_styles.iter_mut().chain(&mut self.text_styles) {
+        let library = self.foreign_styles.iter_mut().map(|f| &mut f.item);
+        for s in self.layer_styles.iter_mut().chain(&mut self.text_styles).chain(library) {
             f(&mut s.style);
         }
     }
@@ -199,6 +203,11 @@ impl Document {
     pub fn set_swatch_color(&mut self, id: SwatchId, color: Color) {
         let Some(s) = self.swatches.iter_mut().find(|s| s.id == id) else { return };
         s.color = color;
+        self.recolor_links(id, color);
+    }
+
+    /// Sets every color linked to variable `id` to `color`.
+    pub(crate) fn recolor_links(&mut self, id: SwatchId, color: Color) {
         self.styles_mut(|style| {
             style.colors_mut(|c, link| {
                 if *link == Some(id) {

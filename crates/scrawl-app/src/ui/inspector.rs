@@ -232,8 +232,7 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                 ab.background = has_bg.then_some(Color::WHITE);
             }
             if let Some(bg) = &mut ab.background {
-                let mut palette = Palette { colors: &mut app.doc.colors, variables: &mut app.doc.swatches };
-                paint_button(ui, "artboard_bg", PaintTarget::color(bg), &mut palette);
+                paint_button(ui, "artboard_bg", PaintTarget::color(bg), &mut Palette::new(&mut app.doc));
             }
         });
         ui.checkbox(&mut ab.clip_content, "Clip content");
@@ -277,8 +276,7 @@ fn shared_style_row(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             if ui.selectable_label(linked.is_none(), none).clicked() {
                 layer.shared_style = None;
             }
-            let list = if text { &app.doc.text_styles } else { &app.doc.layer_styles };
-            for s in list {
+            for s in styles_of_kind(&app.doc, text) {
                 if ui.selectable_label(layer.shared_style == Some(s.id), &s.name).clicked() {
                     s.apply(layer);
                 }
@@ -313,7 +311,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
     let closed = layer.is_closed();
     let text_layer = layer.is_text();
     let id = layer.id;
-    let mut palette = Palette { colors: &mut app.doc.colors, variables: &mut app.doc.swatches };
+    let mut palette = Palette::new(&mut app.doc);
     let swatches = &mut palette;
     let mut gradient_target = None;
 
@@ -450,8 +448,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
 
 /// The name of the color variable `link` points to.
 fn variable_name(palette: &Palette<'_>, link: Option<scrawl_core::SwatchId>) -> Option<String> {
-    let id = link?;
-    palette.variables.iter().find(|v| v.id == id).map(|v| v.name.clone())
+    palette.find(link?).map(|v| v.name.clone())
 }
 
 /// A compact description next to a paint swatch: hex and opacity for colors (or the color
@@ -878,9 +875,15 @@ fn resizing_widget(ui: &mut Ui, r: &mut scrawl_core::constraints::Resizing) {
     });
 }
 
-/// Masters by name, for symbol pickers.
+/// Symbols by name, local and from libraries, for symbol pickers.
 fn master_names(app: &ScrawlApp) -> Vec<(SymbolId, String)> {
-    app.doc.symbol_masters().into_iter().filter_map(|(_, l)| Some((l.master_of()?, l.name.clone()))).collect()
+    app.doc.all_symbols()
+}
+
+/// Shared text or layer styles, local then from libraries.
+fn styles_of_kind(doc: &scrawl_core::Document, text: bool) -> Vec<&scrawl_core::SharedStyle> {
+    let local = if text { &doc.text_styles } else { &doc.layer_styles };
+    local.iter().chain(doc.foreign_styles.iter().map(|f| &f.item).filter(|s| s.is_text() == text)).collect()
 }
 
 fn symbol_section(app: &mut ScrawlApp, ui: &mut Ui, id: scrawl_core::LayerId, inst: &mut SymbolInstance) {
@@ -958,7 +961,7 @@ fn symbol_section(app: &mut ScrawlApp, ui: &mut Ui, id: scrawl_core::LayerId, in
                             Some(OverrideValue::Style(s)) => s,
                             _ => *style,
                         };
-                        let list = if *text { &app.doc.text_styles } else { &app.doc.layer_styles };
+                        let list = styles_of_kind(&app.doc, *text);
                         let label = list.iter().find(|s| s.id == shown).map_or("Missing style", |s| s.name.as_str());
                         egui::ComboBox::from_id_salt("style").selected_text(label).width(120.0).show_ui(ui, |ui| {
                             for s in list {

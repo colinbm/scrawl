@@ -586,3 +586,51 @@ fn deleting_a_master_detaches_instances() {
     });
     assert_eq!(groups, 1);
 }
+
+#[test]
+fn library_symbols_insert_and_update() {
+    let Some(mut h) = harness() else { return };
+    let dir = std::env::temp_dir().join(format!("scrawl-ui-library-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Kit.scrawl");
+    let mut kit = scrawl_core::sample::sample_document();
+    scrawl_core::io::save(&kit, &path).unwrap();
+
+    h.state_mut().set_document(scrawl_core::Document::default(), None);
+    h.state_mut().add_library_path(&path);
+    h.state_mut().sidebar = crate::app::Sidebar::Components;
+    h.run();
+    for label in ["LIBRARIES", "Kit", "Icon Button", "Tile"] {
+        assert!(h.query_by_label(label).is_some(), "missing {label}");
+    }
+    save(&mut h, "library");
+
+    // Using a library symbol copies it, and what it depends on, into the document.
+    h.get_by_label("Icon Button").click();
+    h.run();
+    h.run();
+    let app = h.state();
+    let names: Vec<_> = app.doc.foreign_symbols.iter().map(|f| f.item.name.clone()).collect();
+    assert!(names.contains(&"Icon Button".to_owned()) && names.contains(&"Icon/Star".to_owned()), "{names:?}");
+    assert!(app.doc.foreign_swatches.iter().any(|f| f.item.name == "Brand Blue"));
+    let inst = app.selection[0];
+    let background = |h: &Harness<'_, ScrawlApp>| {
+        let scrawl_core::LayerKind::Symbol(i) = &h.state().page().find(inst).unwrap().kind else { panic!() };
+        i.expanded[0].style.fills[0].color
+    };
+    assert_eq!(background(&h).to_hex(), "1F8FFF");
+
+    // Changing the library offers an update, which reaches the instance.
+    let brand = kit.swatches.iter().find(|s| s.name == "Brand Blue").unwrap().id;
+    kit.set_swatch_color(brand, scrawl_core::Color::BLACK);
+    scrawl_core::io::save(&kit, &path).unwrap();
+    h.state_mut().reload_libraries();
+    h.run();
+    assert!(h.query_by_label_contains("updates available").is_some());
+    h.get_by_label("Update").click();
+    h.run();
+    h.run();
+    assert_eq!(background(&h), scrawl_core::Color::BLACK);
+    assert!(h.query_by_label_contains("updates available").is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
