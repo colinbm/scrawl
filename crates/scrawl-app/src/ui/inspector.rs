@@ -280,6 +280,22 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
     let slice = matches!(layer.kind, LayerKind::Slice | LayerKind::Hotspot);
     if !layer.is_artboard() && (!layer.is_group() || layer.is_shape_group()) && !slice {
         ui.checkbox(&mut layer.is_mask, "Use as mask").on_hover_text("Clips the layers above it in the same group");
+        if layer.is_mask {
+            ui.horizontal(|ui| {
+                ui.label("Mask");
+                for mode in scrawl_core::MaskMode::ALL {
+                    ui.selectable_value(&mut layer.mask_mode, mode, mode.label());
+                }
+            });
+        }
+    }
+    // Below a mask in the same group, a layer can escape it (and so can everything above it).
+    let under_mask = {
+        let page = app.page();
+        page.location(layer.id).and_then(|loc| page.siblings(loc.parent).map(|s| s[..loc.index].iter().any(|l| l.is_mask))).unwrap_or(false)
+    };
+    if under_mask && !layer.is_mask {
+        ui.checkbox(&mut layer.breaks_mask, "Ignore underlying mask");
     }
     // Instances take their look from the master; overrides cover the rest. Shape groups have a
     // style of their own; plain groups don't.

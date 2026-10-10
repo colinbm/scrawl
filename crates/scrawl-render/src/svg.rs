@@ -125,8 +125,33 @@ impl Writer<'_> {
     /// Siblings bottom to top. A mask clips the siblings above it.
     fn children(&mut self, layers: &[Layer]) {
         let mut clips = 0;
-        for l in layers {
+        let mut i = 0;
+        while i < layers.len() {
+            let l = &layers[i];
+            if l.breaks_mask {
+                for _ in 0..std::mem::take(&mut clips) {
+                    self.body.push_str("</g>");
+                }
+            }
             self.layer(l);
+            i += 1;
+            if l.is_mask && l.visible && l.mask_mode != scrawl_core::MaskMode::Outline {
+                // Alpha and luminance masks: an SVG <mask> of the mask layer itself.
+                let end = layers[i..].iter().position(|c| c.breaks_mask).map_or(layers.len(), |p| i + p);
+                let id = self.id("mask");
+                let body = std::mem::take(&mut self.body);
+                let mut alone = l.clone();
+                alone.is_mask = false;
+                self.layer(&alone);
+                let mask_body = std::mem::replace(&mut self.body, body);
+                let kind = if l.mask_mode == scrawl_core::MaskMode::Luminance { "luminance" } else { "alpha" };
+                write!(self.defs, r#"<mask id="{id}" mask-type="{kind}" style="mask-type:{kind}" maskUnits="userSpaceOnUse" x="-100000" y="-100000" width="200000" height="200000">{mask_body}</mask>"#).unwrap();
+                write!(self.body, r#"<g mask="url(#{id})">"#).unwrap();
+                self.children(&layers[i..end]);
+                self.body.push_str("</g>");
+                i = end;
+                continue;
+            }
             if l.is_mask
                 && l.visible
                 && let Some(path) = l.local_path()

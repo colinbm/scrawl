@@ -49,6 +49,13 @@ pub struct Layer {
     /// Clips the layers above it within the same parent ("Use as Mask").
     #[serde(default)]
     pub is_mask: bool,
+    /// How a mask clips: by its outline, its opacity, or its brightness.
+    #[serde(default, skip_serializing_if = "MaskMode::is_outline")]
+    pub mask_mode: MaskMode,
+    /// Escapes the masks below it in the same parent ("Ignore Underlying Mask"), along with the
+    /// layers above it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub breaks_mask: bool,
     /// How the layer responds when its parent is resized.
     #[serde(default, skip_serializing_if = "Resizing::is_default")]
     pub resizing: Resizing,
@@ -88,6 +95,35 @@ fn is_false(b: &bool) -> bool {
 
 fn default_opacity() -> f64 {
     1.0
+}
+
+/// How a mask layer clips what's above it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MaskMode {
+    /// By the mask's outline.
+    #[default]
+    Outline,
+    /// By the mask's rendered opacity (so a fading fill fades what it masks).
+    Alpha,
+    /// By the mask's brightness: white shows, black hides.
+    Luminance,
+}
+
+impl MaskMode {
+    pub const ALL: [Self; 3] = [Self::Outline, Self::Alpha, Self::Luminance];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Outline => "Outline",
+            Self::Alpha => "Alpha",
+            Self::Luminance => "Luminance",
+        }
+    }
+
+    fn is_outline(&self) -> bool {
+        *self == Self::Outline
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -256,6 +292,8 @@ impl Layer {
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
             is_mask: false,
+            mask_mode: MaskMode::Outline,
+            breaks_mask: false,
             resizing: Resizing::default(),
             style: Style::default(),
             exports: vec![],

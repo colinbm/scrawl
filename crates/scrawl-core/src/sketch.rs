@@ -493,6 +493,8 @@ impl Importer {
         l.opacity = num_or(&style["contextSettings"], "opacity", 1.0);
         l.blend_mode = blend_in(style);
         l.is_mask = flag(v, "hasClippingMask");
+        l.mask_mode = if int(v, "clippingMaskMode") == 1 { crate::MaskMode::Alpha } else { crate::MaskMode::Outline };
+        l.breaks_mask = flag(v, "shouldBreakMaskChain");
         l.resizing = resizing_in(v.get("resizingConstraint").and_then(Value::as_i64).unwrap_or(63));
         l.style = self.style(style, entry);
         let shared = text(v, "sharedStyleID");
@@ -942,9 +944,10 @@ impl Exporter {
             "resizingConstraint": resizing_out(&l.resizing),
             "resizingType": 0,
             "rotation": if l.rotation == 0.0 { 0.0 } else { -l.rotation },
-            "shouldBreakMaskChain": false,
+            "shouldBreakMaskChain": l.breaks_mask,
             "hasClippingMask": l.is_mask,
-            "clippingMaskMode": 0,
+            // Sketch has outline and alpha masks; luminance is closest to alpha.
+            "clippingMaskMode": if l.mask_mode == crate::MaskMode::Outline { 0 } else { 1 },
             "style": style,
         });
         if let Some(s) = l.shared_style {
@@ -1212,6 +1215,7 @@ mod tests {
                 assert_eq!(x.style.shadows, y.style.shadows, "{}", x.name);
                 assert_eq!(x.shared_style, y.shared_style);
                 assert_eq!((x.flow, x.fixed_to_viewport), (y.flow, y.fixed_to_viewport), "{}", x.name);
+                assert_eq!((x.is_mask, x.mask_mode, x.breaks_mask), (y.is_mask, y.mask_mode, y.breaks_mask), "{}", x.name);
                 if let (LayerKind::Artboard(p), LayerKind::Artboard(q)) = (&x.kind, &y.kind) {
                     assert_eq!(p.flow_home, q.flow_home);
                 }

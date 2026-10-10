@@ -149,3 +149,67 @@ fn shape_groups_draw_their_combined_outline() {
     let img = ex.render_page(&page, Rect::new(0.0, 0.0, 40.0, 40.0), 1.0, peniko::Color::WHITE).unwrap();
     assert!(close(px(&img, 20, 20), [0, 153, 0, 255]), "unioned: {:?}", px(&img, 20, 20));
 }
+
+#[test]
+fn alpha_and_luminance_masks_and_escaping_them() {
+    let Some(mut ex) = exporter() else { return };
+    let solid = |frame: Frame, c: Color| {
+        let mut l = Layer::rectangle(frame);
+        l.style.fills = vec![Fill::solid(c)];
+        l.style.borders.clear();
+        l
+    };
+    for mode in [scrawl_core::MaskMode::Alpha, scrawl_core::MaskMode::Luminance] {
+        let mut page = Page::new("P");
+        // The mask: left half opaque white, right half 50% grey (alpha mode: half-transparent).
+        let mut mask = solid(Frame::new(0.0, 0.0, 20.0, 20.0), Color::WHITE);
+        mask.is_mask = true;
+        mask.mask_mode = mode;
+        let m = ops::insert_drawn(&mut page, mask);
+        let mut right = solid(Frame::new(20.0, 0.0, 20.0, 20.0), if mode == scrawl_core::MaskMode::Alpha { Color::rgba(1.0, 1.0, 1.0, 0.5) } else { Color::rgba(0.0, 0.0, 0.0, 1.0) });
+        right.is_mask = false;
+        // Group the two halves as one mask.
+        let r = ops::insert_drawn(&mut page, right);
+        let g = ops::group(&mut page, &[m, r]).unwrap();
+        page.find_mut(g).unwrap().is_mask = true;
+        page.find_mut(g).unwrap().mask_mode = mode;
+        page.find_mut(g).unwrap().children_mut().unwrap()[0].is_mask = false;
+        ops::insert_drawn(&mut page, solid(Frame::new(0.0, 0.0, 40.0, 20.0), Color::rgba(1.0, 0.0, 0.0, 1.0)));
+        // A layer that ignores the mask shows everywhere.
+        let mut free = solid(Frame::new(0.0, 25.0, 40.0, 10.0), Color::rgba(0.0, 0.0, 1.0, 1.0));
+        free.breaks_mask = true;
+        ops::insert_drawn(&mut page, free);
+        let img = ex.render_page(&page, Rect::new(0.0, 0.0, 40.0, 40.0), 1.0, peniko::Color::TRANSPARENT).unwrap();
+        let left = px(&img, 10, 10);
+        let right = px(&img, 30, 10);
+        assert!(left[0] > 200 && left[3] > 200, "{mode:?} left shows red: {left:?}");
+        match mode {
+            scrawl_core::MaskMode::Alpha => assert!(right[3] > 60 && right[3] < 200, "{mode:?} right is half see-through: {right:?}"),
+            _ => assert!(right[3] < 40 || right[0] < 60, "{mode:?} black hides: {right:?}"),
+        }
+        assert!(close(px(&img, 30, 30), [0, 0, 255, 255]), "{mode:?} the escaping layer: {:?}", px(&img, 30, 30));
+    }
+}
+
+#[test]
+fn svg_alpha_masks_render_in_other_viewers() {
+    let mut page = Page::new("P");
+    let mut mask = Layer::rectangle(Frame::new(0.0, 0.0, 20.0, 20.0));
+    mask.style.fills = vec![Fill::solid(Color::rgba(1.0, 1.0, 1.0, 0.5))];
+    mask.style.borders.clear();
+    mask.is_mask = true;
+    mask.mask_mode = scrawl_core::MaskMode::Alpha;
+    ops::insert_drawn(&mut page, mask);
+    let mut red = Layer::rectangle(Frame::new(0.0, 0.0, 40.0, 20.0));
+    red.style.fills = vec![Fill::solid(Color::rgba(1.0, 0.0, 0.0, 1.0))];
+    red.style.borders.clear();
+    ops::insert_drawn(&mut page, red);
+    let svg = scrawl_render::svg::page_svg(&page, Rect::new(0.0, 0.0, 40.0, 20.0), 1.0, &mut scrawl_render::TextEngine::new(), &Default::default());
+    assert!(svg.contains("<mask"), "{svg}");
+    let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &Default::default()).unwrap();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(40, 20).unwrap();
+    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    let a = |x: u32| pixmap.pixel(x, 10).unwrap().alpha();
+    assert!(a(10) > 150 && a(10) < 255, "masked at half opacity, over the mask's own half fill: {}", a(10));
+    assert_eq!(a(30), 0, "outside the mask");
+}

@@ -34,7 +34,7 @@
 - ✅ Headless GPU exporter (`scrawl_render::export`) with pixel tests; whole-app UI tests in egui_kittest
 - ✅ Image layers and image fills (fill, fit, stretch, tile); images stored in the `.scrawl` archive
 - ⬜ True GPU blur pass (replace banded shadows; enables layer and background blur)
-- ⬜ Alpha/luminance masks, "ignore underlying mask"
+- ✅ Alpha and luminance masks alongside outline masks, "Ignore underlying mask"; in SVG as `<mask>`, in design files as alpha masks
 - ⬜ Noise fills, pattern fills, gradient interpolation options
 
 ## Milestone 4 — Text

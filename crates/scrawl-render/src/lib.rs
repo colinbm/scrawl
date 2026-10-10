@@ -11,7 +11,7 @@ pub use images::ImageCache;
 
 use scrawl_core::style::stroke_style;
 use scrawl_core::{
-    BlendMode as SBlend, BorderPosition, Color, FillRule, GradientKind, Layer, LayerKind, Marker, Page, Paint,
+    BlendMode as SBlend, BorderPosition, Color, FillRule, GradientKind, Layer, LayerKind, Marker, MaskMode, Page, Paint,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, ParamCurve, ParamCurveDeriv, PathSeg, Point, Rect, Shape, Vec2};
@@ -112,17 +112,52 @@ pub fn render_layers(scene: &mut Scene, layers: &[Layer], view: Affine, text: &m
     render_children(scene, layers, view, &mut Resources { text, images });
 }
 
-/// Renders siblings bottom to top. A mask layer clips everything above it in the same parent.
+/// Renders siblings bottom to top. A mask layer masks everything above it in the same parent,
+/// up to a layer that ignores underlying masks: outline masks clip; alpha and luminance masks
+/// render what they mask in a layer of its own, then apply themselves to it.
 fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, res: &mut Resources<'_>) {
     let mut clips = 0;
-    for child in children {
+    let mut i = 0;
+    while i < children.len() {
+        let child = &children[i];
+        if child.breaks_mask {
+            for _ in 0..std::mem::take(&mut clips) {
+                scene.pop_layer();
+            }
+        }
         render_layer(scene, child, parent, res);
-        if child.is_mask
-            && child.visible
-            && let Some(path) = child.local_path()
-        {
-            scene.push_clip_layer(fill_rule(child), parent * child.local_transform(), &path);
-            clips += 1;
+        i += 1;
+        if !child.is_mask || !child.visible {
+            continue;
+        }
+        match child.mask_mode {
+            MaskMode::Outline => {
+                if let Some(path) = child.local_path() {
+                    scene.push_clip_layer(fill_rule(child), parent * child.local_transform(), &path);
+                    clips += 1;
+                }
+            }
+            mode => {
+                let end = children[i..].iter().position(|c| c.breaks_mask).map_or(children.len(), |p| i + p);
+                let masked = &children[i..end];
+                let area = masked.iter().filter_map(|c| c.bounds_in(Affine::IDENTITY)).reduce(|a, b| a.union(b));
+                if let Some(area) = area {
+                    let area = area.inflate(2000.0, 2000.0);
+                    scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, parent, &area);
+                    render_children(scene, masked, parent, res);
+                    if mode == MaskMode::Luminance {
+                        scene.push_luminance_mask_layer(Fill::NonZero, 1.0, parent, &area);
+                    } else {
+                        scene.push_layer(Fill::NonZero, BlendMode::new(Mix::Normal, Compose::DestIn), 1.0, parent, &area);
+                    }
+                    let mut alone = child.clone();
+                    alone.is_mask = false;
+                    render_layer(scene, &alone, parent, res);
+                    scene.pop_layer();
+                    scene.pop_layer();
+                }
+                i = end;
+            }
         }
     }
     for _ in 0..clips {

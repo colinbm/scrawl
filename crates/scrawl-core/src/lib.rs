@@ -34,7 +34,7 @@ pub use symbols::{Override, OverrideValue, SymbolId, SymbolInstance};
 pub use document::{Document, Page, PageId};
 pub use geometry::Frame;
 pub use history::History;
-pub use layer::{Artboard, Group, ImageLayer, Layer, LayerId, LayerKind, Polygon, Rectangle, Star};
+pub use layer::{Artboard, Group, ImageLayer, Layer, LayerId, LayerKind, MaskMode, Polygon, Rectangle, Star};
 pub use text::{TextAlign, TextLayer, TextSizing, TextStyle, TextTransform, VerticalAlign};
 pub use path::{CurvePoint, FillRule, PathShape, PointMode, PointRef, Subpath};
 pub use style::{
