@@ -470,6 +470,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                         blend: Some(&mut fill.blend_mode),
                         swatch: Some(&mut fill.swatch),
                         image: Some(ImageTarget { id: &mut fill.image, mode: &mut fill.image_mode, scale: &mut fill.image_scale }),
+                        noise: Some(&mut fill.noise),
                     };
                     if paint_button(ui, "fill", target, swatches).editing_gradient {
                         gradient_target = Some(GradientTarget { layer: id, border: false, index: i });
@@ -516,6 +517,7 @@ fn style_sections(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                     blend: None,
                     swatch: Some(&mut border.swatch),
                     image: None,
+                    noise: None,
                 };
                 if paint_button(ui, "border", target, swatches).editing_gradient {
                     gradient_target = Some(GradientTarget { layer: id, border: true, index: i });
@@ -610,6 +612,9 @@ fn paint_summary(ui: &mut Ui, fill_type: FillType, color: &mut Color, gradient: 
         }
         (FillType::Image, _) => {
             ui.label("Image");
+        }
+        (FillType::Noise, _) => {
+            ui.label("Noise");
         }
     }
 }

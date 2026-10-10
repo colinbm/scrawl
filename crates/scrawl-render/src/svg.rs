@@ -274,6 +274,7 @@ impl Writer<'_> {
                     (FillType::Color, _) => {
                         write!(self.body, r#"<path d="{d}" {}{rule}{blend}/>"#, paint_attrs("fill", fill.color)).unwrap();
                     }
+                    (FillType::Noise, _) => self.noise_fill(&d, &rule, fill.noise, fill.color, &blend),
                 }
             }
             for s in l.style.inner_shadows.iter().filter(|s| s.enabled) {
@@ -285,10 +286,29 @@ impl Writer<'_> {
         }
     }
 
+    /// The noise tile as a repeating PNG pattern, at the scale the canvas draws it.
+    fn noise_fill(&mut self, d: &str, rule: &str, noise: scrawl_core::Noise, color: scrawl_core::Color, blend: &str) {
+        let img = crate::images::noise_image(noise, color);
+        let Some(rgba) = image::RgbaImage::from_raw(img.width, img.height, img.data.data().to_vec()) else { return };
+        let mut png = std::io::Cursor::new(vec![]);
+        if rgba.write_to(&mut png, image::ImageFormat::Png).is_err() {
+            return;
+        }
+        let (n, pid) = (img.width, self.id("noise"));
+        write!(
+            self.defs,
+            r#"<pattern id="{pid}" patternUnits="userSpaceOnUse" width="{n}" height="{n}" patternTransform="scale(0.5)"><image width="{n}" height="{n}" xlink:href="data:image/png;base64,{}"/></pattern>"#,
+            base64(png.get_ref())
+        )
+        .unwrap();
+        write!(self.body, r#"<path d="{d}" fill="url(#{pid})"{rule}{blend}/>"#).unwrap();
+    }
+
     fn gradient(&mut self, g: &Gradient, w: f64, h: f64) -> String {
         let id = self.id("gradient");
+        // SVG blends in sRGB; other spaces are sampled into extra stops.
         let stops: String = g
-            .stops
+            .srgb_stops()
             .iter()
             .map(|s| {
                 let opacity = if s.color.a < 1.0 { format!(r#" stop-opacity="{}""#, num(s.color.a as f64)) } else { String::new() };

@@ -19,15 +19,22 @@ pub fn color(c: Color) -> String {
 fn gradient(g: &Gradient, w: f64, h: f64) -> String {
     let stops: Vec<String> = g.stops.iter().map(|s| format!("{} {}%", color(s.color), num(s.position * 100.0))).collect();
     let stops = stops.join(", ");
+    // CSS Color 4 blends in a chosen space with `in <space>`.
+    let space = match g.interpolation {
+        crate::Interpolation::Srgb => "",
+        crate::Interpolation::LinearSrgb => " in srgb-linear",
+        crate::Interpolation::Oklab => " in oklab",
+        crate::Interpolation::Oklch => " in oklch",
+    };
     match g.kind {
         GradientKind::Linear => {
             let (dx, dy) = ((g.to.x - g.from.x) * w, (g.to.y - g.from.y) * h);
             // CSS angles start at "to top" and run clockwise.
             let deg = dx.atan2(-dy).to_degrees().rem_euclid(360.0);
-            format!("linear-gradient({}deg, {stops})", num(deg))
+            format!("linear-gradient({}deg{space}, {stops})", num(deg))
         }
-        GradientKind::Radial => format!("radial-gradient(circle at {}% {}%, {stops})", num(g.from.x * 100.0), num(g.from.y * 100.0)),
-        GradientKind::Angular => format!("conic-gradient(from 0deg at 50% 50%, {stops})"),
+        GradientKind::Radial => format!("radial-gradient(circle at {}% {}%{space}, {stops})", num(g.from.x * 100.0), num(g.from.y * 100.0)),
+        GradientKind::Angular => format!("conic-gradient(from 0deg at 50% 50%{space}, {stops})"),
     }
 }
 
@@ -132,7 +139,7 @@ pub fn layer_css(layer: &Layer) -> String {
         .filter_map(|f| match f.fill_type {
             FillType::Color => Some(color(f.color)),
             FillType::Gradient => Some(gradient(&f.gradient, w, h)),
-            FillType::Image => None,
+            FillType::Image | FillType::Noise => None,
         })
         .enumerate()
         .map(|(i, b)| if i + 1 < fills.len() && b.starts_with(['#', 'r']) && !b.starts_with("radial") { format!("linear-gradient({b}, {b})") } else { b })
@@ -206,5 +213,15 @@ mod tests {
         }
         let css = layer_css(&t);
         assert!(css.contains("font-family: \"Inter\";") && css.contains("text-decoration: underline;") && css.contains("color: #000000;"));
+    }
+
+    #[test]
+    fn gradients_name_their_color_space() {
+        let mut g = crate::Gradient::default();
+        assert!(!gradient(&g, 10.0, 10.0).contains(" in "));
+        g.interpolation = crate::Interpolation::Oklab;
+        assert!(gradient(&g, 10.0, 10.0).starts_with("linear-gradient(180deg in oklab, "), "{}", gradient(&g, 10.0, 10.0));
+        g.kind = crate::GradientKind::Radial;
+        assert!(gradient(&g, 10.0, 10.0).contains("% in oklab, "));
     }
 }

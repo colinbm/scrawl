@@ -160,7 +160,7 @@ fn style_preview(p: &egui::Painter, r: Rect, s: &SharedStyle) {
     let fill = s.style.fills.iter().rev().find(|f| f.enabled).map_or(Color32::TRANSPARENT, |f| match f.fill_type {
         scrawl_core::FillType::Color => to_color32(f.color),
         scrawl_core::FillType::Gradient => to_color32(f.gradient.color_at(0.5)),
-        scrawl_core::FillType::Image => Color32::GRAY,
+        scrawl_core::FillType::Image | scrawl_core::FillType::Noise => Color32::GRAY,
     });
     if let Some(ts) = &s.text {
         let size = (ts.font_size as f32).clamp(9.0, 18.0);

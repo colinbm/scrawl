@@ -64,8 +64,13 @@ pub fn brush(paint: Paint<'_>, width: f64, height: f64, images: &ImageCache) -> 
             }
             None => (Brush::Solid(peniko::Color::TRANSPARENT), None, None),
         },
+        Paint::Noise { noise, color } => {
+            let brush = peniko::ImageBrush::new(images::noise_image(noise, color)).with_extend(peniko::Extend::Repeat);
+            (Brush::Image(brush), Some(Affine::scale(0.5)), None)
+        }
         Paint::Gradient(g) => {
-            let stops: Vec<(f32, peniko::Color)> = g.stops.iter().map(|s| (s.position as f32, to_peniko(s.color))).collect();
+            // Vello blends in sRGB, so other color spaces come in as extra stops.
+            let stops: Vec<(f32, peniko::Color)> = g.srgb_stops().iter().map(|s| (s.position as f32, to_peniko(s.color))).collect();
             let gradient = match g.kind {
                 GradientKind::Linear => Gradient::new_linear(g.from, g.to),
                 GradientKind::Radial => Gradient::new_radial(g.from, (g.to - g.from).hypot().max(1e-6) as f32),

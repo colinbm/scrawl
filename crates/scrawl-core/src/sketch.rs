@@ -205,6 +205,7 @@ fn gradient_in(v: &Value) -> Gradient {
         from: parse_point(text(v, "from")),
         to: parse_point(text(v, "to")),
         stops: list(v, "stops").iter().map(|s| GradientStop { position: num(s, "position"), color: color_in(&s["color"]) }).collect(),
+        interpolation: crate::Interpolation::Srgb,
     }
 }
 
@@ -338,6 +339,7 @@ impl Importer {
                 fill_type: match int(f, "fillType") {
                     1 => FillType::Gradient,
                     4 => FillType::Image,
+                    5 => FillType::Noise,
                     _ => FillType::Color,
                 },
                 color: color_in(&f["color"]),
@@ -352,6 +354,15 @@ impl Importer {
                     _ => ImageMode::Fill,
                 },
                 image_scale: num_or(f, "patternTileScale", 1.0),
+                noise: crate::Noise {
+                    kind: match int(f, "noiseIndex") {
+                        1 => crate::NoiseKind::Black,
+                        2 => crate::NoiseKind::White,
+                        3 => crate::NoiseKind::Color,
+                        _ => crate::NoiseKind::Original,
+                    },
+                    intensity: num_or(f, "noiseIntensity", 0.2),
+                },
             });
         }
         let opts = &v["borderOptions"];
@@ -770,7 +781,8 @@ fn gradient_out(g: &Gradient) -> Value {
         "from": point_str(g.from),
         "to": point_str(g.to),
         "gradientType": match g.kind { GradientKind::Linear => 0, GradientKind::Radial => 1, GradientKind::Angular => 2 },
-        "stops": g.stops.iter().map(|s| json!({ "_class": "gradientStop", "position": s.position, "color": color_out(s.color, None) })).collect::<Vec<_>>(),
+        // Sketch blends in sRGB; other spaces are sampled into extra stops.
+        "stops": g.srgb_stops().iter().map(|s| json!({ "_class": "gradientStop", "position": s.position, "color": color_out(s.color, None) })).collect::<Vec<_>>(),
     })
 }
 
@@ -851,12 +863,12 @@ impl Exporter {
                 let mut v = json!({
                     "_class": "fill",
                     "isEnabled": f.enabled,
-                    "fillType": match f.fill_type { FillType::Color => 0, FillType::Gradient => 1, FillType::Image => 4 },
+                    "fillType": match f.fill_type { FillType::Color => 0, FillType::Gradient => 1, FillType::Image => 4, FillType::Noise => 5 },
                     "color": color_out(f.color, f.swatch),
                     "contextSettings": context(f.blend_mode, 1.0),
                     "gradient": gradient_out(&f.gradient),
-                    "noiseIndex": 0,
-                    "noiseIntensity": 0,
+                    "noiseIndex": crate::NoiseKind::ALL.iter().position(|k| *k == f.noise.kind).unwrap_or(0),
+                    "noiseIntensity": f.noise.intensity,
                     "patternFillType": match f.image_mode { ImageMode::Tile => 0, ImageMode::Fill => 1, ImageMode::Stretch => 2, ImageMode::Fit => 3 },
                     "patternTileScale": f.image_scale,
                 });
@@ -1235,6 +1247,17 @@ mod tests {
         assert_eq!(back.layer_styles, doc.layer_styles);
         assert_eq!(back.text_styles, doc.text_styles);
         assert_eq!(back.swatches, doc.swatches);
+    }
+
+    #[test]
+    fn noise_fills_round_trip() {
+        let mut doc = Document::default();
+        let mut l = Layer::rectangle(crate::Frame::new(0.0, 0.0, 10.0, 10.0));
+        l.style.fills.push(Fill { fill_type: FillType::Noise, noise: crate::Noise { kind: crate::NoiseKind::White, intensity: 0.4 }, ..Fill::solid(Color::WHITE) });
+        doc.pages[0].layers.push(l);
+        let back = import(&export(&doc).unwrap()).unwrap();
+        let f = &back.pages[0].layers[0].style.fills[1];
+        assert_eq!((f.fill_type, f.noise), (FillType::Noise, crate::Noise { kind: crate::NoiseKind::White, intensity: 0.4 }));
     }
 
     #[test]

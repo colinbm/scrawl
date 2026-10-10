@@ -1176,3 +1176,42 @@ fn rotate_copies_with_a_live_pivot() {
     assert!(h.state().front().canvas.rotate_copies.is_none());
     assert_eq!(h.state().front().selection, [group]);
 }
+
+#[test]
+fn noise_fills_and_gradient_color_spaces_in_the_popover() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let card = select(&mut h, "Card");
+    h.get_by_label("fill paint").click();
+    h.run();
+    h.get_by_label("Noise").click();
+    h.run();
+    assert_eq!(layer_named(&h, "Card").style.fills[0].fill_type, scrawl_core::FillType::Noise);
+    h.get_by_label("White").click();
+    h.run();
+    assert_eq!(h.state().front().page().find(card).unwrap().style.fills[0].noise.kind, scrawl_core::NoiseKind::White);
+    save(&mut h, "noise_popover");
+    h.get_by_label("Linear").click();
+    h.run();
+    assert!(h.query_by_label("Blend in").is_some());
+    h.get_by_label("OKLCH").click();
+    h.run();
+    assert_eq!(h.state().front().page().find(card).unwrap().style.fills[0].gradient.interpolation, scrawl_core::Interpolation::Oklch);
+}
+
+#[test]
+fn blend_mode_combo_works_inside_the_paint_popover() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let card = select(&mut h, "Card");
+    h.get_by_label("fill paint").click();
+    h.run();
+    // Real pointer clicks, not accessibility actions.
+    let menu = h.get_by_label_contains("Normal ⏵").rect().center();
+    click_at(&mut h, menu);
+    h.run();
+    let option = h.get_by_label("Multiply").rect().center();
+    click_at(&mut h, option);
+    h.run();
+    assert_eq!(h.state().front().page().find(card).unwrap().style.fills[0].blend_mode, scrawl_core::BlendMode::Multiply);
+}

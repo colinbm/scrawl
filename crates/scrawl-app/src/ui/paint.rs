@@ -5,7 +5,7 @@ use egui::color_picker::{Alpha, color_picker_hsva_2d};
 use egui::ecolor::Hsva;
 use egui::{Color32, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use scrawl_core::assets::Assets;
-use scrawl_core::{BlendMode, Color, FillType, Gradient, GradientKind, ImageMode, Swatch, SwatchId};
+use scrawl_core::{BlendMode, Color, FillType, Gradient, GradientKind, ImageMode, Interpolation, Noise, NoiseKind, Swatch, SwatchId};
 
 /// What a paint popover edits. Gradients and blend modes are optional (shadows have neither),
 /// as is the color-variable link (artboard backgrounds have none).
@@ -17,6 +17,8 @@ pub struct PaintTarget<'a> {
     pub swatch: Option<&'a mut Option<SwatchId>>,
     /// Image fill settings, for fills.
     pub image: Option<ImageTarget<'a>>,
+    /// Noise settings, for fills.
+    pub noise: Option<&'a mut Noise>,
 }
 
 /// The parts of a fill an image fill uses.
@@ -29,7 +31,7 @@ pub struct ImageTarget<'a> {
 impl<'a> PaintTarget<'a> {
     /// A plain color with no gradient, blend mode or variable link.
     pub fn color(color: &'a mut Color) -> Self {
-        Self { fill_type: None, color, gradient: None, blend: None, swatch: None, image: None }
+        Self { fill_type: None, color, gradient: None, blend: None, swatch: None, image: None, noise: None }
     }
 }
 
@@ -113,6 +115,17 @@ fn paint_swatch(p: &egui::Painter, rect: Rect, fill_type: FillType, color: Color
             p.rect_filled(rect, 0.0, Color32::from_gray(225));
             crate::ui::icons::paint(p, rect.shrink(3.0), crate::ui::icons::Icon::Image, Color32::from_gray(90));
         }
+        (FillType::Noise, _) => {
+            // A speckle of the grain.
+            p.rect_filled(rect, 0.0, Color32::from_gray(200));
+            let mut state: u32 = 7;
+            for _ in 0..60 {
+                state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let (x, y) = ((state >> 8) % 1000, (state >> 18) % 1000);
+                let at = rect.min + vec2(rect.width() * x as f32 / 1000.0, rect.height() * y as f32 / 1000.0);
+                p.circle_filled(at, 0.7, if state & 1 == 0 { Color32::from_gray(60) } else { Color32::WHITE });
+            }
+        }
         _ => {
             checkerboard(p, rect);
             p.rect_filled(rect, 0.0, to_color32(color));
@@ -141,7 +154,7 @@ pub fn paint_button(ui: &mut Ui, id_salt: &str, target: PaintTarget<'_>, palette
 }
 
 fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'_>) -> bool {
-    let PaintTarget { mut fill_type, color, mut gradient, blend, mut swatch, image } = target;
+    let PaintTarget { mut fill_type, color, mut gradient, blend, mut swatch, image, noise } = target;
     let stop_id = id.with("stop");
     let mut selected_stop: usize = ui.data(|d| d.get_temp(stop_id)).unwrap_or(0);
 
@@ -164,7 +177,38 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
             if image.is_some() && ui.selectable_label(*ft == FillType::Image, "Image").clicked() {
                 *ft = FillType::Image;
             }
+            if noise.is_some() && ui.selectable_label(*ft == FillType::Noise, "Noise").clicked() {
+                *ft = FillType::Noise;
+            }
         });
+        ui.separator();
+    }
+
+    // Noise: its kind and strength; only colored noise goes on to pick a color.
+    if fill_type.as_deref() == Some(&FillType::Noise)
+        && let Some(noise) = noise
+    {
+        ui.horizontal(|ui| {
+            for kind in NoiseKind::ALL {
+                ui.selectable_value(&mut noise.kind, kind, kind.label());
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Intensity");
+            let mut pct = noise.intensity * 100.0;
+            if ui.add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%").max_decimals(0)).changed() {
+                noise.intensity = pct / 100.0;
+            }
+        });
+        if noise.kind != NoiseKind::Color {
+            if let Some(blend) = blend {
+                ui.horizontal(|ui| {
+                    ui.label("Blend");
+                    blend_menu(ui, blend);
+                });
+            }
+            return false;
+        }
         ui.separator();
     }
 
@@ -175,7 +219,7 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
         if let Some(blend) = blend {
             ui.horizontal(|ui| {
                 ui.label("Blend");
-                blend_combo(ui, id.with("blend"), blend);
+                blend_menu(ui, blend);
             });
         }
         return false;
@@ -201,6 +245,13 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
         let g = gradient.expect("checked");
         selected_stop = selected_stop.min(g.stops.len().saturating_sub(1));
         stops_editor(ui, id, g, &mut selected_stop);
+        ui.horizontal(|ui| {
+            ui.label("Blend in").on_hover_text("The color space stops blend in");
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for space in Interpolation::ALL {
+                ui.selectable_value(&mut g.interpolation, space, space.label());
+            }
+        });
         &mut g.stops[selected_stop].color
     } else {
         color
@@ -224,7 +275,7 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
     if let Some(blend) = blend {
         ui.horizontal(|ui| {
             ui.label("Blend");
-            blend_combo(ui, id.with("blend"), blend);
+            blend_menu(ui, blend);
         });
     }
 
@@ -396,6 +447,19 @@ fn stops_editor(ui: &mut Ui, id: Id, g: &mut Gradient, selected: &mut usize) {
                 *selected = g.stops.len() - 1 - *selected;
             }
         });
+    });
+}
+
+/// The blend mode as a menu, for use inside popovers: a combo box's list would count as a click
+/// outside the popover and close it, while a menu is known to be part of it.
+fn blend_menu(ui: &mut Ui, blend: &mut BlendMode) {
+    ui.menu_button(blend.label(), |ui| {
+        for mode in BlendMode::ALL {
+            if ui.selectable_label(*blend == mode, mode.label()).clicked() {
+                *blend = mode;
+                ui.close();
+            }
+        }
     });
 }
 

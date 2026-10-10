@@ -181,7 +181,7 @@ fn paint(p: &usvg::Paint, opacity: f32, t: Affine, bounds: Rect) -> (FillType, C
         usvg::Paint::Pattern(_) => return (FillType::Color, Color::rgba(0.5, 0.5, 0.5, opacity), Gradient::default()),
     };
     let fallback = list.first().map_or(Color::BLACK, |s| s.color);
-    (FillType::Gradient, fallback, Gradient { kind, from: norm(from), to: norm(to), stops: list })
+    (FillType::Gradient, fallback, Gradient { kind, from: norm(from), to: norm(to), stops: list, interpolation: Default::default() })
 }
 
 fn blend(b: usvg::BlendMode) -> BlendMode {

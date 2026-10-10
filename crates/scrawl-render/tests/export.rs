@@ -213,3 +213,41 @@ fn svg_alpha_masks_render_in_other_viewers() {
     assert!(a(10) > 150 && a(10) < 255, "masked at half opacity, over the mask's own half fill: {}", a(10));
     assert_eq!(a(30), 0, "outside the mask");
 }
+
+#[test]
+fn noise_fills_and_oklab_gradients() {
+    let Some(mut ex) = exporter() else { return };
+    let mut page = Page::new("P");
+    let mut grain = Layer::rectangle(Frame::new(0.0, 0.0, 64.0, 32.0));
+    grain.style.borders.clear();
+    grain.style.fills = vec![
+        Fill::solid(Color::rgba(0.5, 0.5, 0.5, 1.0)),
+        Fill { fill_type: scrawl_core::FillType::Noise, noise: scrawl_core::Noise { kind: scrawl_core::NoiseKind::Black, intensity: 1.0 }, ..Fill::solid(Color::WHITE) },
+    ];
+    ops::insert_drawn(&mut page, grain);
+    let mut g = Layer::rectangle(Frame::new(0.0, 40.0, 100.0, 10.0));
+    g.style.borders.clear();
+    let mut gradient = scrawl_core::Gradient {
+        from: scrawl_core::kurbo::Point::new(0.0, 0.5),
+        to: scrawl_core::kurbo::Point::new(1.0, 0.5),
+        stops: vec![
+            scrawl_core::GradientStop { position: 0.0, color: Color::rgba(1.0, 0.0, 0.0, 1.0) },
+            scrawl_core::GradientStop { position: 1.0, color: Color::rgba(0.0, 0.0, 1.0, 1.0) },
+        ],
+        ..Default::default()
+    };
+    gradient.interpolation = scrawl_core::Interpolation::Oklab;
+    let expected = gradient.color_at(0.505).to_rgba8();
+    g.style.fills = vec![Fill { fill_type: scrawl_core::FillType::Gradient, gradient, ..Fill::solid(Color::BLACK) }];
+    ops::insert_drawn(&mut page, g);
+    let img = ex.render_page(&page, Rect::new(0.0, 0.0, 100.0, 50.0), 1.0, peniko::Color::WHITE).unwrap();
+    // Grain: neighbouring pixels differ, and on average it darkens the grey.
+    let row: Vec<u8> = (0..64).map(|x| px(&img, x, 10)[0]).collect();
+    let distinct = row.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 10, "grain varies: {row:?}");
+    let mean = row.iter().map(|&v| v as f64).sum::<f64>() / 64.0;
+    assert!(mean < 110.0, "black noise darkens: {mean}");
+    // The GPU blends in OKLab like the model does.
+    let mid = px(&img, 50, 45);
+    assert!(mid.iter().zip(expected).take(3).all(|(a, b)| a.abs_diff(b) <= 8), "{mid:?} vs {expected:?}");
+}

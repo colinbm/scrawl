@@ -35,7 +35,7 @@
 - ✅ Image layers and image fills (fill, fit, stretch, tile); images stored in the `.scrawl` archive
 - ⬜ True GPU blur pass (replace banded shadows; enables layer and background blur)
 - ✅ Alpha and luminance masks alongside outline masks, "Ignore underlying mask"; in SVG as `<mask>`, in design files as alpha masks
-- ⬜ Noise fills, pattern fills, gradient interpolation options
+- ✅ Noise fills (original, black, white, color; intensity), pattern fills (tiled image fills), gradients blended in sRGB, linear, OKLab or OKLCH (sampled stops for SVG/design files, `in oklab` in CSS)
 
 ## Milestone 4 — Text
 - ✅ Text layers (T): parley layout with system fonts and fallback, Vello glyph rendering

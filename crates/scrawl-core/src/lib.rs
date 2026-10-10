@@ -38,8 +38,8 @@ pub use layer::{Artboard, Group, ImageLayer, Layer, LayerId, LayerKind, MaskMode
 pub use text::{TextAlign, TextLayer, TextSizing, TextStyle, TextTransform, VerticalAlign};
 pub use path::{CurvePoint, FillRule, PathShape, PointMode, PointRef, Subpath};
 pub use style::{
-    BlendMode, Border, BorderOptions, BorderPosition, Fill, FillType, Gradient, GradientKind, GradientStop, ImageMode, LineCap,
-    LineJoin, Marker, Paint, Shadow, Style,
+    BlendMode, Border, BorderOptions, BorderPosition, Fill, FillType, Gradient, GradientKind, GradientStop, ImageMode, Interpolation,
+    LineCap, LineJoin, Marker, Noise, NoiseKind, Paint, Shadow, Style,
 };
 
 pub use kurbo;

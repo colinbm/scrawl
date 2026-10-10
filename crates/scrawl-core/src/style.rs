@@ -81,6 +81,47 @@ pub enum FillType {
     Gradient,
     /// An image asset (fills only).
     Image,
+    /// Grain over what's beneath (fills only).
+    Noise,
+}
+
+/// Noise fill kinds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoiseKind {
+    /// Grey grain, lightening and darkening.
+    #[default]
+    Original,
+    Black,
+    White,
+    /// Grain in the fill's color.
+    Color,
+}
+
+impl NoiseKind {
+    pub const ALL: [Self; 4] = [Self::Original, Self::Black, Self::White, Self::Color];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Original => "Original",
+            Self::Black => "Black",
+            Self::White => "White",
+            Self::Color => "Color",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Noise {
+    pub kind: NoiseKind,
+    /// 0..1: how strongly the grain shows.
+    pub intensity: f64,
+}
+
+impl Default for Noise {
+    fn default() -> Self {
+        Self { kind: NoiseKind::Original, intensity: 0.2 }
+    }
 }
 
 /// How an image fill covers the layer.
@@ -132,6 +173,9 @@ pub struct Fill {
     /// Tile scale for tiled image fills.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub image_scale: f64,
+    /// For noise fills.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub noise: Noise,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -158,6 +202,7 @@ impl Fill {
             image: None,
             image_mode: ImageMode::Fill,
             image_scale: 1.0,
+            noise: Noise::default(),
         }
     }
 
@@ -173,6 +218,7 @@ impl Fill {
             // An image fill without an image shows nothing.
             (FillType::Image, None) => Paint::Color(Color::TRANSPARENT),
             (FillType::Color, _) => Paint::Color(self.color),
+            (FillType::Noise, _) => Paint::Noise { noise: self.noise, color: self.color },
         }
     }
 }
@@ -183,6 +229,110 @@ pub enum Paint<'a> {
     Color(Color),
     Gradient(&'a Gradient),
     Image { id: &'a str, mode: ImageMode, scale: f64 },
+    Noise { noise: Noise, color: Color },
+}
+
+/// The color space a gradient blends its stops in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Interpolation {
+    /// Straight between sRGB values, as CSS does by default.
+    #[default]
+    Srgb,
+    /// In linear light: brighter, more physical midpoints.
+    LinearSrgb,
+    /// Perceptually even lightness, without muddy midpoints.
+    Oklab,
+    /// OKLab with hue going the short way round: vivid midpoints.
+    Oklch,
+}
+
+impl Interpolation {
+    pub const ALL: [Self; 4] = [Self::Srgb, Self::LinearSrgb, Self::Oklab, Self::Oklch];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Srgb => "sRGB",
+            Self::LinearSrgb => "Linear RGB",
+            Self::Oklab => "OKLab",
+            Self::Oklch => "OKLCH",
+        }
+    }
+
+    /// Blends `a` to `b` by `k` in this space (alpha straight, in all of them).
+    pub fn mix(self, a: Color, b: Color, k: f32) -> Color {
+        let lerp = |x: f32, y: f32| x + (y - x) * k;
+        let alpha = lerp(a.a, b.a);
+        let [r, g, bl] = match self {
+            Self::Srgb => [lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b)],
+            Self::LinearSrgb => {
+                let (x, y) = (to_linear(a), to_linear(b));
+                from_linear([lerp(x[0], y[0]), lerp(x[1], y[1]), lerp(x[2], y[2])])
+            }
+            Self::Oklab => {
+                let (x, y) = (oklab(to_linear(a)), oklab(to_linear(b)));
+                from_linear(oklab_inv([lerp(x[0], y[0]), lerp(x[1], y[1]), lerp(x[2], y[2])]))
+            }
+            Self::Oklch => {
+                let (x, y) = (oklab(to_linear(a)), oklab(to_linear(b)));
+                let (cx, cy) = (x[1].hypot(x[2]), y[1].hypot(y[2]));
+                let (hx, hy) = (x[2].atan2(x[1]), y[2].atan2(y[1]));
+                // Greys have no hue: take the other end's, so they don't swing through colors.
+                let (hx, hy) = match (cx < 1e-4, cy < 1e-4) {
+                    (true, false) => (hy, hy),
+                    (false, true) => (hx, hx),
+                    _ => (hx, hy),
+                };
+                let mut dh = hy - hx;
+                if dh > std::f32::consts::PI {
+                    dh -= std::f32::consts::TAU;
+                } else if dh < -std::f32::consts::PI {
+                    dh += std::f32::consts::TAU;
+                }
+                let (c, h) = (lerp(cx, cy), hx + dh * k);
+                from_linear(oklab_inv([lerp(x[0], y[0]), c * h.cos(), c * h.sin()]))
+            }
+        };
+        Color::rgba(r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), bl.clamp(0.0, 1.0), alpha)
+    }
+}
+
+fn to_linear(c: Color) -> [f32; 3] {
+    let f = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    [f(c.r), f(c.g), f(c.b)]
+}
+
+fn from_linear(c: [f32; 3]) -> [f32; 3] {
+    let f = |v: f32| {
+        let v = v.max(0.0);
+        if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+    };
+    [f(c[0]), f(c[1]), f(c[2])]
+}
+
+/// Linear sRGB to OKLab (Björn Ottosson's matrices, kept at their published precision).
+#[allow(clippy::excessive_precision)]
+fn oklab([r, g, b]: [f32; 3]) -> [f32; 3] {
+    let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+    let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+    let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+    [
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    ]
+}
+
+#[allow(clippy::excessive_precision)]
+fn oklab_inv([l, a, b]: [f32; 3]) -> [f32; 3] {
+    let l_ = (l + 0.3963377774 * a + 0.2158037573 * b).powi(3);
+    let m_ = (l - 0.1055613458 * a - 0.0638541728 * b).powi(3);
+    let s_ = (l - 0.0894841775 * a - 1.2914855480 * b).powi(3);
+    [
+        4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_,
+        -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_,
+        -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_,
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +365,8 @@ pub struct Gradient {
     pub to: Point,
     /// Sorted by position.
     pub stops: Vec<GradientStop>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub interpolation: Interpolation,
 }
 
 impl Default for Gradient {
@@ -224,6 +376,7 @@ impl Default for Gradient {
             from: Point::new(0.5, 0.0),
             to: Point::new(0.5, 1.0),
             stops: vec![GradientStop { position: 0.0, color: Color::WHITE }, GradientStop { position: 1.0, color: Color::BLACK }],
+            interpolation: Interpolation::Srgb,
         }
     }
 }
@@ -238,7 +391,26 @@ impl Gradient {
         }
     }
 
-    /// The color at `t` in `0..=1`, interpolated in sRGB between stops.
+    /// Stops that reproduce this gradient when blended in sRGB, for formats that can't blend in
+    /// other spaces (SVG, design files): the stops themselves for sRGB gradients, otherwise with
+    /// samples in between.
+    pub fn srgb_stops(&self) -> Vec<GradientStop> {
+        if self.interpolation == Interpolation::Srgb || self.stops.len() < 2 {
+            return self.stops.clone();
+        }
+        const STEPS: usize = 16;
+        let mut out = vec![self.stops[0].clone()];
+        for w in self.stops.windows(2) {
+            for i in 1..=STEPS {
+                let t = w[0].position + (w[1].position - w[0].position) * i as f64 / STEPS as f64;
+                let k = i as f32 / STEPS as f32;
+                out.push(GradientStop { position: t, color: self.interpolation.mix(w[0].color, w[1].color, k) });
+            }
+        }
+        out
+    }
+
+    /// The color at `t` in `0..=1`, blended between stops in the gradient's color space.
     pub fn color_at(&self, t: f64) -> Color {
         let Some(first) = self.stops.first() else { return Color::TRANSPARENT };
         if t <= first.position {
@@ -249,8 +421,7 @@ impl Gradient {
             if t <= b.position {
                 let span = (b.position - a.position).max(1e-9);
                 let k = ((t - a.position) / span) as f32;
-                let lerp = |x: f32, y: f32| x + (y - x) * k;
-                return Color::rgba(lerp(a.color.r, b.color.r), lerp(a.color.g, b.color.g), lerp(a.color.b, b.color.b), lerp(a.color.a, b.color.a));
+                return self.interpolation.mix(a.color, b.color, k);
             }
         }
         self.stops.last().map_or(Color::TRANSPARENT, |s| s.color)
@@ -310,8 +481,8 @@ impl Border {
     pub fn paint(&self) -> Paint<'_> {
         match self.fill_type {
             FillType::Gradient => Paint::Gradient(&self.gradient),
-            // Borders can't paint images.
-            FillType::Color | FillType::Image => Paint::Color(self.color),
+            // Borders can't paint images or noise.
+            FillType::Color | FillType::Image | FillType::Noise => Paint::Color(self.color),
         }
     }
 }
@@ -546,5 +717,43 @@ mod tests {
         assert_eq!(s.fills[0].fill_type, FillType::Color);
         assert_eq!(s.borders[0].position, BorderPosition::Center);
         assert!(s.shadows.is_empty());
+    }
+
+    #[test]
+    fn gradients_blend_in_their_color_space() {
+        let red = Color::rgba(1.0, 0.0, 0.0, 1.0);
+        let blue = Color::rgba(0.0, 0.0, 1.0, 1.0);
+        let mut g = Gradient {
+            stops: vec![GradientStop { position: 0.0, color: red }, GradientStop { position: 1.0, color: blue }],
+            ..Gradient::default()
+        };
+        let srgb = g.color_at(0.5);
+        assert!((srgb.r - 0.5).abs() < 1e-6 && (srgb.b - 0.5).abs() < 1e-6);
+        assert_eq!(g.srgb_stops().len(), 2, "nothing to add for sRGB");
+        // Linear light makes a brighter middle; OKLCH keeps it saturated through purple.
+        g.interpolation = Interpolation::LinearSrgb;
+        assert!(g.color_at(0.5).r > 0.7);
+        g.interpolation = Interpolation::Oklch;
+        let mid = g.color_at(0.5);
+        assert!(mid.r > 0.5 && mid.b > 0.5 && mid.g < 0.2, "{mid:?}");
+        // Ends are exact in every space.
+        for space in Interpolation::ALL {
+            g.interpolation = space;
+            let (a, b) = (g.color_at(0.0), g.color_at(1.0));
+            assert!((a.r - 1.0).abs() < 1e-3 && (b.b - 1.0).abs() < 1e-3, "{space:?}");
+        }
+        assert!(g.srgb_stops().len() > 10, "sampled for formats that blend in sRGB");
+        // Round trip through the file format.
+        let json = serde_json::to_string(&g).unwrap();
+        assert_eq!(serde_json::from_str::<Gradient>(&json).unwrap(), g);
+        assert!(json.contains("oklch"));
+    }
+
+    #[test]
+    fn oklab_round_trips() {
+        for c in [[0.2f32, 0.4, 0.9], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [0.9, 0.1, 0.3]] {
+            let back = oklab_inv(oklab(c));
+            assert!(c.iter().zip(back).all(|(a, b)| (a - b).abs() < 1e-4), "{c:?} → {back:?}");
+        }
     }
 }
