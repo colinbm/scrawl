@@ -5,7 +5,6 @@
 //! and cloning is cheap too since the bytes are shared.
 
 use std::collections::BTreeMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 /// Encoded image files by asset id, e.g. `"3fa2…c1.png"`.
@@ -30,15 +29,11 @@ pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// A content-derived asset id for `bytes`.
+/// A content-derived asset id for `bytes`: two FNV-1a hashes with different offsets, which (unlike
+/// std's hasher) stay the same across Rust versions, so re-adding an image finds the stored copy.
 pub fn asset_id(bytes: &[u8], extension: &str) -> String {
-    let half = |seed: u64| {
-        let mut h = DefaultHasher::new();
-        seed.hash(&mut h);
-        bytes.hash(&mut h);
-        h.finish()
-    };
-    format!("{:016x}{:016x}.{extension}", half(0x005c_7a11), half(0x00a5_5e75))
+    let fnv = |offset: u64| bytes.iter().fold(offset, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
+    format!("{:016x}{:016x}.{extension}", fnv(0xcbf2_9ce4_8422_2325), fnv(0x6c62_272e_07bb_0142))
 }
 
 impl Assets {
@@ -86,6 +81,8 @@ mod tests {
         let mut a = Assets::default();
         let id = a.add_image(png.clone()).unwrap();
         assert!(id.ends_with(".png"));
+        // Pinned: ids are saved in files, so the hash must never change.
+        assert_eq!(id, "580929f1c5881ddd4930a612ce040d00.png");
         assert_eq!(a.add_image(png).unwrap(), id);
         assert_eq!(a.len(), 1);
         assert!(a.add_image(b"not an image".to_vec()).is_none());
