@@ -347,14 +347,15 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resou
         // Gradients map onto the frame, not the (vertically offset) text block.
         let bt = bt.map(|b| Affine::translate((0.0, -dy)) * b);
         if fill.blend_mode == SBlend::Normal {
-            draw_layout(scene, layout, text_t, &brush, bt, Fill::NonZero.into());
+            draw_layout(scene, layout, text_t, &brush, bt, Fill::NonZero.into(), Runs::Uncolored);
         } else {
             let bounds = layer.frame.local_rect().inflate(w.max(h), w.max(h));
             scene.push_layer(Fill::NonZero, to_mix(fill.blend_mode), 1.0, t, &bounds);
-            draw_layout(scene, layout, text_t, &brush, bt, Fill::NonZero.into());
+            draw_layout(scene, layout, text_t, &brush, bt, Fill::NonZero.into(), Runs::Uncolored);
             scene.pop_layer();
         }
     }
+    draw_layout(scene, layout, text_t, &Brush::Solid(peniko::Color::TRANSPARENT), None, Fill::NonZero.into(), Runs::Colored);
     if let Some(path) = &outlines {
         for s in style.inner_shadows.iter().filter(|s| s.enabled) {
             shadow::inner_shadow(scene, layer, path, Fill::NonZero, parent, s);
@@ -364,15 +365,35 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resou
         let (brush, bt, _) = brush(border.paint(), w, h, images);
         let bt = bt.map(|b| Affine::translate((0.0, -dy)) * b);
         let stroke = stroke_style(border.thickness, &style.border_options);
-        draw_layout(scene, layout, text_t, &brush, bt, (&stroke).into());
+        draw_layout(scene, layout, text_t, &brush, bt, (&stroke).into(), Runs::All);
     }
 }
 
 /// Draws every glyph run of a layout, plus underlines and strikethroughs.
-fn draw_layout(scene: &mut Scene, layout: &scrawl_text::Layout, t: Affine, brush: &Brush, bt: Option<Affine>, style: StyleRef<'_>) {
+/// Which glyph runs a pass draws: style runs with a color of their own paint it, not the fills.
+#[derive(Clone, Copy, PartialEq)]
+enum Runs {
+    All,
+    /// Runs without a color, in the given brush.
+    Uncolored,
+    /// Runs with a color, each in it.
+    Colored,
+}
+
+fn draw_layout(scene: &mut Scene, layout: &scrawl_text::Layout, t: Affine, brush: &Brush, bt: Option<Affine>, style: StyleRef<'_>, runs: Runs) {
     for line in layout.lines() {
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(run) = item else { continue };
+            let own = run.style().brush.0;
+            let solid;
+            let (brush, bt) = match (runs, own) {
+                (Runs::Uncolored, Some(_)) | (Runs::Colored, None) => continue,
+                (Runs::Colored, Some(c)) => {
+                    solid = Brush::Solid(to_peniko(c));
+                    (&solid, None)
+                }
+                _ => (brush, bt),
+            };
             let r = run.run();
             let coords: Vec<i16> = r.normalized_coords().iter().map(|c| c.to_bits()).collect();
             let skew = r.synthesis().skew().map(|deg| Affine::skew((deg as f64).to_radians().tan(), 0.0));

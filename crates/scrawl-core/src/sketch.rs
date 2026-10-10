@@ -470,7 +470,33 @@ impl Importer {
                     2 => TextSizing::Fixed,
                     _ => TextSizing::Auto,
                 };
-                let mut layer = self.common(v, frame, LayerKind::Text(TextLayer { text: text(s, "string").to_owned(), style, sizing }), entry);
+                // Later runs that differ from the first become style runs (Sketch counts in UTF-16).
+                let string = text(s, "string");
+                let byte_at = |units: usize| {
+                    let mut n = 0;
+                    for (i, c) in string.char_indices() {
+                        if n >= units {
+                            return i;
+                        }
+                        n += c.len_utf16();
+                    }
+                    string.len()
+                };
+                let base = v["style"]["textStyle"]["encodedAttributes"].as_object().cloned().unwrap_or_default();
+                let mut runs = vec![];
+                for a in list(s, "attributes") {
+                    let mut merged = base.clone();
+                    merged.extend(a["attributes"].as_object().cloned().unwrap_or_default());
+                    let (st, c) = text_style_in(&Value::Object(merged));
+                    let run_style = crate::text::RunStyle::diff(&style, &st, c.filter(|c| Some(*c) != color));
+                    let (loc, len) = (int(a, "location").max(0) as usize, int(a, "length").max(0) as usize);
+                    if !run_style.is_empty() {
+                        runs.push(crate::text::TextRun { start: byte_at(loc), end: byte_at(loc + len), style: run_style });
+                    }
+                }
+                let mut t = TextLayer { text: string.to_owned(), style, sizing, runs };
+                t.normalize();
+                let mut layer = self.common(v, frame, LayerKind::Text(t), entry);
                 // The text color lives in the string attributes; a clear one means no fill.
                 let color = color.unwrap_or(Color::BLACK);
                 if layer.style.fills.iter().all(|f| !f.enabled) && color.a > 0.0 {
@@ -1101,16 +1127,33 @@ impl Exporter {
                     None => Color::TRANSPARENT,
                 };
                 v["_class"] = json!("text");
-                v["attributedString"] = json!({
-                    "_class": "attributedString",
-                    "string": t.text,
-                    "attributes": [{
-                        "_class": "stringAttribute",
-                        "location": 0,
-                        "length": t.text.encode_utf16().count(),
-                        "attributes": text_attrs(&t.style, color, false),
-                    }],
-                });
+                // One attribute per stretch of the same style, located in UTF-16 units.
+                let mut cuts = vec![0, t.text.len()];
+                for r in &t.runs {
+                    cuts.extend([r.start, r.end]);
+                }
+                cuts.sort_unstable();
+                cuts.dedup();
+                let units = |b: usize| t.text[..b].encode_utf16().count();
+                let attributes: Vec<Value> = cuts
+                    .windows(2)
+                    .filter(|w| w[0] < w[1])
+                    .map(|w| {
+                        let (style, run_color) = t.style_at(w[0]);
+                        json!({
+                            "_class": "stringAttribute",
+                            "location": units(w[0]),
+                            "length": units(w[1]) - units(w[0]),
+                            "attributes": text_attrs(&style, run_color.unwrap_or(color), false),
+                        })
+                    })
+                    .collect();
+                let attributes = if attributes.is_empty() {
+                    vec![json!({ "_class": "stringAttribute", "location": 0, "length": 0, "attributes": text_attrs(&t.style, color, false) })]
+                } else {
+                    attributes
+                };
+                v["attributedString"] = json!({ "_class": "attributedString", "string": t.text, "attributes": attributes });
                 v["automaticallyDrawOnUnderlyingPath"] = json!(false);
                 v["dontSynchroniseWithSymbol"] = json!(false);
                 v["glyphBounds"] = json!(format!("{{{{0, 0}}, {{{}, {}}}}}", l.frame.width, l.frame.height));
@@ -1247,6 +1290,26 @@ mod tests {
         assert_eq!(back.layer_styles, doc.layer_styles);
         assert_eq!(back.text_styles, doc.text_styles);
         assert_eq!(back.swatches, doc.swatches);
+    }
+
+    #[test]
+    fn text_runs_round_trip() {
+        let mut doc = Document::default();
+        let mut l = Layer::text(Point::ORIGIN, "naïve café text");
+        if let LayerKind::Text(t) = &mut l.kind {
+            t.set_run_style(6..12, |s| {
+                s.font_weight = Some(700);
+                s.font_size = Some(24.0);
+                s.color = Some(Color::rgba(1.0, 0.0, 0.0, 1.0));
+            });
+        }
+        doc.pages[0].layers.push(l.clone());
+        let back = import(&export(&doc).unwrap()).unwrap();
+        let (LayerKind::Text(a), LayerKind::Text(b)) = (&l.kind, &back.pages[0].layers[0].kind) else { panic!() };
+        assert_eq!(a.text, b.text);
+        assert_eq!(b.runs.len(), 1, "{:?}", b.runs);
+        assert_eq!((b.runs[0].start, b.runs[0].end), (a.runs[0].start, a.runs[0].end), "UTF-16 offsets map back to bytes");
+        assert_eq!(b.runs[0].style, a.runs[0].style);
     }
 
     #[test]

@@ -220,7 +220,10 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                 }
             });
         }
-        LayerKind::Text(text) => text_section(ui, text, &mut app.text),
+        LayerKind::Text(text) => {
+            let range = crate::text_edit::selected_range(app);
+            text_section(ui, text, &mut app.text, range);
+        }
         LayerKind::Group(g) if g.shape => {
             section(ui, "Boolean");
             if ui.button("Flatten").on_hover_text("Bake the shapes into a single path").clicked() {
@@ -841,11 +844,37 @@ fn points_section(app: &mut ScrawlApp, ui: &mut Ui) {
     });
 }
 
-fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scrawl_text::TextEngine) {
+/// Text properties. With `range` (text selected while editing), character properties apply to
+/// that range as style runs; paragraph properties always apply to the whole layer.
+fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scrawl_text::TextEngine, range: Option<std::ops::Range<usize>>) {
     use scrawl_core::text::{WEIGHT_NAMES, weight_name};
     use scrawl_core::{TextAlign, TextSizing, TextTransform, VerticalAlign};
-    let style = &mut text.style;
+    let (effective, run_color) = match &range {
+        Some(r) => text.style_at(r.start),
+        None => (text.style.clone(), None),
+    };
+    let mut working = effective.clone();
+    let style = &mut working;
     section(ui, "Text");
+    if let Some(r) = &range {
+        let n = text.text.get(r.clone()).map_or(0, |s| s.chars().count());
+        ui.weak(format!("Styling {n} selected character{}", if n == 1 { "" } else { "s" }));
+        let mut color = run_color;
+        ui.horizontal(|ui| {
+            ui.label("Color");
+            let mut c = crate::ui::paint::to_color32(color.unwrap_or(scrawl_core::Color::BLACK));
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                let [r, g, b, a] = c.to_srgba_unmultiplied();
+                color = Some(scrawl_core::Color::from_rgba8(r, g, b, a));
+            }
+            if color.is_some() && ui.small_button("Use layer fill").clicked() {
+                color = None;
+            }
+        });
+        if color != run_color {
+            text.set_run_style(r.clone(), |s| s.color = color);
+        }
+    }
 
     // Typeface picker with search.
     ui.horizontal(|ui| {
@@ -938,6 +967,29 @@ fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scr
                 ui.selectable_value(&mut style.transform, TextTransform::Lowercase, "Lowercase");
             });
     });
+
+    match range {
+        None => text.style = working,
+        Some(r) => {
+            // Paragraph properties belong to the layer.
+            text.style.line_height = working.line_height;
+            text.style.alignment = working.alignment;
+            text.style.vertical_alignment = working.vertical_alignment;
+            text.style.transform = working.transform;
+            // Changed character properties become overrides on the range; values matching the
+            // layer's style need none.
+            macro_rules! apply {
+                ($($field:ident),*) => {$(
+                    if working.$field != effective.$field {
+                        let v = working.$field.clone();
+                        let base = text.style.$field.clone();
+                        text.set_run_style(r.clone(), |s| s.$field = (v != base).then(|| v.clone()));
+                    }
+                )*};
+            }
+            apply!(font_family, font_size, font_weight, italic, letter_spacing, underline, strikethrough);
+        }
+    }
 }
 
 fn grid_settings(app: &mut ScrawlApp, ui: &mut Ui, ab: &mut scrawl_core::Artboard) {

@@ -44,8 +44,8 @@
 - ✅ Typeface picker with search, weight, italic, size, line height, letter spacing, alignment, vertical alignment
 - ✅ Underline, strikethrough, case transform; fills (incl. gradients), borders, shadows on text
 - ✅ Convert text to outlines (⇧⌘O) via skrifa glyph outlines
-- ⬜ Rich text: per-range styles within one layer
-- ⬜ Text styles (shared), OpenType features, paragraph spacing, lists
+- ✅ Rich text: style runs (font, size, weight, italic, spacing, decorations, color) on parts of a layer, from the inspector or ⌘B/⌘I/⌘U while editing; the editor works on the rendered layout. Runs round-trip through design files and keep their colors in SVG
+- ⬜ OpenType features, paragraph spacing, lists (shared text styles: see Milestone 6)
 - ⬜ Text on path
 
 ## Milestone 5 — Productivity
@@ -71,7 +71,7 @@
 - ✅ Copy as SVG / CSS; import images and SVG files by drag-and-drop, Insert › Image… (⇧⌘K) or pasting SVG markup
 - ✅ Design-file import (File › Open) and export (File › Save as…): pages, artboards, shapes, paths, text, images, symbols with overrides, shared styles, swatches, library components, export formats. Exports validate against the published file-format schema; imports checked against real saved files and their previews
 - ⬜ SVG: angular gradients, line-end markers and shadow spread are approximated or dropped; SVG text import needs fonts
-- ⬜ Design files: multi-style text runs, blurs, noise fills (prototyping links, hotspots and start points round-trip since Milestone 8)
+- ⬜ Design files: blurs, noise fills (prototyping links, hotspots and start points round-trip since Milestone 8)
 
 ## Milestone 8 — Prototyping & platform
 - ✅ Prototyping: links on any layer (W, or pick in the inspector) to an artboard or Back, with slide animations; hotspots (H); flow start points; links drawn on the canvas (⌃P shows all); fix position when scrolling

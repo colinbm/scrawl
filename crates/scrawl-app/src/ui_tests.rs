@@ -1215,3 +1215,61 @@ fn blend_mode_combo_works_inside_the_paint_popover() {
     h.run();
     assert_eq!(h.state().front().page().find(card).unwrap().style.fills[0].blend_mode, scrawl_core::BlendMode::Multiply);
 }
+
+fn text_layer(h: &Harness<'_, Workspace>, id: LayerId) -> scrawl_core::TextLayer {
+    match &h.state().front().page().find(id).unwrap().kind {
+        scrawl_core::LayerKind::Text(t) => t.clone(),
+        _ => panic!("not text"),
+    }
+}
+
+#[test]
+fn rich_text_styles_part_of_a_layer() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let id = select(&mut h, "Body");
+    let width_before = h.state().front().page().find(id).unwrap().frame;
+    h.key_press(egui::Key::Enter);
+    h.run();
+    // Put the caret at the start and select the first word ("Scrawl").
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowUp);
+    h.key_press_modifiers(egui::Modifiers::ALT | egui::Modifiers::SHIFT, egui::Key::ArrowRight);
+    h.run();
+    assert_eq!(crate::text_edit::selected_range(h.state().front()), Some(0..6));
+    assert!(h.query_by_label("Styling 6 selected characters").is_some());
+    // ⌘B bolds just that word.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    h.run();
+    let t = text_layer(&h, id);
+    assert_eq!(t.runs.len(), 1);
+    assert_eq!((t.runs[0].start, t.runs[0].end, t.runs[0].style.font_weight), (0, 6, Some(700)));
+    assert_eq!(t.style.font_weight, 400, "the rest stays regular");
+    // ⌘B again unbolds it, leaving no runs.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    h.run();
+    assert!(text_layer(&h, id).runs.is_empty());
+    // A bigger size from the inspector applies to the selection and grows the layer.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    if let Some(scrawl_core::LayerKind::Text(t)) = h.state_mut().front_mut().page_mut().find_mut(id).map(|l| &mut l.kind) {
+        t.set_run_style(0..6, |s| {
+            s.font_size = Some(30.0);
+            s.color = Some(scrawl_core::Color::rgba(1.0, 0.0, 0.0, 1.0));
+        });
+    }
+    h.run();
+    assert!(h.state().front().page().find(id).unwrap().frame.height > width_before.height, "a taller first line");
+    // Typing at the end of the word continues its style.
+    h.key_press(egui::Key::ArrowRight);
+    h.event(egui::Event::Text("!".into()));
+    h.run();
+    let t = text_layer(&h, id);
+    assert!(t.text.starts_with("Scrawl! "), "{}", t.text);
+    assert_eq!((t.runs[0].start, t.runs[0].end), (0, 7));
+    save(&mut h, "rich_text");
+    // The selection geometry follows the big run: selecting it spans more than one line's height.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(text_layer(&h, id).runs.is_empty(), "the whole session was one undo step");
+}

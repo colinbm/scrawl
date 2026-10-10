@@ -9,14 +9,17 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use kurbo::{Affine, BezPath, Rect, Shape};
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, FontStyle, FontWeight, LayoutContext, LineHeight,
-    PositionedLayoutItem, StyleProperty, StyleSet,
+    PositionedLayoutItem, StyleProperty,
 };
 use scrawl_core::{Layer, LayerKind, TextAlign, TextLayer, TextSizing, TextStyle, VerticalAlign};
 
 pub use parley;
 
-/// Layouts don't carry brushes; text is painted with the layer's fills.
-pub type Layout = parley::Layout<()>;
+/// A glyph run's own color, from a style run; `None` paints with the layer's fills.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RunBrush(pub Option<scrawl_core::Color>);
+
+pub type Layout = parley::Layout<RunBrush>;
 
 /// The font stack used when a layer names no family, or as a fallback after it.
 const FALLBACK_FAMILIES: &str = "system-ui, sans-serif";
@@ -28,7 +31,7 @@ pub struct TextEngine {
     /// A layer laid out without its case transform, because it's being edited.
     pub raw_case: Option<scrawl_core::LayerId>,
     pub font_cx: FontContext,
-    pub layout_cx: LayoutContext<()>,
+    pub layout_cx: LayoutContext<RunBrush>,
     cache: HashMap<u64, Layout>,
     families: Option<Vec<String>>,
 }
@@ -50,7 +53,7 @@ pub fn family_source(style: &TextStyle) -> String {
 
 /// The parley style properties for a text style (excluding alignment, which is applied after
 /// line breaking).
-pub fn style_properties(style: &TextStyle) -> Vec<StyleProperty<'static, ()>> {
+pub fn style_properties(style: &TextStyle) -> Vec<StyleProperty<'static, RunBrush>> {
     let mut props = vec![
         StyleProperty::FontFamily(FontFamily::Source(family_source(style).into())),
         StyleProperty::FontSize(style.font_size as f32),
@@ -83,12 +86,6 @@ pub fn wrap_width(text: &TextLayer, frame_width: f64) -> Option<f32> {
     }
 }
 
-/// Fills a parley [`StyleSet`] (as used by the editor) for a text style.
-pub fn fill_style_set(set: &mut StyleSet<()>, style: &TextStyle) {
-    for p in style_properties(style) {
-        set.insert(p);
-    }
-}
 
 impl TextEngine {
     pub fn new() -> Self {
@@ -107,7 +104,7 @@ impl TextEngine {
         let key = {
             let mut h = DefaultHasher::new();
             text.text.hash(&mut h);
-            format!("{:?}", text.style).hash(&mut h);
+            format!("{:?}{:?}", text.style, text.runs).hash(&mut h);
             width.map(f32::to_bits).hash(&mut h);
             h.finish()
         };
@@ -119,6 +116,17 @@ impl TextEngine {
             let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, &display, 1.0, true);
             for p in style_properties(&text.style) {
                 builder.push_default(p);
+            }
+            // A case transform that changes byte lengths (ß → SS) would misplace the runs.
+            if display.len() == text.text.len() {
+                for run in &text.runs {
+                    let range = run.start..run.end;
+                    let styled = run.style.apply(&text.style);
+                    for p in style_properties(&styled) {
+                        builder.push(p, range.clone());
+                    }
+                    builder.push(StyleProperty::Brush(RunBrush(run.style.color)), range);
+                }
             }
             let mut layout: Layout = builder.build(&display);
             layout.break_all_lines(width);
@@ -237,11 +245,29 @@ impl TextEngine {
 
     /// The glyph outlines of a text layer in its local space, for "Convert to Outlines".
     pub fn outlines(&mut self, layer: &Layer) -> Option<BezPath> {
+        let mut all = BezPath::new();
+        for (_, p) in self.outlines_by_color(layer)? {
+            all.extend(p.elements().iter().copied());
+        }
+        Some(all)
+    }
+
+    /// Glyph outlines grouped by run color: `None` for text painted with the layer's fills.
+    pub fn outlines_by_color(&mut self, layer: &Layer) -> Option<Vec<(Option<scrawl_core::Color>, BezPath)>> {
         let (layout, dy) = self.layer_layout(layer)?;
-        let mut path = BezPath::new();
+        let mut groups: Vec<(Option<scrawl_core::Color>, BezPath)> = vec![];
         for line in layout.lines() {
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(run) = item else { continue };
+                let color = run.style().brush.0;
+                let i = match groups.iter().position(|(c, _)| *c == color) {
+                    Some(i) => i,
+                    None => {
+                        groups.push((color, BezPath::new()));
+                        groups.len() - 1
+                    }
+                };
+                let path = &mut groups[i].1;
                 let r = run.run();
                 let font = r.font();
                 let Ok(font_ref) = skrifa::FontRef::from_index(font.data.as_ref(), font.index) else { continue };
@@ -280,7 +306,10 @@ impl TextEngine {
                 }
             }
         }
-        Some(path)
+        if groups.is_empty() {
+            groups.push((None, BezPath::new()));
+        }
+        Some(groups)
     }
 }
 

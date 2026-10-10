@@ -208,8 +208,13 @@ impl Writer<'_> {
             LayerKind::Group(g) => self.children(&g.children),
             LayerKind::Symbol(s) => self.children(&s.expanded),
             LayerKind::Text(_) => {
-                if let Some(path) = self.text.outlines(l) {
-                    self.shape(l, &path, true);
+                // Text in the layer's style, then style runs with colors of their own.
+                let groups = self.text.outlines_by_color(l).unwrap_or_default();
+                for (color, path) in &groups {
+                    match color {
+                        None => self.shape(l, path, true),
+                        Some(c) => write!(self.body, r#"<path d="{}" {}/>"#, path.to_svg(), paint_attrs("fill", *c)).unwrap(),
+                    }
                 }
             }
             LayerKind::Image(img) => {
