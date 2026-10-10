@@ -22,10 +22,11 @@ pub enum Tool {
     Star,
     Text,
     Slice,
+    Hotspot,
 }
 
 impl Tool {
-    pub const INSERT: [Tool; 10] = [
+    pub const INSERT: [Tool; 11] = [
         Tool::Artboard,
         Tool::Rectangle,
         Tool::Oval,
@@ -36,6 +37,7 @@ impl Tool {
         Tool::Polygon,
         Tool::Star,
         Tool::Slice,
+        Tool::Hotspot,
     ];
 
     pub fn label(self) -> &'static str {
@@ -51,6 +53,7 @@ impl Tool {
             Tool::Star => "Star",
             Tool::Text => "Text",
             Tool::Slice => "Slice",
+            Tool::Hotspot => "Hotspot",
         }
     }
 
@@ -65,6 +68,7 @@ impl Tool {
             Tool::Pen => "P",
             Tool::Text => "T",
             Tool::Slice => "S",
+            Tool::Hotspot => "H",
             Tool::Triangle | Tool::Polygon | Tool::Star => "",
         }
     }
@@ -83,6 +87,7 @@ impl Tool {
             Tool::Star => Icon::Star,
             Tool::Text => Icon::Text,
             Tool::Slice => Icon::Slice,
+            Tool::Hotspot => Icon::Hotspot,
         }
     }
 }
@@ -277,6 +282,8 @@ pub struct CanvasState {
     feedback: Feedback,
     /// A ruler guide being dragged.
     pub guide_drag: Option<crate::rulers::GuideDrag>,
+    /// Layers whose link destination is being picked by clicking an artboard.
+    pub linking: Option<Vec<LayerId>>,
 }
 
 impl Default for CanvasState {
@@ -292,6 +299,7 @@ impl Default for CanvasState {
             snap: None,
             feedback: Feedback::default(),
             guide_drag: None,
+            linking: None,
         }
     }
 }
@@ -318,7 +326,7 @@ const HANDLE_GRAB: f32 = 7.0;
 /// Hit tolerance in screen points.
 const HIT_TOLERANCE: f64 = 4.0;
 
-pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui) {
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     app.canvas.rect = rect;
@@ -341,7 +349,9 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
     crate::rulers::interact(app, ui, rect);
     handle_navigation(app, ui, &response, rect);
     if !handle_pan(app, ui, &response) && !crate::text_edit::pointer(app, ui, &response, rect) {
-        if app.canvas.edit.is_some() {
+        if app.canvas.linking.is_some() {
+            crate::prototyping::link_pointer(app, ui, &response, rect);
+        } else if app.canvas.edit.is_some() {
             crate::vector::edit_pointer(app, ui, &response, rect);
         } else if app.tool == Tool::Pen {
             crate::vector::pen_pointer(app, ui, &response, rect);
@@ -350,9 +360,10 @@ pub fn show(app: &mut ScrawlApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         }
     }
 
-    paint_canvas(app, ui, frame, rect);
+    paint_canvas(app, ui, rect);
     let painter = ui.painter_at(rect);
     paint_overlays(app, &painter, rect);
+    crate::prototyping::paint(app, &painter, rect, response.hover_pos());
     crate::vector::paint_edit(app, &painter, rect);
     crate::vector::paint_pen(app, &painter, rect, response.hover_pos());
     crate::text_edit::paint(app, &painter, rect);
@@ -597,6 +608,11 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
                 }
                 crate::text_edit::begin(app, id, false);
             }
+            Some(Drag::Create { id, tool: Tool::Hotspot, .. }) => {
+                // A new hotspot asks where it goes.
+                app.tool = Tool::Select;
+                app.canvas.linking = Some(vec![id]);
+            }
             Some(Drag::Create { .. }) => app.tool = Tool::Select,
             _ => {}
         }
@@ -620,6 +636,9 @@ fn handle_pointer(app: &mut ScrawlApp, ui: &egui::Ui, response: &egui::Response,
                     }
                     let end = if tool == Tool::Line { origin + Vec2::new(size.x, 0.0) } else { origin + size };
                     update_create(app.page_mut(), id, tool, origin, end, parent_origin, egui::Modifiers::NONE);
+                    if tool == Tool::Hotspot {
+                        app.canvas.linking = Some(vec![id]);
+                    }
                 }
                 app.tool = Tool::Select;
             }
@@ -697,7 +716,7 @@ pub const SLICE: Color32 = Color32::from_rgb(0xE0, 0x5A, 0x9B);
 /// The color symbol masters and instances are marked with.
 pub const SYMBOL: Color32 = Color32::from_rgb(0xA0, 0x7C, 0xFF);
 
-fn title_hit(app: &ScrawlApp, screen: Pos2) -> Option<LayerId> {
+pub(crate) fn title_hit(app: &ScrawlApp, screen: Pos2) -> Option<LayerId> {
     app.canvas.title_hits.iter().rev().find(|(r, _)| r.contains(screen)).map(|&(_, id)| id)
 }
 
@@ -822,6 +841,7 @@ fn begin_create(app: &mut ScrawlApp, tool: Tool, origin: Point) -> Drag {
         Tool::Polygon => Layer::polygon(frame, 5),
         Tool::Star => Layer::star(frame),
         Tool::Slice => Layer::slice(frame),
+        Tool::Hotspot => Layer::hotspot(frame),
         Tool::Text => {
             // Dragging out a text box makes it fixed-width; a plain click switches it to auto.
             let mut l = Layer::text(origin, "");
@@ -981,7 +1001,7 @@ pub(crate) fn to_pos(p: Point) -> Pos2 {
 
 // ---- Painting -------------------------------------------------------------------------------
 
-fn canvas_background(ui: &egui::Ui) -> vello::peniko::Color {
+pub(crate) fn canvas_background(ui: &egui::Ui) -> vello::peniko::Color {
     if ui.visuals().dark_mode {
         vello::peniko::Color::new([0.118, 0.118, 0.125, 1.0])
     } else {
@@ -989,21 +1009,12 @@ fn canvas_background(ui: &egui::Ui) -> vello::peniko::Color {
     }
 }
 
-fn paint_canvas(app: &mut ScrawlApp, ui: &egui::Ui, frame: &mut eframe::Frame, rect: ERect) {
-    let Some(rs) = frame.wgpu_render_state() else {
-        app.gpu_error.get_or_insert_with(|| "wgpu is not available".into());
-        return;
-    };
-    if app.gpu.is_none() && app.gpu_error.is_none() {
-        match crate::gpu::VelloCanvas::new(rs) {
-            Ok(c) => app.gpu = Some(c),
-            Err(e) => app.gpu_error = Some(e),
-        }
-    }
-    if let Some(err) = &app.gpu_error {
+fn paint_canvas(app: &mut ScrawlApp, ui: &egui::Ui, rect: ERect) {
+    let Some(rs) = app.ensure_gpu() else {
+        let err = app.gpu_error.as_deref().unwrap_or_default();
         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, err, egui::FontId::proportional(14.0), Color32::RED);
         return;
-    }
+    };
 
     let ppp = ui.ctx().pixels_per_point();
     let (w, h) = ((rect.width() * ppp).round() as u32, (rect.height() * ppp).round() as u32);
@@ -1015,7 +1026,7 @@ fn paint_canvas(app: &mut ScrawlApp, ui: &egui::Ui, frame: &mut eframe::Frame, r
 
     let bg = canvas_background(ui);
     let gpu = app.gpu.as_mut().expect("initialized above");
-    if let Some(tex) = gpu.render(rs, &app.scene, w, h, bg) {
+    if let Some(tex) = gpu.render(&rs, crate::gpu::Slot::Canvas, &app.scene, w, h, bg) {
         let uv = ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         ui.painter().image(tex, rect, uv, Color32::WHITE);
     }
@@ -1039,6 +1050,15 @@ fn polylines(path: &BezPath, t: Affine) -> Vec<(Vec<Pos2>, bool)> {
         _ => {}
     });
     out
+}
+
+/// The points of the first polyline of `path` mapped through `t`.
+pub(crate) fn polyline_points(path: &BezPath, t: Affine) -> Vec<Pos2> {
+    let mut pts = polylines(path, t).into_iter().next().map(|(p, _)| p).unwrap_or_default();
+    if pts.len() > 1 && pts.first() == pts.last() {
+        pts.pop();
+    }
+    pts
 }
 
 /// Draws the outline of a layer's geometry (or frame, for groups).
@@ -1083,6 +1103,16 @@ fn paint_overlays(app: &mut ScrawlApp, p: &Painter, rect: ERect) {
                 (pos + vec2(14.0, 0.0), color)
             }
             None => (pos, color),
+        };
+        // Prototype start points get a play marker.
+        let (pos, color) = match &l.kind {
+            LayerKind::Artboard(a) if a.flow_home => {
+                let color = if app.selection.contains(&l.id) { ACCENT } else { crate::preview::PROTOTYPE };
+                let icon = ERect::from_min_size(pos - vec2(0.0, 11.0), vec2(11.0, 11.0));
+                crate::ui::icons::paint(p, icon, crate::ui::icons::Icon::Play, color);
+                (pos + vec2(13.0, 0.0), color)
+            }
+            _ => (pos, color),
         };
         let r = p.text(pos, egui::Align2::LEFT_BOTTOM, &l.name, egui::FontId::proportional(11.0), color);
         app.canvas.title_hits.push((r.expand(2.0), l.id));

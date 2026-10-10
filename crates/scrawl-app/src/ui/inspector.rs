@@ -37,6 +37,8 @@ const ARTBOARD_PRESETS: &[(&str, &[Preset])] = &[
 ];
 
 pub fn show(app: &mut ScrawlApp, ui: &mut Ui) {
+    // A floating scroll bar would cover the add (+) buttons at the right edge.
+    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(4.0);
         alignment_row(app, ui);
@@ -242,6 +244,26 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         grid_settings(app, ui, ab);
     }
 
+    let hotspot = matches!(layer.kind, LayerKind::Hotspot);
+    if !hotspot {
+        appearance_section(ui, layer);
+    }
+    let slice = matches!(layer.kind, LayerKind::Slice | LayerKind::Hotspot);
+    if !layer.is_artboard() && !layer.is_group() && !slice {
+        ui.checkbox(&mut layer.is_mask, "Use as mask").on_hover_text("Clips the layers above it in the same group");
+    }
+    // Instances take their look from the master; overrides cover the rest.
+    if !layer.is_artboard() && !layer.is_group() && !layer.is_symbol_instance() && !slice {
+        shared_style_row(app, ui, layer);
+        style_sections(app, ui, layer);
+    }
+    if !matches!(layer.kind, LayerKind::Hotspot) {
+        export_section(app, ui, layer);
+    }
+    prototype_section(app, ui, layer);
+}
+
+fn appearance_section(ui: &mut Ui, layer: &mut Layer) {
     section(ui, "Appearance");
     ui.horizontal(|ui| {
         let mut pct = layer.opacity * 100.0;
@@ -254,16 +276,74 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         ui.label("Blending");
         crate::ui::paint::blend_combo(ui, "layer_blend", &mut layer.blend_mode);
     });
-    let slice = matches!(layer.kind, LayerKind::Slice);
-    if !layer.is_artboard() && !layer.is_group() && !slice {
-        ui.checkbox(&mut layer.is_mask, "Use as mask").on_hover_text("Clips the layers above it in the same group");
+}
+
+/// A layer's link (destination and animation) and whether it stays put when scrolling; for an
+/// artboard, whether it's a start point.
+fn prototype_section(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
+    use scrawl_core::prototype::{self, Animation, Destination, FlowLink};
+    let page = app.page();
+    if let LayerKind::Artboard(ab) = &mut layer.kind {
+        if ab.symbol_id.is_some() {
+            return;
+        }
+        section(ui, "Prototyping");
+        ui.checkbox(&mut ab.flow_home, "Start point").on_hover_text("Previews of this flow start here");
+        let incoming = crate::prototyping::incoming(page, layer.id);
+        if incoming > 0 {
+            ui.weak(format!("{incoming} link{} lead here", if incoming == 1 { "" } else { "s" }));
+        }
+        if ui.button("Preview").on_hover_text("⌘P").clicked() {
+            app.preview = Some(crate::preview::Preview::new(app.page, layer.id));
+        }
+        return;
     }
-    // Instances take their look from the master; overrides cover the rest.
-    if !layer.is_artboard() && !layer.is_group() && !layer.is_symbol_instance() && !slice {
-        shared_style_row(app, ui, layer);
-        style_sections(app, ui, layer);
+    let own = prototype::artboard_of(page, layer.id);
+    let targets: Vec<(scrawl_core::LayerId, String)> =
+        prototype::artboards(page).into_iter().filter(|a| Some(a.id) != own).map(|a| (a.id, a.name.clone())).collect();
+    let parent_is_artboard = page.parent(layer.id).flatten().and_then(|p| page.find(p)).is_some_and(|p| p.is_artboard());
+    section(ui, "Prototyping");
+    let name_of = |d: Option<Destination>| match d {
+        None => "None".to_owned(),
+        Some(Destination::Back) => "Back".to_owned(),
+        Some(Destination::Artboard(id)) => {
+            page.find(id).map_or_else(|| "Missing artboard".to_owned(), |l| l.name.clone())
+        }
+    };
+    let mut dest = layer.flow.map(|f| f.destination);
+    let current = name_of(dest);
+    let mut pick = false;
+    ui.horizontal(|ui| {
+        ui.label("Link");
+        egui::ComboBox::from_id_salt("link_destination").selected_text(current).width(140.0).show_ui(ui, |ui| {
+            ui.selectable_value(&mut dest, None, "None");
+            ui.selectable_value(&mut dest, Some(Destination::Back), "Back");
+            ui.separator();
+            for (id, name) in &targets {
+                ui.selectable_value(&mut dest, Some(Destination::Artboard(*id)), name);
+            }
+        });
+        pick = icons::small_button(ui, Icon::Link, "Pick on canvas (W)").clicked();
+    });
+    if pick {
+        app.canvas.linking = Some(vec![layer.id]);
     }
-    export_section(app, ui, layer);
+    if dest != layer.flow.map(|f| f.destination) {
+        layer.flow = dest.map(|destination| FlowLink { destination, animation: layer.flow.map(|f| f.animation).unwrap_or_default() });
+    }
+    if let Some(link) = &mut layer.flow {
+        ui.horizontal(|ui| {
+            ui.label("Animation");
+            egui::ComboBox::from_id_salt("link_animation").selected_text(link.animation.label()).width(140.0).show_ui(ui, |ui| {
+                for a in Animation::ALL {
+                    ui.selectable_value(&mut link.animation, a, a.label());
+                }
+            });
+        });
+    }
+    if parent_is_artboard {
+        ui.checkbox(&mut layer.fixed_to_viewport, "Fix position when scrolling");
+    }
 }
 
 /// Picks the shared layer or text style a layer follows, and offers to update or reset it when

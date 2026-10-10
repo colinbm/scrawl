@@ -10,7 +10,7 @@
 //! - Shape groups (live boolean operations) are flattened into a single path on import; paths
 //!   with several subpaths are written as shape groups.
 //! - Library components keep their library's name, but not its file, which Sketch doesn't store.
-//! - Things Scrawl doesn't model (blurs, noise fills, prototyping, layouts) are dropped on import
+//! - Things Scrawl doesn't model (blurs, noise fills, layouts, prototype viewports) are dropped on import
 //!   and written with neutral defaults.
 
 use std::collections::HashMap;
@@ -24,6 +24,7 @@ use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 use crate::constraints::Resizing;
 use crate::exportable::{ExportFormat, FileFormat};
 use crate::library::{Foreign, LibraryId, LibraryRef};
+use crate::prototype::{Animation, Destination, FlowLink};
 use crate::text::{TextAlign, TextLayer, TextSizing, TextStyle, TextTransform, VerticalAlign, WEIGHT_NAMES};
 use crate::{
     Artboard, BlendMode, Border, BorderOptions, BorderPosition, Color, CurvePoint, Document, Fill, FillRule, FillType, Frame, Gradient,
@@ -419,6 +420,7 @@ impl Importer {
                 clip_content: true,
                 resizes_content: flag(v, "resizesContent"),
                 symbol_id: (class == "symbolMaster").then(|| SymbolId(uuid_of(text(v, "symbolID")))),
+                flow_home: flag(v, "isFlowHome"),
                 ..Artboard::new()
             }),
             "group" => LayerKind::Group(Group { children: self.children(v, entry), stack: None }),
@@ -470,6 +472,7 @@ impl Importer {
                 expanded: vec![],
             }),
             "slice" => LayerKind::Slice,
+            "MSImmutableHotspotLayer" => LayerKind::Hotspot,
             _ => return None,
         };
         Some(self.common(v, frame, kind, entry))
@@ -492,6 +495,8 @@ impl Importer {
         l.style = self.style(style, entry);
         let shared = text(v, "sharedStyleID");
         l.shared_style = (!shared.is_empty()).then(|| StyleId(uuid_of(shared)));
+        l.flow = v.get("flow").and_then(flow_in);
+        l.fixed_to_viewport = flag(v, "isFixedToViewport");
         l.exports = list(&v["exportOptions"], "exportFormats")
             .iter()
             .map(|e| ExportFormat {
@@ -949,7 +954,7 @@ impl Exporter {
             "booleanOperation": -1,
             "exportOptions": export_options(&l.exports),
             "frame": rect(&l.frame),
-            "isFixedToViewport": false,
+            "isFixedToViewport": l.fixed_to_viewport,
             "isFlippedHorizontal": l.flip_horizontal,
             "isFlippedVertical": l.flip_vertical,
             "isLocked": l.locked,
@@ -969,6 +974,9 @@ impl Exporter {
         if let Some(s) = l.shared_style {
             v["sharedStyleID"] = json!(id_str(s.0));
         }
+        if let Some(link) = &l.flow {
+            v["flow"] = flow_out(link);
+        }
         let shape = |v: &mut Value, class: &str, sub: &Subpath| {
             v["_class"] = json!(class);
             v["edited"] = json!(class == "shapePath");
@@ -986,7 +994,7 @@ impl Exporter {
                 v["hasClickThrough"] = json!(false);
                 v["horizontalRulerData"] = ruler();
                 v["verticalRulerData"] = ruler();
-                v["isFlowHome"] = json!(false);
+                v["isFlowHome"] = json!(a.flow_home);
                 v["resizesContent"] = json!(a.resizes_content);
                 v["groupLayout"] = json!({ "_class": "MSImmutableFreeformGroupLayout" });
                 if let Some(s) = a.symbol_id {
@@ -1126,9 +1134,40 @@ impl Exporter {
                 v["hasBackgroundColor"] = json!(false);
                 v["backgroundColor"] = color_out(Color::WHITE, None);
             }
+            LayerKind::Hotspot => v["_class"] = json!("MSImmutableHotspotLayer"),
         }
         v
     }
+}
+
+/// Sketch's `AnimationType`: -1 none, then slide from left, right, bottom, top.
+const ANIMATIONS: [(i64, Animation); 5] = [
+    (-1, Animation::None),
+    (0, Animation::SlideFromLeft),
+    (1, Animation::SlideFromRight),
+    (2, Animation::SlideFromBottom),
+    (3, Animation::SlideFromTop),
+];
+
+fn flow_in(v: &Value) -> Option<FlowLink> {
+    let dest = text(v, "destinationArtboardID");
+    let destination = match dest {
+        "" => return None,
+        "back" => Destination::Back,
+        id => Destination::Artboard(LayerId(uuid_of(id))),
+    };
+    let code = v.get("animationType").map_or(1, |_| int(v, "animationType"));
+    let animation = ANIMATIONS.iter().find(|(c, _)| *c == code).map_or(Animation::default(), |&(_, a)| a);
+    Some(FlowLink { destination, animation })
+}
+
+fn flow_out(link: &FlowLink) -> Value {
+    let dest = match link.destination {
+        Destination::Back => "back".to_owned(),
+        Destination::Artboard(id) => id_str(id.0),
+    };
+    let code = ANIMATIONS.iter().find(|(_, a)| *a == link.animation).map_or(1, |&(c, _)| c);
+    json!({ "_class": "MSImmutableFlowConnection", "destinationArtboardID": dest, "animationType": code, "maintainScrollPosition": false })
 }
 
 fn override_out(o: &Override) -> Value {
@@ -1184,6 +1223,10 @@ mod tests {
                 assert_eq!(x.style.borders, y.style.borders, "{}", x.name);
                 assert_eq!(x.style.shadows, y.style.shadows, "{}", x.name);
                 assert_eq!(x.shared_style, y.shared_style);
+                assert_eq!((x.flow, x.fixed_to_viewport), (y.flow, y.fixed_to_viewport), "{}", x.name);
+                if let (LayerKind::Artboard(p), LayerKind::Artboard(q)) = (&x.kind, &y.kind) {
+                    assert_eq!(p.flow_home, q.flow_home);
+                }
                 if let (LayerKind::Text(p), LayerKind::Text(q)) = (&x.kind, &y.kind) {
                     assert_eq!(p, q);
                 }

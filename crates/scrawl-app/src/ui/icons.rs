@@ -40,6 +40,9 @@ pub enum Icon {
     Symbol,
     Image,
     Slice,
+    Hotspot,
+    Link,
+    Play,
 }
 
 /// Paints `icon` centered in `rect`.
@@ -223,6 +226,23 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.extend(egui::Shape::dashed_line(&pts, Stroke::new(st.width * 0.8, color), 2.0 * u, 1.5 * u));
             p.line_segment([at(-3.5, 3.5), at(3.5, -3.5)], st);
         }
+        Icon::Hotspot => {
+            // A dashed area with a pointer clicking in it.
+            let pts = [at(-6.5, -6.5), at(4.0, -6.5), at(4.0, 2.0), at(-6.5, 2.0), at(-6.5, -6.5)];
+            p.extend(egui::Shape::dashed_line(&pts, Stroke::new(st.width * 0.8, color), 2.0 * u, 1.5 * u));
+            let arrow = vec![at(0.0, -2.0), at(0.0, 7.0), at(2.2, 4.8), at(4.0, 7.5), at(5.4, 6.8), at(3.6, 4.2), at(6.5, 4.0)];
+            p.add(egui::Shape::convex_polygon(arrow, color, Stroke::new(1.0, ui_bg(p))));
+        }
+        Icon::Link => {
+            // Two chain links.
+            let a = r(-7.0, -3.0, 1.0, 3.0);
+            let b = r(-1.0, -3.0, 7.0, 3.0);
+            p.rect_stroke(a, 3.0 * u, st, StrokeKind::Middle);
+            p.rect_stroke(b, 3.0 * u, st, StrokeKind::Middle);
+        }
+        Icon::Play => {
+            p.add(egui::Shape::convex_polygon(vec![at(-4.0, -6.0), at(6.0, 0.0), at(-4.0, 6.0)], color, Stroke::NONE));
+        }
         Icon::Image => {
             // A framed landscape: mountains and a sun.
             p.rect_stroke(r(-6.5, -5.5, 6.5, 5.5), 1.0, st, StrokeKind::Middle);
@@ -280,6 +300,7 @@ pub fn for_layer(kind: &scrawl_core::LayerKind) -> Icon {
         K::Symbol(_) => Icon::Symbol,
         K::Image(_) => Icon::Image,
         K::Slice => Icon::Slice,
+        K::Hotspot => Icon::Hotspot,
         K::Group(_) => Icon::Group,
         K::Rectangle(_) => Icon::Rectangle,
         K::Oval => Icon::Oval,

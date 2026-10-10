@@ -61,12 +61,22 @@ pub struct Layer {
     /// from the shared one until updated or reset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_style: Option<crate::components::StyleId>,
+    /// Prototyping link followed when the layer is clicked in the preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<crate::prototype::FlowLink>,
+    /// Stays put when the artboard scrolls in the preview (direct children of artboards).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fixed_to_viewport: bool,
     #[serde(flatten)]
     pub kind: LayerKind,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 fn default_opacity() -> f64 {
@@ -90,6 +100,8 @@ pub enum LayerKind {
     Image(ImageLayer),
     /// An invisible region to export.
     Slice,
+    /// An invisible area that follows its link when clicked in the preview.
+    Hotspot,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -121,6 +133,9 @@ pub struct Artboard {
     /// Makes this artboard a symbol master: its children are what instances show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol_id: Option<crate::symbols::SymbolId>,
+    /// A prototype's start point.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flow_home: bool,
 }
 
 impl Artboard {
@@ -134,6 +149,7 @@ impl Artboard {
             grid: Default::default(),
             layout: Default::default(),
             symbol_id: None,
+            flow_home: false,
         }
     }
 }
@@ -209,6 +225,7 @@ impl LayerKind {
             Self::Symbol(_) => "Symbol",
             Self::Image(_) => "Image",
             Self::Slice => "Slice",
+            Self::Hotspot => "Hotspot",
         }
     }
 }
@@ -231,6 +248,8 @@ impl Layer {
             style: Style::default(),
             exports: vec![],
             shared_style: None,
+            flow: None,
+            fixed_to_viewport: false,
             kind,
         }
     }
@@ -297,6 +316,11 @@ impl Layer {
         let mut l = Self::new("Slice", frame, LayerKind::Slice);
         l.exports = vec![crate::exportable::ExportFormat::default()];
         l
+    }
+
+    /// A hotspot: an invisible link area, linked by the caller.
+    pub fn hotspot(frame: Frame) -> Self {
+        Self::new("Hotspot", frame, LayerKind::Hotspot)
     }
 
     /// An image layer showing asset `image` at `frame`.
@@ -391,7 +415,9 @@ impl Layer {
             }
             LayerKind::Path(p) => Some(p.to_bez_path(r.width(), r.height())),
             // A text layer's or symbol instance's geometry, for selection and bounds, is its frame.
-            LayerKind::Text(_) | LayerKind::Symbol(_) | LayerKind::Image(_) | LayerKind::Slice => Some(r.to_path(PATH_TOLERANCE)),
+            LayerKind::Text(_) | LayerKind::Symbol(_) | LayerKind::Image(_) | LayerKind::Slice | LayerKind::Hotspot => {
+                Some(r.to_path(PATH_TOLERANCE))
+            }
         }
     }
 
@@ -501,7 +527,8 @@ impl Layer {
             | LayerKind::Text(_)
             | LayerKind::Symbol(_)
             | LayerKind::Image(_)
-            | LayerKind::Slice => None,
+            | LayerKind::Slice
+            | LayerKind::Hotspot => None,
             _ => Some(PathShape::from_bez_path(&self.local_path()?)),
         }
     }

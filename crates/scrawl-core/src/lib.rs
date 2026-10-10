@@ -20,6 +20,7 @@ pub mod layer;
 pub mod library;
 pub mod ops;
 pub mod path;
+pub mod prototype;
 pub mod sample;
 pub mod sketch;
 pub mod snap;

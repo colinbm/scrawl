@@ -205,6 +205,7 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                 }
             });
         });
+        ui.menu_button("Prototype", |ui| prototype_menu(app, ui));
         ui.menu_button("Help", |ui| {
             if item(ui, "Open Sample Document", None, true) {
                 app.open_sample();
@@ -234,6 +235,41 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
                 .on_hover_text("Hold ⌃ while dragging to snap temporarily off");
         });
     });
+}
+
+fn prototype_menu(app: &mut ScrawlApp, ui: &mut Ui) {
+    let has_sel = !app.selection.is_empty();
+    if item(ui, "Preview", Some(shortcuts::PREVIEW), true) {
+        crate::preview::open(app);
+    }
+    ui.separator();
+    if key_item(ui, "Add Link…", "W") {
+        crate::prototyping::start_linking(app);
+    }
+    let sel = app.selection.clone();
+    if item(ui, "Link Back", None, has_sel) {
+        crate::prototyping::set_links(app, &sel, Some(scrawl_core::prototype::Destination::Back));
+    }
+    if item(ui, "Remove Link", None, has_sel) {
+        crate::prototyping::set_links(app, &sel, None);
+    }
+    if key_item(ui, "Hotspot", "H") {
+        app.tool = Tool::Hotspot;
+    }
+    ui.separator();
+    let artboard = match app.selection[..] {
+        [id] => app.page().find(id).filter(|l| l.is_artboard() && l.master_of().is_none()).map(|l| l.id),
+        _ => None,
+    };
+    let is_start = artboard.and_then(|id| app.page().find(id)).is_some_and(|l| matches!(&l.kind, scrawl_core::LayerKind::Artboard(a) if a.flow_home));
+    let label = if is_start { "Remove Start Point" } else { "Use Artboard as Start Point" };
+    if item(ui, label, None, artboard.is_some())
+        && let Some(id) = artboard
+        && let Some(scrawl_core::LayerKind::Artboard(a)) = app.page_mut().find_mut(id).map(|l| &mut l.kind)
+    {
+        a.flow_home = !is_start;
+    }
+    ui.add(egui::Checkbox::new(&mut app.show_links, "Show All Links")).on_hover_text("⌃P");
 }
 
 pub const ALIGNMENTS: [(Icon, &str, Align); 6] = [
@@ -282,6 +318,15 @@ pub fn toolbar(app: &mut ScrawlApp, ui: &mut Ui) {
         });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let tip = format!("Preview ({})", ui.ctx().format_shortcut(&shortcuts::PREVIEW));
+            if icons::button(ui, Icon::Play, app.preview.is_some(), &tip).clicked() {
+                if app.preview.is_some() {
+                    app.preview = None;
+                } else {
+                    crate::preview::open(app);
+                }
+            }
+            ui.separator();
             if icons::button(ui, Icon::Plus, false, "Zoom In").clicked() {
                 app.step_zoom(true);
             }

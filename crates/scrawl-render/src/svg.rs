@@ -150,7 +150,7 @@ impl Writer<'_> {
     }
 
     fn layer(&mut self, l: &Layer) {
-        if !l.visible || l.opacity <= 0.0 || matches!(l.kind, LayerKind::Slice) {
+        if !l.visible || l.opacity <= 0.0 || matches!(l.kind, LayerKind::Slice | LayerKind::Hotspot) {
             return;
         }
         write!(self.body, r#"<g transform="{}""#, matrix(l.local_transform())).unwrap();
@@ -192,7 +192,7 @@ impl Writer<'_> {
                 over.style.shadows.clear();
                 self.shape(&over, &outline, false);
             }
-            LayerKind::Slice => {}
+            LayerKind::Slice | LayerKind::Hotspot => {}
             _ => {
                 if let Some(path) = l.local_path() {
                     self.shape(l, &path, false);

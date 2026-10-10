@@ -71,10 +71,12 @@
 - ✅ Copy as SVG / CSS; import images and SVG files by drag-and-drop, Insert › Image… (⇧⌘K) or pasting SVG markup
 - ✅ Design-file import (File › Open) and export (File › Save as…): pages, artboards, shapes, paths, text, images, symbols with overrides, shared styles, swatches, library components, export formats. Exports validate against the published file-format schema; imports checked against real saved files and their previews
 - ⬜ SVG: angular gradients, line-end markers and shadow spread are approximated or dropped; SVG text import needs fonts
-- ⬜ Design files: multi-style text runs, live boolean shape groups (flattened on import), blurs, noise fills, prototyping links
+- ⬜ Design files: multi-style text runs, live boolean shape groups (flattened on import), blurs, noise fills (prototyping links, hotspots and start points round-trip since Milestone 8)
 
 ## Milestone 8 — Prototyping & platform
-- ⬜ Prototype links, hotspots, flows, animations, preview window
+- ✅ Prototyping: links on any layer (W, or pick in the inspector) to an artboard or Back, with slide animations; hotspots (H); flow start points; links drawn on the canvas (⌃P shows all); fix position when scrolling
+- ✅ Preview window (⌘P): follows links with slide transitions, Back and Restart, artboard picker, scrolling for tall artboards, hotspot flash on missed clicks
+- ⬜ Prototyping: overlays, fixed headers inside groups, more animations (dissolve, push), device frames, flows across pages
 - ⬜ Native menus (muda), multi-window documents, recent files, autosave/versions
 - ⬜ Plugins/scripting (likely WASM or JS)
 - ⬜ Collaboration (CRDT doc model) — out of scope until the model stabilises

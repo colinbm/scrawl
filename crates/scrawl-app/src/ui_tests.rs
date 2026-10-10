@@ -757,3 +757,114 @@ fn opening_a_sketch_file_imports_it() {
     save(&mut h, "sketch_import");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn hotspots_link_to_the_artboard_clicked_next() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let buttons = layer_named(&h, "Buttons").id;
+    h.key_press(egui::Key::H);
+    h.run();
+    drag_page(&mut h, (300.0, 700.0), (380.0, 760.0), egui::Modifiers::NONE, true);
+    h.run();
+    let [hotspot] = h.state().selection[..] else { panic!("hotspot selected") };
+    assert_eq!(h.state().page().find(hotspot).unwrap().kind.type_name(), "Hotspot");
+    assert!(h.state().canvas.linking.is_some(), "drawing a hotspot asks for its destination");
+    save(&mut h, "hotspot_linking");
+    let pos = page_to_screen(&h, 600.0, 150.0);
+    click_at(&mut h, pos);
+    assert!(h.query_by_label("Linked to Buttons").is_some());
+    h.state_mut().notice = None;
+    h.run();
+    let app = h.state();
+    assert!(app.canvas.linking.is_none());
+    let link = app.page().find(hotspot).unwrap().flow.expect("linked");
+    assert_eq!(link.destination, scrawl_core::prototype::Destination::Artboard(buttons));
+    assert!(h.query_by_label("PROTOTYPING").is_some());
+
+    // W on another layer, then a click on empty canvas, cancels without linking.
+    let star = select(&mut h, "Star");
+    h.key_press(egui::Key::W);
+    h.run();
+    assert!(h.state().canvas.linking.is_some());
+    click_page(&mut h, 450.0, 600.0);
+    h.run();
+    assert!(h.state().canvas.linking.is_none());
+    assert!(h.state().page().find(star).unwrap().flow.is_none());
+    // The inspector sets links too.
+    h.get_by_value("None").click();
+    h.run();
+    h.get_all_by_label("Back").last().expect("Back option").click();
+    h.run();
+    assert_eq!(h.state().page().find(star).unwrap().flow, Some(scrawl_core::prototype::FlowLink::back()));
+}
+
+/// The screen position of artboard point (x, y) in the preview.
+fn preview_pos(h: &Harness<'_, ScrawlApp>, x: f32, y: f32) -> egui::Pos2 {
+    let (area, scale) = h.state().preview.as_ref().and_then(|p| p.view).expect("preview shown");
+    area.min + egui::vec2(x, y) * scale as f32
+}
+
+fn click_at(h: &mut Harness<'_, ScrawlApp>, pos: egui::Pos2) {
+    h.event(egui::Event::PointerMoved(pos));
+    h.step();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        h.step();
+    }
+}
+
+#[test]
+fn preview_follows_links_and_goes_back() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let (phone, buttons) = (layer_named(&h, "iPhone 16").id, layer_named(&h, "Buttons").id);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+    h.run_steps(3);
+    let current = |h: &Harness<'_, ScrawlApp>| h.state().preview.as_ref().map(|p| p.player.current);
+    assert_eq!(current(&h), Some(phone), "starts at the flow's start point");
+
+    // The card links to the Buttons artboard, sliding in from the right.
+    let card = preview_pos(&h, 200.0, 300.0);
+    click_at(&mut h, card);
+    assert_eq!(current(&h), Some(buttons));
+    assert!(h.state().preview.as_ref().unwrap().player.transition.is_some());
+    save(&mut h, "preview_transition");
+    h.run_steps(40);
+    assert!(h.state().preview.as_ref().unwrap().player.transition.is_none());
+    save(&mut h, "preview_buttons");
+
+    // The Back hotspot along the top returns.
+    let back = preview_pos(&h, 200.0, 10.0);
+    click_at(&mut h, back);
+    h.run_steps(40);
+    assert_eq!(current(&h), Some(phone));
+
+    // A click on no link only flashes the hotspots.
+    let empty = preview_pos(&h, 200.0, 820.0);
+    click_at(&mut h, empty);
+    assert_eq!(current(&h), Some(phone));
+    h.run_steps(60);
+
+    // Deleting the artboard on show falls back to the start.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().preview.is_none(), "Escape closes the preview");
+}
+
+#[test]
+fn prototype_links_round_trip_through_files() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let dir = std::env::temp_dir().join(format!("scrawl-ui-proto-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Proto.scrawl");
+    let card = layer_named(&h, "Card");
+    h.state_mut().file_path = Some(path.clone());
+    assert!(h.state_mut().save());
+    h.state_mut().open_path(&path);
+    h.run();
+    assert_eq!(layer_named(&h, "Card").flow, card.flow);
+    assert!(layer_named(&h, "Header").fixed_to_viewport);
+    std::fs::remove_dir_all(&dir).ok();
+}

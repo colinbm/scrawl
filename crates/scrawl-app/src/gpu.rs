@@ -11,9 +11,16 @@ struct Target {
     height: u32,
 }
 
+/// Which texture to render into: each surface showing a scene has its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    Canvas = 0,
+    Preview = 1,
+}
+
 pub struct VelloCanvas {
     renderer: Renderer,
-    target: Option<Target>,
+    targets: [Option<Target>; 2],
 }
 
 impl VelloCanvas {
@@ -26,13 +33,15 @@ impl VelloCanvas {
             },
         )
         .map_err(|e| format!("failed to create Vello renderer: {e}"))?;
-        Ok(Self { renderer, target: None })
+        Ok(Self { renderer, targets: [None, None] })
     }
 
-    /// Renders `scene` at `width`×`height` physical pixels and returns the egui texture showing it.
+    /// Renders `scene` at `width`×`height` physical pixels into `slot`'s texture and returns the
+    /// egui texture showing it.
     pub fn render(
         &mut self,
         rs: &RenderState,
+        slot: Slot,
         scene: &Scene,
         width: u32,
         height: u32,
@@ -41,8 +50,8 @@ impl VelloCanvas {
         if width == 0 || height == 0 {
             return None;
         }
-        self.ensure_target(rs, width, height);
-        let target = self.target.as_ref()?;
+        self.ensure_target(rs, slot, width, height);
+        let target = self.targets[slot as usize].as_ref()?;
         let params = RenderParams { base_color: background, width, height, antialiasing_method: AaConfig::Area };
         if let Err(e) = self.renderer.render_to_texture(&rs.device, &rs.queue, scene, &target.view, &params) {
             log::error!("canvas render failed: {e}");
@@ -51,8 +60,9 @@ impl VelloCanvas {
         Some(target.id)
     }
 
-    fn ensure_target(&mut self, rs: &RenderState, width: u32, height: u32) {
-        if self.target.as_ref().is_some_and(|t| t.width == width && t.height == height) {
+    fn ensure_target(&mut self, rs: &RenderState, slot: Slot, width: u32, height: u32) {
+        let target = &mut self.targets[slot as usize];
+        if target.as_ref().is_some_and(|t| t.width == width && t.height == height) {
             return;
         }
         let texture = rs.device.create_texture(&wgpu::TextureDescriptor {
@@ -67,13 +77,13 @@ impl VelloCanvas {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut egui_renderer = rs.renderer.write();
-        let id = match self.target.take() {
+        let id = match target.take() {
             Some(old) => {
                 egui_renderer.update_egui_texture_from_wgpu_texture(&rs.device, &view, wgpu::FilterMode::Nearest, old.id);
                 old.id
             }
             None => egui_renderer.register_native_texture(&rs.device, &view, wgpu::FilterMode::Nearest),
         };
-        self.target = Some(Target { view, id, width, height });
+        *target = Some(Target { view, id, width, height });
     }
 }

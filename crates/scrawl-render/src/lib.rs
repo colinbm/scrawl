@@ -106,6 +106,12 @@ pub fn render_page(scene: &mut Scene, page: &Page, view: Affine, text: &mut Text
     render_children(scene, &page.layers, view, res);
 }
 
+/// Appends `layers` (siblings, bottom to top) to `scene`, with `view` mapping their parent's space
+/// to target pixels. Unlike [`render_page`], artboards get no drop shadow.
+pub fn render_layers(scene: &mut Scene, layers: &[Layer], view: Affine, text: &mut TextEngine, images: &ImageCache) {
+    render_children(scene, layers, view, &mut Resources { text, images });
+}
+
 /// Renders siblings bottom to top. A mask layer clips everything above it in the same parent.
 fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, res: &mut Resources<'_>) {
     let mut clips = 0;
@@ -158,8 +164,8 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
         LayerKind::Symbol(s) => render_children(scene, &s.expanded, t, res),
         LayerKind::Text(_) => render_text(scene, layer, parent, res),
         LayerKind::Image(img) => render_image(scene, layer, &img.image, parent, res.images),
-        // Slices only mark an area to export.
-        LayerKind::Slice => {}
+        // Slices only mark an area to export; hotspots an area to click in the preview.
+        LayerKind::Slice | LayerKind::Hotspot => {}
         _ => {
             if let Some(path) = layer.local_path() {
                 render_shape(scene, layer, &path, parent, res.images);

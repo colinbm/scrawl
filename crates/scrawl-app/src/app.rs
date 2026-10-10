@@ -67,6 +67,7 @@ pub mod shortcuts {
     pub const DETACH_SYMBOL: KeyboardShortcut = cmd_alt(Key::B);
     pub const PLACE_IMAGE: KeyboardShortcut = cmd_shift(Key::K);
     pub const EXPORT: KeyboardShortcut = cmd_shift(Key::E);
+    pub const PREVIEW: KeyboardShortcut = cmd(Key::P);
 
     pub fn boolean(op: BooleanOp) -> KeyboardShortcut {
         match op {
@@ -79,6 +80,8 @@ pub mod shortcuts {
 }
 
 pub struct ScrawlApp {
+    /// Distinguishes this document's windows from other documents'.
+    pub uid: u64,
     pub doc: Document,
     pub history: History,
     pub page: PageId,
@@ -88,6 +91,12 @@ pub struct ScrawlApp {
     pub canvas: CanvasState,
     pub gpu: Option<VelloCanvas>,
     pub gpu_error: Option<String>,
+    /// The wgpu device and egui renderer shared by every window.
+    pub render_state: Option<egui_wgpu::RenderState>,
+    /// The prototype preview window, when open.
+    pub preview: Option<crate::preview::Preview>,
+    /// Show every prototyping link on the canvas, not just the selection's.
+    pub show_links: bool,
     pub scene: vello::Scene,
     pub text: scrawl_text::TextEngine,
     /// Decoded image assets for the canvas.
@@ -142,7 +151,9 @@ impl ScrawlApp {
     pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
         crate::style::apply(&cc.egui_ctx);
         let doc = Document::default();
+        static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let mut app = Self {
+            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             page: doc.pages[0].id,
             history: History::new(&doc),
             saved: doc.clone(),
@@ -153,6 +164,9 @@ impl ScrawlApp {
             canvas: CanvasState::default(),
             gpu: None,
             gpu_error: None,
+            render_state: cc.wgpu_render_state.clone(),
+            preview: None,
+            show_links: false,
             scene: vello::Scene::new(),
             text: scrawl_text::TextEngine::new(),
             images: Default::default(),
@@ -180,6 +194,22 @@ impl ScrawlApp {
             app.open_path(&path);
         }
         app
+    }
+
+    /// The render state, creating the Vello renderer on first use. `None` (with `gpu_error` set)
+    /// if there's no GPU.
+    pub fn ensure_gpu(&mut self) -> Option<egui_wgpu::RenderState> {
+        let Some(rs) = self.render_state.clone() else {
+            self.gpu_error.get_or_insert_with(|| "wgpu is not available".into());
+            return None;
+        };
+        if self.gpu.is_none() && self.gpu_error.is_none() {
+            match VelloCanvas::new(&rs) {
+                Ok(c) => self.gpu = Some(c),
+                Err(e) => self.gpu_error = Some(e),
+            }
+        }
+        self.gpu.is_some().then_some(rs)
     }
 
     pub fn page(&self) -> &Page {
@@ -224,6 +254,7 @@ impl ScrawlApp {
         self.viewports.clear();
         self.expanded.clear();
         self.renaming = None;
+        self.preview = None;
         self.reset_modes();
         self.fit_pending = true;
         self.reload_libraries();
@@ -370,6 +401,7 @@ impl ScrawlApp {
         self.canvas.edit = None;
         self.canvas.pen = None;
         self.canvas.text_edit = None;
+        self.canvas.linking = None;
         self.text.raw_case = None;
     }
 
@@ -957,6 +989,9 @@ impl ScrawlApp {
         if pressed(PLACE_IMAGE) {
             crate::import::choose_images(self);
         }
+        if pressed(PREVIEW) {
+            crate::preview::open(self);
+        }
         if pressed(EXPORT) {
             let sel = self.selection.clone();
             self.export_layers(&sel);
@@ -1014,6 +1049,7 @@ impl ScrawlApp {
                     Key::R => self.show_rulers ^= true,
                     Key::G => self.show_grid ^= true,
                     Key::L => self.show_layout ^= true,
+                    Key::P => self.show_links ^= true,
                     _ => {}
                 }
             }
@@ -1039,6 +1075,12 @@ impl ScrawlApp {
             }
             return;
         }
+        if self.canvas.linking.is_some() {
+            if keys.contains(&Key::Escape) {
+                self.canvas.linking = None;
+            }
+            return;
+        }
         if crate::vector::pen_active(self) {
             if keys.iter().any(|k| matches!(k, Key::Escape | Key::Enter)) {
                 crate::vector::finish_pen(self, false);
@@ -1055,6 +1097,8 @@ impl ScrawlApp {
                 Key::P => self.tool = Tool::Pen,
                 Key::T => self.tool = Tool::Text,
                 Key::S => self.tool = Tool::Slice,
+                Key::H => self.tool = Tool::Hotspot,
+                Key::W => crate::prototyping::start_linking(self),
                 Key::Enter => {
                     if let [id] = self.selection[..] {
                         self.enter_vector_edit(id);
@@ -1094,6 +1138,12 @@ impl ScrawlApp {
             && (self.selection != [edit.id] || self.tool != Tool::Select)
         {
             self.canvas.edit = None;
+        }
+        // Picking a link destination ends with another tool, or if its layers went away.
+        if let Some(sources) = &self.canvas.linking
+            && (self.tool != Tool::Select || sources.iter().any(|&id| !self.page().contains(id)))
+        {
+            self.canvas.linking = None;
         }
         if let Some(target) = self.gradient_edit
             && (self.selection != [target.layer] || self.page().find(target.layer).and_then(|l| target.gradient(l)).is_none())
@@ -1176,7 +1226,7 @@ impl eframe::App for ScrawlApp {
         crate::dev::DevHooks::inject(self, raw_input);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_shortcuts(&ctx);
         crate::import::handle_drops(self, &ctx);
@@ -1199,7 +1249,7 @@ impl eframe::App for ScrawlApp {
             ui::inspector::show(self, ui);
         });
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            crate::canvas::show(self, ui, frame);
+            crate::canvas::show(self, ui);
         });
 
         if let Some(msg) = self.error.clone() {
@@ -1214,6 +1264,7 @@ impl eframe::App for ScrawlApp {
         }
 
         self.show_notice(&ctx);
+        crate::preview::show(self, &ctx);
         self.end_frame(&ctx);
         crate::dev::DevHooks::on_frame(self, &ctx);
     }

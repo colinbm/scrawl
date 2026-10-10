@@ -165,8 +165,40 @@ pub fn sample_document() -> Document {
 
     add_shared_components(&mut doc);
     add_symbols(&mut doc);
+    add_prototype(&mut doc);
     crate::symbols::sync_instances(&mut doc, &mut |_| {});
     doc
+}
+
+/// A small prototype: the phone artboard is the start point, its card opens the Buttons
+/// artboard, and a hotspot there goes back. The header and its title stay put when scrolling.
+fn add_prototype(doc: &mut Document) {
+    use crate::prototype::{Animation, FlowLink};
+    let page = &mut doc.pages[0];
+    let id_of = |page: &crate::Page, name: &str| {
+        let mut found = None;
+        page.walk(|l| {
+            if l.name == name && found.is_none() {
+                found = Some(l.id);
+            }
+        });
+        found.expect("named layer")
+    };
+    let (phone, buttons, card) = (id_of(page, "iPhone 16"), id_of(page, "Buttons"), id_of(page, "Card"));
+    let fixed = [id_of(page, "Header"), id_of(page, "Good morning")];
+    if let Some(LayerKind::Artboard(a)) = page.find_mut(phone).map(|l| &mut l.kind) {
+        a.flow_home = true;
+    }
+    page.find_mut(card).expect("card").flow = Some(FlowLink::to(buttons));
+    for id in fixed {
+        page.find_mut(id).expect("fixed layer").fixed_to_viewport = true;
+    }
+    let mut back = Layer::hotspot(Frame::new(0.0, 0.0, 393.0, 24.0));
+    back.name = "Back".into();
+    back.flow = Some(FlowLink { animation: Animation::SlideFromLeft, ..FlowLink::back() });
+    if let Some(children) = page.find_mut(buttons).and_then(Layer::children_mut) {
+        children.push(back);
+    }
 }
 
 /// A master on the Symbols page.
