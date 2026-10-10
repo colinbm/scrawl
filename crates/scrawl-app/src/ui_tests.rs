@@ -707,3 +707,33 @@ fn export_formats_slices_and_files() {
     assert!(h.query_by_label("Exported 3 files").is_some());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+const LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40">
+    <rect id="Back" width="80" height="40" rx="8" fill="#7C5CFF"/>
+    <circle id="Dot" cx="20" cy="20" r="10" fill="#FFD23F"/>
+</svg>"##;
+
+#[test]
+fn svg_files_and_pasted_svg_become_layers() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let files = vec![("/tmp/Logo.svg".to_owned(), LOGO_SVG.as_bytes().to_vec())];
+    crate::import::import_files(h.state_mut(), files, scrawl_core::kurbo::Point::new(200.0, 600.0));
+    h.run();
+    let app = h.state();
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let [id] = app.selection[..] else { panic!("one group added") };
+    let logo = app.page().find(id).unwrap();
+    assert_eq!((logo.name.as_str(), logo.kind.type_name()), ("Logo", "Group"));
+    let names: Vec<_> = logo.children().unwrap().iter().map(|c| c.name.clone()).collect();
+    assert_eq!(names, ["Back", "Dot"]);
+    let b = app.page().world_bounds(id).unwrap();
+    assert!((b.center().x - 200.0).abs() < 1.0 && (b.width() - 80.0).abs() < 0.5, "{b:?}");
+    save(&mut h, "svg_import");
+
+    // Pasting SVG markup works too.
+    let before = layer_count(&h);
+    h.state_mut().paste(Some(LOGO_SVG));
+    h.run();
+    assert_eq!(layer_count(&h), before + 3);
+}

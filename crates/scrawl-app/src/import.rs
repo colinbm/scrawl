@@ -8,7 +8,21 @@ use scrawl_core::{Frame, Layer, LayerId, ops};
 use crate::app::ScrawlApp;
 
 /// File types offered by the Insert › Image… dialog.
-pub const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+pub const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
+
+/// Whether `bytes` look like an SVG document.
+pub fn is_svg(bytes: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_lowercase();
+    head.contains("<svg")
+}
+
+/// Adds an SVG file's shapes, centered on `at` (page space), inside the artboard there.
+pub fn import_svg(app: &mut ScrawlApp, name: &str, bytes: &[u8], at: Point) -> Result<LayerId, String> {
+    let mut layer = scrawl_render::svg_import::import_svg(bytes, name, &mut app.doc.assets)?;
+    let b = layer.bounds_in(scrawl_core::kurbo::Affine::IDENTITY).ok_or("the SVG is empty")?;
+    layer.frame.translate((at - b.center()).round());
+    Ok(ops::insert_drawn(app.page_mut(), layer))
+}
 
 /// The pixel size of an encoded image.
 pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
@@ -36,7 +50,8 @@ pub fn import_files(app: &mut ScrawlApp, files: Vec<(String, Vec<u8>)>, at: Poin
     for (i, (name, bytes)) in files.into_iter().enumerate() {
         let stem = Path::new(&name).file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
         let at = at + Vec2::splat(20.0 * i as f64);
-        match import_image(app, &stem, bytes, at) {
+        let result = if is_svg(&bytes) { import_svg(app, &stem, &bytes, at) } else { import_image(app, &stem, bytes, at) };
+        match result {
             Ok(id) => added.push(id),
             Err(e) => errors.push(format!("{name}: {e}")),
         }
@@ -51,7 +66,7 @@ pub fn import_files(app: &mut ScrawlApp, files: Vec<(String, Vec<u8>)>, at: Poin
 }
 
 /// The page-space point at the center of the canvas.
-fn view_center(app: &ScrawlApp) -> Point {
+pub fn view_center(app: &ScrawlApp) -> Point {
     app.viewport().to_page(app.canvas.rect, app.canvas.rect.center())
 }
 

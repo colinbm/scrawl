@@ -5,6 +5,7 @@ pub mod images;
 pub mod output;
 mod shadow;
 pub mod svg;
+pub mod svg_import;
 
 pub use images::ImageCache;
 

@@ -73,6 +73,14 @@ pub fn menu_bar(app: &mut ScrawlApp, ui: &mut Ui) {
             if item(ui, "Paste", None, true) {
                 app.paste(None);
             }
+            ui.menu_button("Copy As", |ui| {
+                if item(ui, "SVG", None, has_sel) {
+                    app.copy_as_svg(ui.ctx());
+                }
+                if item(ui, "CSS", None, has_sel) {
+                    app.copy_as_css(ui.ctx());
+                }
+            });
             if item(ui, "Duplicate", Some(shortcuts::DUPLICATE), has_sel) {
                 app.duplicate_selection();
             }

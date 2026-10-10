@@ -704,8 +704,51 @@ impl ScrawlApp {
         self.delete_selection();
     }
 
-    /// Pastes clipboard text if it holds Scrawl layers, otherwise the internal clipboard.
+    /// Puts the selection on the clipboard as an SVG document.
+    pub fn copy_as_svg(&mut self, ctx: &egui::Context) {
+        let page = self.page();
+        let layers: Vec<Layer> = ops::normalize_selection(page, &self.selection)
+            .into_iter()
+            .filter_map(|id| ops::page_space_copy(page, id))
+            .collect();
+        let pad = layers.iter().map(scrawl_core::exportable::paint_outset).fold(0.0, f64::max);
+        let Some(area) = layers.iter().filter_map(|l| l.bounds_in(scrawl_core::kurbo::Affine::IDENTITY)).reduce(|a, b| a.union(b)) else {
+            return;
+        };
+        let mut temp = Page::new("Copy");
+        temp.layers = layers;
+        let svg = scrawl_render::svg::page_svg(&temp, area.inflate(pad, pad), 1.0, &mut self.text, &self.doc.assets);
+        ctx.copy_text(svg);
+        self.notify("Copied SVG");
+    }
+
+    /// Puts CSS for the selected layers on the clipboard.
+    pub fn copy_as_css(&mut self, ctx: &egui::Context) {
+        let page = self.page();
+        let css: Vec<String> = ops::normalize_selection(page, &self.selection)
+            .into_iter()
+            .filter_map(|id| page.find(id))
+            .map(scrawl_core::css::layer_css)
+            .collect();
+        if css.is_empty() {
+            return;
+        }
+        ctx.copy_text(css.join("\n"));
+        self.notify("Copied CSS");
+    }
+
+    /// Pastes clipboard text if it holds Scrawl layers or an SVG, otherwise the internal clipboard.
     pub fn paste(&mut self, text: Option<&str>) {
+        if let Some(svg) = text.filter(|t| crate::import::is_svg(t.as_bytes()))
+            && !svg.contains(CLIPBOARD_TAG)
+        {
+            let at = crate::import::view_center(self);
+            match crate::import::import_svg(self, "SVG", svg.as_bytes(), at) {
+                Ok(id) => self.selection = vec![id],
+                Err(e) => self.error = Some(format!("Couldn't paste the SVG: {e}")),
+            }
+            return;
+        }
         let from_text = text.and_then(|t| {
             let mut v: serde_json::Value = serde_json::from_str(t).ok()?;
             serde_json::from_value::<Vec<Layer>>(v.get_mut(CLIPBOARD_TAG)?.take()).ok()
