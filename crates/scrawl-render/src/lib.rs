@@ -160,6 +160,12 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
                 scene.pop_layer();
             }
         }
+        // A shape group draws its children's combined outline in its own style.
+        LayerKind::Group(g) if g.shape => {
+            if let Some(path) = layer.combined_path() {
+                render_shape(scene, layer, &path, parent, res.images);
+            }
+        }
         LayerKind::Group(g) => render_children(scene, &g.children, t, res),
         LayerKind::Symbol(s) => render_children(scene, &s.expanded, t, res),
         LayerKind::Text(_) => render_text(scene, layer, parent, res),

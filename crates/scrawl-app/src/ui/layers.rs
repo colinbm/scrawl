@@ -228,18 +228,18 @@ fn search_bar(app: &mut ScrawlApp, ui: &mut Ui) {
 
 /// Rows for layers matching the search, with their ancestors (dimmed) for context. Returns
 /// whether anything in `layers` matched.
-fn collect_filtered(layers: &[Layer], depth: usize, filter: &LayerFilter, out: &mut Vec<Row>) -> bool {
+fn collect_filtered(layers: &[Layer], depth: usize, filter: &LayerFilter, out: &mut Vec<Row>, in_shape_group: bool) -> bool {
     let mut any = false;
     for l in layers.iter().rev() {
         let mut below = vec![];
-        let inner = l.children().is_some_and(|c| collect_filtered(c, depth + 1, filter, &mut below));
+        let inner = l.children().is_some_and(|c| collect_filtered(c, depth + 1, filter, &mut below, l.is_shape_group()));
         let hit = filter.matches(l);
         if hit || inner {
             out.push(Row {
                 id: l.id,
                 depth,
                 name: l.name.clone(),
-                icon: if l.is_mask { Icon::Mask } else { icons::for_layer(&l.kind) },
+                icon: row_icon(l, in_shape_group),
                 container: inner,
                 expanded: inner,
                 visible: l.visible,
@@ -253,7 +253,18 @@ fn collect_filtered(layers: &[Layer], depth: usize, filter: &LayerFilter, out: &
     any
 }
 
-fn collect_rows(layers: &[Layer], depth: usize, app: &ScrawlApp, out: &mut Vec<Row>) {
+/// The icon for a layer's row; shapes in a shape group show their boolean operation.
+fn row_icon(l: &Layer, in_shape_group: bool) -> Icon {
+    if l.is_mask {
+        Icon::Mask
+    } else if in_shape_group && l.boolean_op != scrawl_core::ops::BooleanOp::Union {
+        crate::ui::toolbar::boolean_icon(l.boolean_op)
+    } else {
+        icons::for_layer(&l.kind)
+    }
+}
+
+fn collect_rows(layers: &[Layer], depth: usize, app: &ScrawlApp, out: &mut Vec<Row>, in_shape_group: bool) {
     for l in layers.iter().rev() {
         let container = l.children().is_some_and(|c| !c.is_empty());
         let expanded = container && app.expanded.contains(&l.id);
@@ -261,7 +272,7 @@ fn collect_rows(layers: &[Layer], depth: usize, app: &ScrawlApp, out: &mut Vec<R
             id: l.id,
             depth,
             name: l.name.clone(),
-            icon: if l.is_mask { Icon::Mask } else { icons::for_layer(&l.kind) },
+            icon: row_icon(l, in_shape_group),
             container,
             expanded,
             visible: l.visible,
@@ -269,7 +280,7 @@ fn collect_rows(layers: &[Layer], depth: usize, app: &ScrawlApp, out: &mut Vec<R
             dim: false,
         });
         if expanded {
-            collect_rows(l.children().expect("container"), depth + 1, app, out);
+            collect_rows(l.children().expect("container"), depth + 1, app, out, l.is_shape_group());
         }
     }
 }
@@ -288,14 +299,14 @@ fn layer_tree(app: &mut ScrawlApp, ui: &mut Ui) {
     let mut rows = vec![];
     let filtering = app.layer_filter.active();
     if filtering {
-        collect_filtered(&app.page().layers, 0, &app.layer_filter, &mut rows);
+        collect_filtered(&app.page().layers, 0, &app.layer_filter, &mut rows, false);
         if rows.is_empty() {
             ui.add_space(8.0);
             ui.vertical_centered(|ui| ui.weak("No matching layers"));
             return;
         }
     } else {
-        collect_rows(&app.page().layers, 0, app, &mut rows);
+        collect_rows(&app.page().layers, 0, app, &mut rows, false);
     }
     if rows.is_empty() {
         ui.add_space(8.0);

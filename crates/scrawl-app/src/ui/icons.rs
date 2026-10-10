@@ -301,6 +301,7 @@ pub fn for_layer(kind: &scrawl_core::LayerKind) -> Icon {
         K::Image(_) => Icon::Image,
         K::Slice => Icon::Slice,
         K::Hotspot => Icon::Hotspot,
+        K::Group(g) if g.shape => Icon::Union,
         K::Group(_) => Icon::Group,
         K::Rectangle(_) => Icon::Rectangle,
         K::Oval => Icon::Oval,

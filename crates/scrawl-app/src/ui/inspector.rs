@@ -203,6 +203,12 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             });
         }
         LayerKind::Text(text) => text_section(ui, text, &mut app.text),
+        LayerKind::Group(g) if g.shape => {
+            section(ui, "Boolean");
+            if ui.button("Flatten").on_hover_text("Bake the shapes into a single path").clicked() {
+                app.pending_flatten = true;
+            }
+        }
         LayerKind::Group(g) => stack_section(ui, g),
         LayerKind::Symbol(inst) => symbol_section(app, ui, layer.id, inst),
         LayerKind::Image(img) => image_section(app, ui, &mut layer.frame, img),
@@ -244,16 +250,23 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         grid_settings(app, ui, ab);
     }
 
+    // Inside a shape group, how this shape combines with the ones below it.
+    let in_shape_group = app.page().parent(layer.id).flatten().and_then(|p| app.page().find(p)).is_some_and(Layer::is_shape_group);
+    if in_shape_group {
+        boolean_row(ui, &mut layer.boolean_op);
+    }
     let hotspot = matches!(layer.kind, LayerKind::Hotspot);
     if !hotspot {
         appearance_section(ui, layer);
     }
     let slice = matches!(layer.kind, LayerKind::Slice | LayerKind::Hotspot);
-    if !layer.is_artboard() && !layer.is_group() && !slice {
+    if !layer.is_artboard() && (!layer.is_group() || layer.is_shape_group()) && !slice {
         ui.checkbox(&mut layer.is_mask, "Use as mask").on_hover_text("Clips the layers above it in the same group");
     }
-    // Instances take their look from the master; overrides cover the rest.
-    if !layer.is_artboard() && !layer.is_group() && !layer.is_symbol_instance() && !slice {
+    // Instances take their look from the master; overrides cover the rest. Shape groups have a
+    // style of their own; plain groups don't.
+    let styled = !layer.is_group() || layer.is_shape_group();
+    if !layer.is_artboard() && styled && !layer.is_symbol_instance() && !slice {
         shared_style_row(app, ui, layer);
         style_sections(app, ui, layer);
     }
@@ -261,6 +274,17 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         export_section(app, ui, layer);
     }
     prototype_section(app, ui, layer);
+}
+
+fn boolean_row(ui: &mut Ui, op: &mut scrawl_core::ops::BooleanOp) {
+    section(ui, "Boolean");
+    ui.horizontal(|ui| {
+        for o in scrawl_core::ops::BooleanOp::ALL {
+            if icons::button(ui, crate::ui::toolbar::boolean_icon(o), *op == o, o.label()).clicked() {
+                *op = o;
+            }
+        }
+    });
 }
 
 fn appearance_section(ui: &mut Ui, layer: &mut Layer) {

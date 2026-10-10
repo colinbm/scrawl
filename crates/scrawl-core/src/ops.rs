@@ -229,8 +229,10 @@ pub fn insert_drawn(page: &mut Page, mut layer: Layer) -> LayerId {
     id
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BooleanOp {
+    #[default]
     Union,
     /// The bottom shape minus everything above it.
     Subtract,
@@ -272,10 +274,19 @@ pub(crate) fn path_boolean(a: &BezPath, b: &BezPath, op: linesweeper::BinaryOp) 
     Ok(out)
 }
 
-/// Combines closed shapes sharing a parent into a single path, applied bottom to top, as
-/// usual. The result takes the bottom shape's style and the topmost shape's place.
+/// Combines closed shapes sharing a parent into a live boolean group (a "shape group"), applied
+/// bottom to top. The shapes stay editable; the group takes the bottom shape's
+/// style. Selecting a shape group itself sets the operation of each of its shapes.
 pub fn boolean(page: &mut Page, ids: &[LayerId], op: BooleanOp) -> Result<LayerId, String> {
     let ids = normalize_selection(page, ids);
+    if let [id] = ids[..]
+        && page.find(id).is_some_and(Layer::is_shape_group)
+    {
+        if let Some(children) = page.find_mut(id).and_then(Layer::children_mut) {
+            children.iter_mut().skip(1).for_each(|c| c.boolean_op = op);
+        }
+        return Ok(id);
+    }
     if ids.len() < 2 {
         return Err("Select at least two shapes.".into());
     }
@@ -283,45 +294,33 @@ pub fn boolean(page: &mut Page, ids: &[LayerId], op: BooleanOp) -> Result<LayerI
     if ids.iter().any(|&id| page.parent(id) != Some(parent)) {
         return Err("Shapes must share the same group or artboard.".into());
     }
-    let mut members: Vec<(usize, LayerId)> =
-        ids.iter().filter_map(|&id| Some((page.location(id)?.index, id))).collect();
+    let mut members: Vec<(usize, LayerId)> = ids.iter().filter_map(|&id| Some((page.location(id)?.index, id))).collect();
     members.sort();
-    let mut paths = vec![];
     for &(_, id) in &members {
         let layer = page.find(id).ok_or("Layer not found.")?;
-        match layer.local_path() {
-            Some(_) if layer.is_text() => {
-                return Err(format!("“{}” is text; convert it to outlines first.", layer.name));
-            }
-            Some(p) if layer.is_closed() && !layer.is_artboard() => paths.push(layer.local_transform() * p),
-            _ => return Err(format!("“{}” isn't a closed shape.", layer.name)),
+        if layer.is_text() {
+            return Err(format!("“{}” is text; convert it to outlines first.", layer.name));
+        }
+        if !layer.is_closed() || layer.is_artboard() {
+            return Err(format!("“{}” isn't a closed shape.", layer.name));
         }
     }
-    let mut acc = paths[0].clone();
-    for p in &paths[1..] {
-        acc = path_boolean(&acc, p, op.sweep_op())?;
+    let bottom = page.find(members[0].1).ok_or("Layer not found.")?.clone();
+    let ordered: Vec<LayerId> = members.iter().map(|&(_, id)| id).collect();
+    let gid = group(page, &ordered).ok_or("Couldn't group the shapes.")?;
+    let g = page.find_mut(gid).ok_or("Layer not found.")?;
+    g.name = op.label().into();
+    g.style = bottom.style;
+    if let LayerKind::Group(grp) = &mut g.kind {
+        grp.shape = true;
+        for (i, c) in grp.children.iter_mut().enumerate() {
+            c.boolean_op = if i == 0 { BooleanOp::Union } else { op };
+        }
     }
-    if acc.elements().is_empty() {
+    if g.combined_path().is_none_or(|p| p.elements().is_empty()) {
         return Err("The result would be empty.".into());
     }
-
-    let bottom = page.find(members[0].1).ok_or("Layer not found.")?.clone();
-    let mut shape = PathShape::from_bez_path(&acc);
-    shape.fill_rule = FillRule::EvenOdd;
-    let mut layer = Layer::path(&shape);
-    layer.name = op.label().into();
-    layer.style = bottom.style;
-    layer.opacity = bottom.opacity;
-    let id = layer.id;
-    let insert_at = members.last().map_or(0, |m| m.0) + 1 - members.len();
-    for &(_, m) in &members {
-        page.remove(m);
-    }
-    page.insert(Location { parent, index: insert_at }, layer).map_err(|_| "Couldn't insert result.")?;
-    if let Some(p) = parent {
-        page.refit_ancestor_groups(p);
-    }
-    Ok(id)
+    Ok(gid)
 }
 
 /// "Use as Mask": with one layer, toggles its mask flag; with several sharing a parent,
@@ -355,8 +354,9 @@ pub fn use_as_mask(page: &mut Page, ids: &[LayerId]) -> Vec<LayerId> {
 pub fn convert_to_paths(page: &mut Page, ids: &[LayerId]) -> Vec<LayerId> {
     let mut out = vec![];
     for id in normalize_selection(page, ids) {
+        // Shape groups bake into one path.
         if let Some(l) = page.find_mut(id)
-            && l.convert_to_path()
+            && l.flatten()
         {
             out.push(id);
         }
@@ -638,11 +638,42 @@ mod tests {
         let a = insert_drawn(&mut page, Layer::rectangle(Frame::new(0.0, 0.0, 100.0, 100.0)));
         let b = insert_drawn(&mut page, Layer::oval(Frame::new(25.0, 25.0, 50.0, 50.0)));
         let r = boolean(&mut page, &[a, b], BooleanOp::Subtract).unwrap();
+        let hole = std::f64::consts::PI * 25.0 * 25.0;
+        // Live: the shapes are still there, and the hole doesn't count.
+        assert!(page.find(r).unwrap().is_shape_group());
+        assert!(page.contains(a) && page.contains(b));
+        assert!((area_of(&page, r) - (10_000.0 - hole)).abs() < 60.0);
+        // Moving the cut-out shape moves the hole; changing the operation changes the result.
+        move_by(&mut page, &[b], Vec2::new(200.0, 0.0));
+        page.refit_ancestor_groups(b);
+        assert!((area_of(&page, r) - 10_000.0).abs() < 60.0, "hole moved out");
+        move_by(&mut page, &[b], Vec2::new(-200.0, 0.0));
+        page.refit_ancestor_groups(b);
+        boolean(&mut page, &[r], BooleanOp::Union).unwrap();
+        assert!((area_of(&page, r) - 10_000.0).abs() < 60.0, "union fills the hole");
+        boolean(&mut page, &[r], BooleanOp::Subtract).unwrap();
+        // Flattening bakes it into one path with the hole.
+        assert_eq!(convert_to_paths(&mut page, &[r]), [r]);
         let LayerKind::Path(p) = &page.find(r).unwrap().kind else { panic!() };
         assert_eq!(p.subpaths.len(), 2);
-        let hole = std::f64::consts::PI * 25.0 * 25.0;
         assert!((area_of(&page, r) - (10_000.0 - hole)).abs() < 60.0);
-        assert!(boolean(&mut page, &[r], BooleanOp::Union).is_err());
+        assert!(boolean(&mut page, &[r], BooleanOp::Union).is_err(), "one plain shape can't combine");
+    }
+
+    #[test]
+    fn shape_groups_round_trip_and_nest() {
+        let mut page = Page::new("P");
+        let a = insert_drawn(&mut page, Layer::rectangle(Frame::new(0.0, 0.0, 100.0, 100.0)));
+        let b = insert_drawn(&mut page, Layer::rectangle(Frame::new(50.0, 0.0, 100.0, 100.0)));
+        let inner = boolean(&mut page, &[a, b], BooleanOp::Intersect).unwrap();
+        let c = insert_drawn(&mut page, Layer::rectangle(Frame::new(0.0, 0.0, 20.0, 20.0)));
+        let outer = boolean(&mut page, &[inner, c], BooleanOp::Union).unwrap();
+        // (A ∩ B) ∪ C = 50×100 + 20×20.
+        assert!((area_of(&page, outer) - 5400.0).abs() < 40.0);
+        let json = serde_json::to_string(&page).unwrap();
+        let back: Page = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, page);
+        assert!(json.contains("\"boolean_op\":\"intersect\""));
     }
 
     #[test]

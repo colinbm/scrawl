@@ -175,6 +175,11 @@ impl Writer<'_> {
                     self.children(&ab.children);
                 }
             }
+            LayerKind::Group(g) if g.shape => {
+                if let Some(path) = l.combined_path() {
+                    self.shape(l, &path, false);
+                }
+            }
             LayerKind::Group(g) => self.children(&g.children),
             LayerKind::Symbol(s) => self.children(&s.expanded),
             LayerKind::Text(_) => {

@@ -1073,3 +1073,35 @@ fn plugin_commands_appear_and_run() {
     assert!(h.query_by_label("Shouted").is_some());
     std::fs::remove_dir_all(&support).ok();
 }
+
+#[test]
+fn shape_groups_stay_editable() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let ring = select(&mut h, "Ring");
+    assert!(h.state().front().page().find(ring).unwrap().is_shape_group(), "the sample's ring is a live subtract");
+    assert!(h.query_by_label("Flatten").is_some());
+    assert!(h.query_by_label("FILLS").is_some(), "shape groups have their own style");
+    // Click the hole: it isn't part of the ring.
+    let b = h.state().front().page().world_bounds(ring).unwrap();
+    let c = b.center();
+    click_page(&mut h, c.x, c.y);
+    assert!(!h.state().front().selection.contains(&ring), "the hole isn't the ring");
+    // Pick the inner circle and union it: the hole fills in.
+    let inner = h.state().front().page().find(ring).unwrap().children().unwrap()[1].id;
+    h.state_mut().front_mut().selection = vec![inner];
+    h.run();
+    assert!(h.query_by_label("BOOLEAN").is_some());
+    h.get_by_label("Union").click();
+    h.run();
+    assert_eq!(h.state().front().page().find(inner).unwrap().boolean_op, scrawl_core::ops::BooleanOp::Union);
+    h.state_mut().front_mut().selection.clear();
+    h.run();
+    click_page(&mut h, c.x, c.y);
+    assert_eq!(h.state().front().selection, [ring], "now the middle is part of it");
+    save(&mut h, "shape_group");
+    // Flatten bakes it.
+    h.get_by_label("Flatten").click();
+    h.run();
+    assert_eq!(h.state().front().page().find(ring).unwrap().kind.type_name(), "Path");
+}

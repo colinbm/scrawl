@@ -91,6 +91,8 @@ pub struct ScrawlApp {
     pub support: Option<PathBuf>,
     /// Names this window's autosave file.
     pub autosave_name: String,
+    /// Flatten the selection after the inspector is done with it.
+    pub pending_flatten: bool,
     /// The script console, when open.
     pub console: Option<crate::plugins::Console>,
 }
@@ -159,6 +161,7 @@ impl ScrawlApp {
             support: None,
             autosave_name: uuid::Uuid::new_v4().to_string(),
             console: None,
+            pending_flatten: false,
         }
     }
 
@@ -1157,6 +1160,9 @@ impl ScrawlApp {
         egui::Panel::right(self.id("inspector")).resizable(false).exact_size(264.0).show(ui, |ui| {
             ui::inspector::show(self, ui);
         });
+        if std::mem::take(&mut self.pending_flatten) {
+            self.convert_to_paths();
+        }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             crate::canvas::show(self, ui);
         });

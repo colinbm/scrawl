@@ -55,7 +55,9 @@ fn hit_layer(
         return None;
     }
     let t = parent * layer.local_transform();
-    if let Some(children) = layer.children() {
+    // A shape group is picked by its combined outline, unless the user has drilled into it.
+    let shape_leaf = layer.is_shape_group() && !deep && !entered.contains(&layer.id);
+    if let Some(children) = layer.children().filter(|_| !shape_leaf) {
         let mut hits = children.iter().rev().filter_map(|c| hit_layer(c, t, point, tolerance, deep, entered));
         let child = hits.next()?;
         return Some(if deep || entered.contains(&layer.id) { child } else { layer.id });

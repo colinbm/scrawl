@@ -130,3 +130,22 @@ fn sample_exports_in_every_format() {
     }
     assert!(mean < 6.0, "SVG export differs from the render: mean difference {mean:.2}");
 }
+
+#[test]
+fn shape_groups_draw_their_combined_outline() {
+    let Some(mut ex) = exporter() else { return };
+    let mut page = Page::new("P");
+    let mut square = Layer::rectangle(Frame::new(0.0, 0.0, 40.0, 40.0));
+    square.style.fills = vec![Fill::solid(Color::rgba(0.0, 0.6, 0.0, 1.0))];
+    square.style.borders.clear();
+    let a = ops::insert_drawn(&mut page, square);
+    let b = ops::insert_drawn(&mut page, Layer::rectangle(Frame::new(10.0, 10.0, 20.0, 20.0)));
+    let g = ops::boolean(&mut page, &[a, b], ops::BooleanOp::Subtract).unwrap();
+    let img = ex.render_page(&page, Rect::new(0.0, 0.0, 40.0, 40.0), 1.0, peniko::Color::WHITE).unwrap();
+    assert!(close(px(&img, 5, 20), [0, 153, 0, 255]), "the group's fill: {:?}", px(&img, 5, 20));
+    assert!(close(px(&img, 20, 20), [255, 255, 255, 255]), "the hole: {:?}", px(&img, 20, 20));
+    // The cut-out shape's own (grey) style isn't drawn; changing the operation fills the hole.
+    ops::boolean(&mut page, &[g], ops::BooleanOp::Union).unwrap();
+    let img = ex.render_page(&page, Rect::new(0.0, 0.0, 40.0, 40.0), 1.0, peniko::Color::WHITE).unwrap();
+    assert!(close(px(&img, 20, 20), [0, 153, 0, 255]), "unioned: {:?}", px(&img, 20, 20));
+}

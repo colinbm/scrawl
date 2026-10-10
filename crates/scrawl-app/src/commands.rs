@@ -54,6 +54,7 @@ pub enum Command {
     CreateStack,
     // Layer
     Boolean(BooleanOp),
+    Flatten,
     Mask,
     CreateSymbol,
     DetachSymbol,
@@ -279,6 +280,7 @@ pub fn menus(app: &ScrawlApp, cx: &MenuContext) -> Vec<Menu> {
         },
         _ => None,
     };
+    let shape_group = matches!(app.selection[..], [id] if page.find(id).is_some_and(scrawl_core::Layer::is_shape_group));
     let artboard = match app.selection[..] {
         [id] => page.find(id).filter(|l| l.is_artboard() && l.master_of().is_none()),
         _ => None,
@@ -354,7 +356,15 @@ pub fn menus(app: &ScrawlApp, cx: &MenuContext) -> Vec<Menu> {
     ];
 
     let layer = vec![
-        submenu("Combine", BooleanOp::ALL.iter().map(|&op| item(op.label(), Boolean(op), n > 1)).collect(), n > 1),
+        submenu(
+            "Combine",
+            BooleanOp::ALL
+                .iter()
+                .map(|&op| item(op.label(), Boolean(op), n > 1 || shape_group))
+                .chain([Entry::Separator, item("Flatten", Flatten, has_sel)])
+                .collect(),
+            has_sel,
+        ),
         item("Use as Mask", Mask, has_sel),
         Entry::Separator,
         item("Create Symbol", CreateSymbol, has_sel),
@@ -496,6 +506,7 @@ pub fn execute(app: &mut ScrawlApp, command: Command, ctx: &egui::Context) {
         Tidy => app.tidy(),
         CreateStack => app.make_stack(),
         Boolean(op) => app.boolean(op),
+        Flatten => app.convert_to_paths(),
         Mask => app.use_as_mask(),
         CreateSymbol => app.create_symbol(),
         DetachSymbol => app.detach_selection(),

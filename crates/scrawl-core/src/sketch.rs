@@ -7,8 +7,8 @@
 //! one to one. The differences:
 //! - Sketch stores rotation counter-clockwise; Scrawl's is clockwise.
 //! - Text has one style per layer here, so only the first run of an attributed string is kept.
-//! - Shape groups (live boolean operations) are flattened into a single path on import; paths
-//!   with several subpaths are written as shape groups.
+//! - Shape groups (live boolean operations) map to Scrawl's shape groups; paths with several
+//!   subpaths are written as shape groups too.
 //! - Library components keep their library's name, but not its file, which Sketch doesn't store.
 //! - Things Scrawl doesn't model (blurs, noise fills, layouts, prototype viewports) are dropped on import
 //!   and written with neutral defaults.
@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 
-use kurbo::{BezPath, Point};
+use kurbo::Point;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -24,6 +24,7 @@ use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 use crate::constraints::Resizing;
 use crate::exportable::{ExportFormat, FileFormat};
 use crate::library::{Foreign, LibraryId, LibraryRef};
+use crate::ops::BooleanOp;
 use crate::prototype::{Animation, Destination, FlowLink};
 use crate::text::{TextAlign, TextLayer, TextSizing, TextStyle, TextTransform, VerticalAlign, WEIGHT_NAMES};
 use crate::{
@@ -423,8 +424,9 @@ impl Importer {
                 flow_home: flag(v, "isFlowHome"),
                 ..Artboard::new()
             }),
-            "group" => LayerKind::Group(Group { children: self.children(v, entry), stack: None }),
-            "shapeGroup" => return self.shape_group(v, frame, entry),
+            "group" => LayerKind::Group(Group { children: self.children(v, entry), stack: None, shape: false }),
+            // Live boolean groups; their children carry the operations.
+            "shapeGroup" => LayerKind::Group(Group { children: self.children(v, entry), stack: None, shape: true }),
             "rectangle" => {
                 let radii: Vec<f64> = list(v, "points").iter().map(|p| num(p, "cornerRadius")).collect();
                 let fixed = num(v, "fixedRadius");
@@ -497,6 +499,12 @@ impl Importer {
         l.shared_style = (!shared.is_empty()).then(|| StyleId(uuid_of(shared)));
         l.flow = v.get("flow").and_then(flow_in);
         l.fixed_to_viewport = flag(v, "isFixedToViewport");
+        l.boolean_op = match int(v, "booleanOperation") {
+            1 => BooleanOp::Subtract,
+            2 => BooleanOp::Intersect,
+            3 => BooleanOp::Difference,
+            _ => BooleanOp::Union,
+        };
         l.exports = list(&v["exportOptions"], "exportFormats")
             .iter()
             .map(|e| ExportFormat {
@@ -512,39 +520,6 @@ impl Importer {
             })
             .collect();
         l
-    }
-
-    /// A shape group's children combined by their boolean operations into one path layer.
-    fn shape_group(&mut self, v: &Value, frame: Frame, entry: &mut impl FnMut(&str) -> Option<Vec<u8>>) -> Option<Layer> {
-        let mut combined: Option<BezPath> = None;
-        for c in list(v, "layers") {
-            let Some(child) = self.layer(c, entry) else { continue };
-            let path = match child.kind {
-                // Nested shape groups arrive as paths already.
-                LayerKind::Path(_) | LayerKind::Rectangle(_) | LayerKind::Oval | LayerKind::Polygon(_) | LayerKind::Star(_) => {
-                    child.local_transform() * child.local_path()?
-                }
-                _ => continue,
-            };
-            combined = Some(match (combined, int(c, "booleanOperation")) {
-                (None, _) => path,
-                (Some(mut acc), op) if !(0..=3).contains(&op) => {
-                    acc.extend(path.elements().iter().copied());
-                    acc
-                }
-                (Some(acc), op) => {
-                    let op = [crate::ops::BooleanOp::Union, crate::ops::BooleanOp::Subtract, crate::ops::BooleanOp::Intersect, crate::ops::BooleanOp::Difference]
-                        [op as usize];
-                    crate::ops::path_boolean(&acc, &path, op.sweep_op()).unwrap_or(acc)
-                }
-            });
-        }
-        let path = combined?;
-        let mut shape = PathShape::from_bez_path(&path);
-        shape.fill_rule = if int(&v["style"], "windingRule") == 1 { FillRule::EvenOdd } else { FillRule::NonZero };
-        let (bounds, norm) = shape.fit();
-        let inner = Frame::new(frame.x + bounds.x0, frame.y + bounds.y0, bounds.width(), bounds.height());
-        Some(self.common(v, inner, LayerKind::Path(norm), entry))
     }
 }
 
@@ -1005,10 +980,22 @@ impl Exporter {
                 }
             }
             LayerKind::Group(g) => {
-                v["_class"] = json!("group");
+                v["_class"] = json!(if g.shape { "shapeGroup" } else { "group" });
                 v["hasClickThrough"] = json!(false);
                 v["groupLayout"] = json!({ "_class": "MSImmutableFreeformGroupLayout" });
-                v["layers"] = json!(g.children.iter().map(|c| self.layer(c)).collect::<Vec<_>>());
+                let mut children: Vec<Value> = g.children.iter().map(|c| self.layer(c)).collect();
+                if g.shape {
+                    v["windingRule"] = json!(1);
+                    for (c, l) in children.iter_mut().zip(&g.children) {
+                        c["booleanOperation"] = json!(match l.boolean_op {
+                            BooleanOp::Union => 0,
+                            BooleanOp::Subtract => 1,
+                            BooleanOp::Intersect => 2,
+                            BooleanOp::Difference => 3,
+                        });
+                    }
+                }
+                v["layers"] = json!(children);
             }
             LayerKind::Rectangle(r) => {
                 let radii = r.corner_radii.unwrap_or([r.corner_radius; 4]);
@@ -1325,11 +1312,13 @@ mod tests {
         assert_eq!(tilted.style.fills[0].swatch, doc.swatches.first().map(|s| s.id));
 
         let cutout = &layers[1];
-        let LayerKind::Path(p) = &cutout.kind else { panic!("shape groups become paths") };
-        assert_eq!(p.fill_rule, FillRule::EvenOdd);
+        assert!(cutout.is_shape_group(), "shape groups stay live");
+        assert_eq!(cutout.fill_rule(), FillRule::EvenOdd);
+        let ops: Vec<_> = cutout.children().unwrap().iter().map(|c| c.boolean_op).collect();
+        assert_eq!(ops, [crate::ops::BooleanOp::Union, crate::ops::BooleanOp::Subtract]);
         // 40×40 minus the overlapping right half of the second square.
         assert!((cutout.local_path().unwrap().area().abs() - 800.0).abs() < 1.0);
-        assert_eq!(cutout.frame.width, 20.0);
+        assert_eq!(cutout.frame.width, 60.0);
 
         let LayerKind::Text(t) = &layers[2].kind else { panic!() };
         assert_eq!((t.style.font_family.as_str(), t.style.font_weight, t.style.font_size), ("Avenir", 800, 18.0), "the run wins");

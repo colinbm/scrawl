@@ -67,12 +67,19 @@ pub struct Layer {
     /// Stays put when the artboard scrolls in the preview (direct children of artboards).
     #[serde(default, skip_serializing_if = "is_false")]
     pub fixed_to_viewport: bool,
+    /// How this layer combines with the ones below it inside a shape group.
+    #[serde(default, skip_serializing_if = "is_union")]
+    pub boolean_op: crate::ops::BooleanOp,
     #[serde(flatten)]
     pub kind: LayerKind,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn is_union(op: &crate::ops::BooleanOp) -> bool {
+    *op == crate::ops::BooleanOp::Union
 }
 
 fn is_false(b: &bool) -> bool {
@@ -167,6 +174,10 @@ pub struct Group {
     /// Lays the children out in a row or column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<crate::layout::Stack>,
+    /// A shape group: the children's outlines combine by their boolean operations into one
+    /// shape, drawn with the group's style.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shape: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -213,6 +224,7 @@ impl LayerKind {
         match self {
             Self::Artboard(a) if a.symbol_id.is_some() => "Symbol Master",
             Self::Artboard(_) => "Artboard",
+            Self::Group(g) if g.shape => "Shape Group",
             Self::Group(_) => "Group",
             Self::Rectangle(_) => "Rectangle",
             Self::Oval => "Oval",
@@ -250,6 +262,7 @@ impl Layer {
             shared_style: None,
             flow: None,
             fixed_to_viewport: false,
+            boolean_op: crate::ops::BooleanOp::Union,
             kind,
         }
     }
@@ -339,7 +352,7 @@ impl Layer {
     }
 
     pub fn group(children: Vec<Layer>, frame: Frame) -> Self {
-        Self::new("Group", frame, LayerKind::Group(Group { children, stack: None }))
+        Self::new("Group", frame, LayerKind::Group(Group { children, stack: None, shape: false }))
     }
 
     pub fn children(&self) -> Option<&Vec<Layer>> {
@@ -364,6 +377,67 @@ impl Layer {
 
     pub fn is_group(&self) -> bool {
         matches!(self.kind, LayerKind::Group(_))
+    }
+
+    /// A live boolean group.
+    pub fn is_shape_group(&self) -> bool {
+        matches!(&self.kind, LayerKind::Group(g) if g.shape)
+    }
+
+    /// A shape group's combined outline in its local space. Children combine bottom to top, each
+    /// by its own operation; hidden ones are left out. `None` for other layers or if nothing's
+    /// left.
+    pub fn combined_path(&self) -> Option<BezPath> {
+        let LayerKind::Group(g) = &self.kind else { return None };
+        if !g.shape {
+            return None;
+        }
+        let mut acc: Option<BezPath> = None;
+        for c in g.children.iter().filter(|c| c.visible) {
+            let Some(p) = c.outline() else { continue };
+            let p = c.local_transform() * p;
+            acc = Some(match acc {
+                None => p,
+                Some(a) => crate::ops::path_boolean(&a, &p, c.boolean_op.sweep_op()).unwrap_or_else(|_| {
+                    let mut both = a;
+                    both.extend(p.elements().iter().copied());
+                    both
+                }),
+            });
+        }
+        acc
+    }
+
+    /// The filled outline used when this layer is part of a shape group: its geometry, a nested
+    /// shape group's combined path, or a plain group's children together.
+    fn outline(&self) -> Option<BezPath> {
+        match &self.kind {
+            LayerKind::Group(g) if g.shape => self.combined_path(),
+            LayerKind::Group(g) => {
+                let mut all = BezPath::new();
+                for c in g.children.iter().filter(|c| c.visible) {
+                    if let Some(p) = c.outline() {
+                        all.extend((c.local_transform() * p).elements().iter().copied());
+                    }
+                }
+                Some(all)
+            }
+            _ if self.is_closed() => self.local_path(),
+            _ => None,
+        }
+    }
+
+    /// Replaces a shape group with a single path of its combined outline, keeping its style.
+    /// Other shapes become paths too. Returns false for what can't (containers, text).
+    pub fn flatten(&mut self) -> bool {
+        if self.is_shape_group() {
+            let Some(path) = self.combined_path() else { return false };
+            let mut shape = PathShape::from_bez_path(&path);
+            shape.fill_rule = crate::FillRule::EvenOdd;
+            self.set_local_path(&shape);
+            return true;
+        }
+        self.convert_to_path()
     }
 
     pub fn is_symbol_instance(&self) -> bool {
@@ -395,6 +469,7 @@ impl Layer {
         let r = self.frame.local_rect();
         match &self.kind {
             LayerKind::Artboard(_) => Some(r.to_path(PATH_TOLERANCE)),
+            LayerKind::Group(g) if g.shape => self.combined_path(),
             LayerKind::Group(_) => None,
             LayerKind::Rectangle(rect) => {
                 let max_r = r.width().min(r.height()) / 2.0;
@@ -424,6 +499,8 @@ impl Layer {
     pub fn fill_rule(&self) -> crate::FillRule {
         match &self.kind {
             LayerKind::Path(p) => p.fill_rule,
+            // Boolean results are exact with even-odd.
+            LayerKind::Group(g) if g.shape => crate::FillRule::EvenOdd,
             _ => crate::FillRule::NonZero,
         }
     }
@@ -432,6 +509,7 @@ impl Layer {
     pub fn is_closed(&self) -> bool {
         match &self.kind {
             LayerKind::Path(p) => p.is_closed(),
+            LayerKind::Group(g) if g.shape => true,
             // Slices are only picked by their outline, so they don't block clicks on what's under.
             LayerKind::Group(_) | LayerKind::Slice => false,
             _ => true,
