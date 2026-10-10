@@ -23,7 +23,7 @@ a PNG of each test's final frame. GPU tests skip themselves when no adapter is a
 | `scrawl-core` | UI-agnostic document model: layer tree, geometry (kurbo), editing ops, hit testing, snapshot undo, `.scrawl` file format (zip + JSON + images), design-file import/export, CSS. |
 | `scrawl-text` | Text layout (parley) with a layout cache, frame fitting, font listing, glyph outlines (skrifa). |
 | `scrawl-render` | Turns a page into a [Vello](https://github.com/linebender/vello) scene (GPU compute 2D renderer); headless export to PNG/JPG/WEBP, SVG writer and import (usvg), PDF (svg2pdf). |
-| `scrawl-app` | Desktop shell: eframe/egui (winit + wgpu) for panels; the canvas is Vello rendered to a wgpu texture shown by egui, with selection overlays painted by egui. A `Workspace` owns every document window (one per egui viewport), the native macOS menu bar (muda), recent files, autosave, and versions. |
+| `scrawl-app` | Desktop shell: eframe/egui (winit + wgpu) for panels; the canvas is Vello rendered to a wgpu texture shown by egui, with selection overlays painted by egui. A `Workspace` owns every document window (one per egui viewport), the native macOS menu bar (muda), recent files, autosave, versions and plugins (QuickJS). |
 
 Key conventions:
 - A layer's `frame` is in its **parent's** space; rotation/flips apply about the frame center.
@@ -39,11 +39,12 @@ Key conventions:
   events (page coordinates). Commands: `click`, `dblclick`, `drag`, `key NAME [mods]`, `wait N`,
   `shot PATH`; modifiers like `shift+cmd`. See `crates/scrawl-app/src/dev.rs`.
 
-The app keeps preferences, autosaves (crash recovery) and versions in
+The app keeps preferences, autosaves (crash recovery), versions and plugins in
 `~/Library/Application Support/Scrawl` (macOS), `%APPDATA%\Scrawl` (Windows) or `~/.config/scrawl`.
 `SCRAWL_SUPPORT=dir` uses another folder; runs with dev hooks use none unless it's set.
 
 Commands live in one model (`commands.rs`): the in-window menu bar, keyboard shortcuts and the
 macOS menu bar are all built from it.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the feature map.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the feature map and [docs/PLUGINS.md](docs/PLUGINS.md)
+for the plugin API.

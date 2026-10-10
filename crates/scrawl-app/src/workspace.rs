@@ -1,5 +1,5 @@
 //! The application: every open document window, and what they share (recent files, the native
-//! menu bar, autosave).
+//! menu bar, autosave, plugins).
 //!
 //! The first window lives in eframe's root viewport; the others in viewports of their own. When
 //! the root window closes while others are open, the next one moves into the root viewport, so
@@ -24,6 +24,7 @@ pub struct Workspace {
     was_focused: Vec<(u64, bool)>,
     /// Quitting: every window has agreed to close.
     quitting: bool,
+    pub plugins: crate::plugins::Plugins,
     #[cfg(target_os = "macos")]
     menu: Option<crate::native_menu::NativeMenu>,
 }
@@ -33,6 +34,7 @@ impl Workspace {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: Vec<PathBuf>, support: Option<PathBuf>) -> Self {
         crate::style::apply(&cc.egui_ctx);
         let prefs = support.as_deref().map(Prefs::load).unwrap_or_default();
+        let plugins = crate::plugins::Plugins::load(support.as_deref());
         let mut ws = Self {
             windows: vec![],
             render_state: cc.wgpu_render_state.clone(),
@@ -41,6 +43,7 @@ impl Workspace {
             focused: 0,
             was_focused: vec![],
             quitting: false,
+            plugins,
             #[cfg(target_os = "macos")]
             menu: None,
         };
@@ -64,6 +67,10 @@ impl Workspace {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = ctx;
+    }
+
+    pub fn support(&self) -> Option<&Path> {
+        self.support.as_deref()
     }
 
     /// The window that has (or last had) focus.
@@ -234,6 +241,14 @@ impl Workspace {
                     ctx.send_viewport_cmd_to(viewport_id(&self.windows[j]), egui::ViewportCommand::Focus);
                 }
             }
+            Request::RunPlugin(id) => crate::plugins::run_command(self, i, &id),
+            Request::RunScript => crate::plugins::open_console(&mut self.windows[i]),
+            Request::ReloadPlugins => {
+                self.plugins = crate::plugins::Plugins::load(self.support.as_deref());
+                let n = self.plugins.commands().len();
+                self.windows[i].notify(format!("Loaded {n} plugin command{}", if n == 1 { "" } else { "s" }));
+            }
+            Request::RevealPlugins => crate::plugins::reveal_folder(self, i),
         }
     }
 
@@ -253,6 +268,7 @@ impl Workspace {
     fn menu_context(&self, native: bool) -> MenuContext {
         MenuContext {
             recent: self.prefs.recent.clone(),
+            plugins: self.plugins.commands(),
             windows: self.windows.iter().map(|w| (w.uid, w.title(), w.uid == self.focused)).collect(),
             native,
         }

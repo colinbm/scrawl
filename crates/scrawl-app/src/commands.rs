@@ -79,6 +79,11 @@ pub enum Command {
     ToggleGrid,
     ToggleLayout,
     ToggleSnap,
+    // Plugins
+    RunScript,
+    RunPlugin(String),
+    ReloadPlugins,
+    RevealPlugins,
     // Window and Help
     FocusWindow(u64),
     OpenSample,
@@ -99,6 +104,10 @@ pub enum Request {
     Quit,
     ClearRecent,
     FocusWindow(u64),
+    RunPlugin(String),
+    RunScript,
+    ReloadPlugins,
+    RevealPlugins,
 }
 
 const fn sc(modifiers: Modifiers, key: Key) -> Option<KeyboardShortcut> {
@@ -161,6 +170,7 @@ impl Command {
             ToggleRulers => sc(CTRL, Key::R),
             ToggleGrid => sc(CTRL, Key::G),
             ToggleLayout => sc(CTRL, Key::L),
+            RunScript => sc(CMD_ALT, Key::K),
             _ => None,
         }
     }
@@ -177,7 +187,7 @@ pub fn keyboard_commands() -> Vec<(Command, KeyboardShortcut)> {
     let mut all = vec![
         New, Open, CloseWindow, Save, SaveAs, ExportSelection, Quit, Undo, Redo, Duplicate, SelectAll, FindLayer, PlaceImage,
         Group, Ungroup, Tidy, Mask, CreateSymbol, DetachSymbol, ConvertToPath, ConvertToOutlines, Preview, ToggleLinks, ZoomIn,
-        ZoomOut, ActualSize, ZoomToFit, ZoomToSelection, ToggleRulers, ToggleGrid, ToggleLayout,
+        ZoomOut, ActualSize, ZoomToFit, ZoomToSelection, ToggleRulers, ToggleGrid, ToggleLayout, RunScript,
     ];
     all.extend([self::Reorder::Forward, self::Reorder::Backward, self::Reorder::ToFront, self::Reorder::ToBack].map(Command::Reorder));
     all.extend([Axis::X, Axis::Y].map(Command::Distribute));
@@ -221,6 +231,8 @@ pub struct Menu {
 #[derive(Clone, Debug, Default)]
 pub struct MenuContext {
     pub recent: Vec<PathBuf>,
+    /// Plugin commands: (id, menu label).
+    pub plugins: Vec<(String, String)>,
     /// Open windows: (uid, title, focused).
     pub windows: Vec<(u64, String, bool)>,
     /// The platform puts Quit and the window list in its own menus.
@@ -386,6 +398,12 @@ pub fn menus(app: &ScrawlApp, cx: &MenuContext) -> Vec<Menu> {
         toggle("Snap to Layers", ToggleSnap, app.snap_to_layers),
     ];
 
+    let mut plugins = vec![item("Run Script…", RunScript, true)];
+    if !cx.plugins.is_empty() {
+        plugins.push(Entry::Separator);
+        plugins.extend(cx.plugins.iter().map(|(id, label)| item(label.clone(), RunPlugin(id.clone()), true)));
+    }
+    plugins.extend([Entry::Separator, item("Reload Plugins", ReloadPlugins, true), item("Reveal Plugins Folder", RevealPlugins, true)]);
 
     let mut menus = vec![
         Menu { title: "File", entries: file },
@@ -395,6 +413,7 @@ pub fn menus(app: &ScrawlApp, cx: &MenuContext) -> Vec<Menu> {
         Menu { title: "Layer", entries: layer },
         Menu { title: "Prototype", entries: prototype },
         Menu { title: "View", entries: view },
+        Menu { title: "Plugins", entries: plugins },
     ];
     if !cx.native {
         let windows = cx
@@ -524,6 +543,10 @@ pub fn execute(app: &mut ScrawlApp, command: Command, ctx: &egui::Context) {
         ToggleGrid => app.show_grid ^= true,
         ToggleLayout => app.show_layout ^= true,
         ToggleSnap => app.snap_to_layers ^= true,
+        RunScript => app.requests.push(Request::RunScript),
+        RunPlugin(id) => app.requests.push(Request::RunPlugin(id)),
+        ReloadPlugins => app.requests.push(Request::ReloadPlugins),
+        RevealPlugins => app.requests.push(Request::RevealPlugins),
         FocusWindow(uid) => app.requests.push(Request::FocusWindow(uid)),
         OpenSample => app.requests.push(Request::OpenSample),
     }

@@ -91,6 +91,8 @@ pub struct ScrawlApp {
     pub support: Option<PathBuf>,
     /// Names this window's autosave file.
     pub autosave_name: String,
+    /// The script console, when open.
+    pub console: Option<crate::plugins::Console>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +158,7 @@ impl ScrawlApp {
             versions: None,
             support: None,
             autosave_name: uuid::Uuid::new_v4().to_string(),
+            console: None,
         }
     }
 
@@ -1172,6 +1175,7 @@ impl ScrawlApp {
         self.show_notice(&ctx);
         crate::preview::show(self, &ctx);
         crate::versions::show(self, &ctx);
+        crate::plugins::show_console(self, &ctx);
         self.end_frame(&ctx);
     }
 }

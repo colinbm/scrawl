@@ -1,0 +1,8 @@
+{
+  "name": "Examples",
+  "commands": [
+    { "name": "Rename Layers by Type", "script": "rename-by-type.js" },
+    { "name": "Random Fill Colors", "script": "random-colors.js" },
+    { "name": "Grid of Copies", "script": "grid-of-copies.js" }
+  ]
+}

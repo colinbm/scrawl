@@ -1005,3 +1005,71 @@ fn saving_keeps_versions_to_restore() {
     assert_eq!(h.state().front().doc.pages[0].name, "Second", "restoring is undoable");
     std::fs::remove_dir_all(&support).ok();
 }
+
+#[test]
+fn scripts_edit_the_document_undoably() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    select(&mut h, "Card");
+    let app = h.state_mut().front_mut();
+    let src = r#"
+        const [card] = scrawl.selectedLayers;
+        card.name = "Script Card";
+        const dot = scrawl.create("oval", { name: "Dot", x: 10, y: 10, width: 20, height: 20 });
+        scrawl.insert(dot, scrawl.parentOf(card.id));
+        scrawl.selection = [dot];
+        console.log("made", dot.name);
+        scrawl.message("Done");
+    "#;
+    let out = crate::plugins::run(app, src, "test.js").unwrap();
+    assert_eq!(out.log, ["made Dot"]);
+    assert_eq!(out.messages, ["Done"]);
+    h.run();
+    let dot = layer_named(&h, "Dot");
+    assert_eq!(h.state().front().selection, [dot.id]);
+    assert_eq!(layer_named(&h, "Script Card").kind.type_name(), "Rectangle");
+    h.state_mut().front_mut().undo();
+    h.run();
+    assert!(h.state().front().page().find(dot.id).is_none(), "one undo reverts the whole script");
+
+    // A failing script changes nothing and says why.
+    let before = h.state().front().doc.clone();
+    let err = crate::plugins::run(h.state_mut().front_mut(), "scrawl.page.layers = 5;", "bad.js").unwrap_err();
+    assert!(err.0.contains("can't read"), "{}", err.0);
+    assert_eq!(h.state().front().doc, before);
+
+    // The console runs scripts too.
+    h.state_mut().front_mut().requests.push(crate::commands::Request::RunScript);
+    h.run();
+    h.state_mut().front_mut().console.as_mut().unwrap().code = "scrawl.page.name = 'Console';".into();
+    h.get_by_label("Run").click();
+    h.run();
+    assert_eq!(h.state().front().page().name, "Console");
+    save(&mut h, "script_console");
+}
+
+#[test]
+fn plugin_commands_appear_and_run() {
+    let Some((mut h, support)) = harness_with_support("plugins") else { return };
+    h.run();
+    let dir = crate::plugins::folder(&support);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("shout.js"), "// @name Shout\nfor (const p of scrawl.pages) p.name = p.name.toUpperCase();\nscrawl.message('Shouted');").unwrap();
+    let app = h.state_mut().front_mut();
+    app.set_document(scrawl_core::sample::sample_document(), None);
+    app.requests.push(crate::commands::Request::ReloadPlugins);
+    h.step();
+    h.state_mut().front_mut().notice = None;
+    h.run();
+    let ws = h.state();
+    assert_eq!(ws.front().menu_context.plugins, [("shout".to_owned(), "Shout".to_owned())]);
+    h.get_by_label("Plugins").click();
+    h.run();
+    h.get_by_label("Shout").click();
+    h.step();
+    h.step();
+    let names: Vec<_> = h.state().front().doc.pages.iter().map(|p| p.name.clone()).collect();
+    assert_eq!(names, ["HOME", "SYMBOLS"]);
+    assert!(h.query_by_label("Shouted").is_some());
+    std::fs::remove_dir_all(&support).ok();
+}

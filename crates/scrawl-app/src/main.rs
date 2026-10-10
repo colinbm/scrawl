@@ -7,6 +7,7 @@ mod gpu;
 mod import;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod plugins;
 mod prefs;
 mod preview;
 mod prototyping;
