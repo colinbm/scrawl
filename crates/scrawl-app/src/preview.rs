@@ -147,7 +147,7 @@ fn stage(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
     let (w, h) = (artboard.frame.width.max(1.0), artboard.frame.height.max(1.0));
     // A device frame needs room for its bezel all round.
     let bezel = if preview.device_frame { 14.0_f64 } else { 0.0 };
-    let scale = ((rect.width() as f64 - 2.0 * bezel) / w).min(1.0).max(0.05);
+    let scale = ((rect.width() as f64 - 2.0 * bezel) / w).clamp(0.05, 1.0);
     let view_h = ((rect.height() as f64 - 2.0 * bezel) / scale).min(h);
     let origin = Pos2::new(rect.center().x - (w * scale / 2.0) as f32, rect.top() + bezel as f32);
     let area = ERect::from_min_size(origin, vec2((w * scale) as f32, (view_h * scale) as f32));
