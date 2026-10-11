@@ -530,7 +530,17 @@ impl Importer {
             "bitmap" => LayerKind::Image(ImageLayer { image: self.image(&v["image"], entry)? }),
             "symbolInstance" => LayerKind::Symbol(SymbolInstance {
                 symbol_id: SymbolId(uuid_of(text(v, "symbolID"))),
-                overrides: list(v, "overrideValues").iter().filter_map(override_in).collect(),
+                overrides: list(v, "overrideValues")
+                    .iter()
+                    .filter_map(|o| match text(o, "overrideName").rsplit_once('_') {
+                        // Image overrides refer to an image in the file.
+                        Some((path, "image")) => Some(Override {
+                            path: path.split('/').map(|s| LayerId(uuid_of(s))).collect(),
+                            value: OverrideValue::Image(self.image(&o["value"], entry)?),
+                        }),
+                        _ => override_in(o),
+                    })
+                    .collect(),
                 expanded: vec![],
             }),
             "slice" => LayerKind::Slice,
@@ -1204,7 +1214,18 @@ impl Exporter {
                 v["scale"] = json!(1);
                 v["horizontalSpacing"] = json!(0);
                 v["verticalSpacing"] = json!(0);
-                v["overrideValues"] = json!(s.overrides.iter().filter_map(override_out).collect::<Vec<_>>());
+                let mut values = vec![];
+                for o in &s.overrides {
+                    match &o.value {
+                        OverrideValue::Image(id) => {
+                            let path: Vec<String> = o.path.iter().map(|id| id_str(id.0)).collect();
+                            let image = self.image_ref(id);
+                            values.push(json!({ "_class": "overrideValue", "overrideName": format!("{}_image", path.join("/")), "value": image }));
+                        }
+                        _ => values.extend(override_out(o)),
+                    }
+                }
+                v["overrideValues"] = json!(values);
             }
             LayerKind::Image(img) => {
                 v["_class"] = json!("bitmap");
@@ -1265,7 +1286,8 @@ fn sketch_property(property: &str) -> &'static str {
     }
 }
 
-/// Image overrides aren't written (Sketch stores them as image references); the rest are.
+/// An override as Sketch writes it; image overrides (which reference image files) are written
+/// by the exporter itself.
 fn override_out(o: &Override) -> Option<Value> {
     let path: Vec<String> = o.path.iter().map(|id| id_str(id.0)).collect();
     let value = match &o.value {
@@ -1387,6 +1409,29 @@ mod tests {
         let back = import(&export(&doc).unwrap()).unwrap();
         let f = &back.pages[0].layers[0].style.fills[1];
         assert_eq!((f.fill_type, f.noise), (FillType::Noise, crate::Noise { kind: crate::NoiseKind::White, intensity: 0.4 }));
+    }
+
+    #[test]
+    fn image_overrides_round_trip() {
+        let mut doc = Document::default();
+        let a = doc.assets.add_image([0x89, b'P', b'N', b'G', 1, 1].to_vec()).unwrap();
+        let b = doc.assets.add_image([0x89, b'P', b'N', b'G', 2, 2].to_vec()).unwrap();
+        let photo = Layer::image(a.clone(), Frame::new(0.0, 0.0, 40.0, 30.0));
+        let photo_id = photo.id;
+        let mut master = Layer::artboard("Card", Frame::new(0.0, 0.0, 40.0, 30.0));
+        let symbol = SymbolId::new();
+        if let LayerKind::Artboard(m) = &mut master.kind {
+            m.children = vec![photo];
+            m.symbol_id = Some(symbol);
+        }
+        doc.pages[0].layers.push(master);
+        let mut inst = SymbolInstance::new(symbol);
+        inst.set_override(vec![photo_id], Some(OverrideValue::Image(b.clone())));
+        doc.pages[0].layers.push(Layer::new("Card", Frame::new(100.0, 0.0, 40.0, 30.0), LayerKind::Symbol(inst)));
+        let back = import(&export(&doc).unwrap()).unwrap();
+        let LayerKind::Symbol(i) = &back.pages[0].layers[1].kind else { panic!() };
+        assert_eq!(i.overrides, [Override { path: vec![photo_id], value: OverrideValue::Image(b.clone()) }]);
+        assert!(back.assets.get(&b).is_some(), "the override's image comes along");
     }
 
     #[test]

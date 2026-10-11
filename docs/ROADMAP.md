@@ -49,7 +49,8 @@
 - ✅ Rich text: style runs (font, size, weight, italic, spacing, decorations, color) on parts of a layer, from the inspector or ⌘B/⌘I/⌘U while editing; the editor works on the rendered layout. Runs round-trip through design files and keep their colors in SVG
 - ✅ OpenType features (ligatures, figures, small caps…), paragraph spacing, bulleted and numbered lists (shared text styles: see Milestone 6)
 - ✅ Text on path: Layer › Attach Text to Path, with a start offset; lies flat while editing
-- ⬜ Decorations along paths; lists and features per style run; lists and features in design files
+- ✅ Underlines and strikethroughs along paths
+- ⬜ Lists and features per style run; lists and features in design files
 
 ## Milestone 5 — Productivity
 - ✅ Smart guides: edge/center alignment and equal-spacing snaps while moving, resizing and drawing (⌃ suspends; View > Snap to Layers)
@@ -66,7 +67,7 @@
 - ✅ Color variables on fills, borders and shadows; editing one recolors every linked color
 - ✅ Symbols: masters (artboards), instances resized by constraints, text / nested-swap / style overrides, nested symbols, Create Symbol ⌥⌘Y, Detach ⌥⌘B, Edit Master
 - ✅ Libraries: link other `.scrawl` files, use their symbols, styles and variables (copied in with dependencies), update when the library changes, unlink to keep them locally
-- ✅ Masters choose which overrides instances may use; image overrides and color overrides (for fills following a color variable); color overrides and master settings round-trip through design files (image overrides don't yet)
+- ✅ Masters choose which overrides instances may use; image overrides and color overrides (for fills following a color variable); color and image overrides and master settings round-trip through design files
 - ✅ Library files are watched and re-read when they change; libraries are remembered relative to the document too; gradient stops can follow color variables
 
 ## Milestone 7 — Export & interop

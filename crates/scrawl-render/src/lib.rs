@@ -567,8 +567,14 @@ fn draw_on_path(
             let r = run.run();
             let coords: Vec<i16> = r.normalized_coords().iter().map(|c| c.to_bits()).collect();
             let skew = r.synthesis().skew().map(|deg| Affine::skew((deg as f64).to_radians().tan(), 0.0));
+            let decorations = scrawl_text::run_decorations(&run);
             for g in run.positioned_glyphs() {
                 let Some(place) = walker.place(offset, g.x as f64, g.advance as f64, g.y as f64 - first) else { continue };
+                // Decorations follow the path a glyph-width at a time.
+                for &(top, thickness) in &decorations {
+                    let r = Rect::new(0.0, top, g.advance as f64, top + thickness);
+                    scene.fill(Fill::NonZero, t * place, brush, bt.map(|b| place.inverse() * b), &r);
+                }
                 scene
                     .draw_glyphs(r.font())
                     .font_size(r.font_size())

@@ -489,14 +489,34 @@ fn path_outlines(layout: &Layout, walker: &PathWalker, offset: f64, groups: &mut
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(run) = item else { continue };
             let path = push_group(groups, run.style().brush.0);
+            let decorations = run_decorations(&run);
             for g in run.positioned_glyphs() {
                 let Some(t) = walker.place(offset, g.x as f64, g.advance as f64, g.y as f64 - first) else { continue };
                 if let Some(p) = glyph_path(&run, g.id) {
                     path.extend((t * p).elements().iter().copied());
                 }
+                // Decorations follow the path a glyph-width at a time.
+                for &(top, thickness) in &decorations {
+                    let r = Rect::new(0.0, top, g.advance as f64, top + thickness);
+                    path.extend((t * r.to_path(0.1)).elements().iter().copied());
+                }
             }
         }
     }
+}
+
+/// A run's underline and strikethrough as (top, thickness) relative to its baseline.
+pub fn run_decorations(run: &parley::GlyphRun<'_, RunBrush>) -> Vec<(f64, f64)> {
+    let m = run.run().font_metrics();
+    let style = run.style();
+    [
+        (style.underline.is_some(), m.underline_offset, m.underline_size),
+        (style.strikethrough.is_some(), m.strikethrough_offset, m.strikethrough_size),
+    ]
+    .into_iter()
+    .filter(|d| d.0)
+    .map(|(_, offset, size)| (-(offset as f64), (size as f64).max(1.0)))
+    .collect()
 }
 
 /// Appends a layout's glyph outlines (and decorations), with line `i` moved by `offset(i)`.
@@ -716,6 +736,15 @@ mod tests {
         let flat = e.outlines(&l).unwrap().bounding_box();
         assert!(flat.height() < 30.0, "{flat:?}");
         e.raw_case = None;
+        // Underlines follow the path too.
+        if let LayerKind::Text(t) = &mut l.kind {
+            t.style.underline = true;
+        }
+        let underlined = e.outlines(&l).unwrap().elements().len();
+        if let LayerKind::Text(t) = &mut l.kind {
+            t.style.underline = false;
+        }
+        assert!(underlined > e.outlines(&l).unwrap().elements().len() + 20, "a segment per glyph");
         // Glyphs past the end of a short path are left out.
         let short = kurbo::Line::new((0.0, 0.0), (30.0, 0.0)).to_path(0.1);
         if let LayerKind::Text(t) = &mut l.kind {
