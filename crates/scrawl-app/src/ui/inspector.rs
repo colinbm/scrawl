@@ -403,7 +403,7 @@ fn prototype_section(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         targets.extend(prototype::artboards(other).into_iter().map(|a| (a.id, format!("{} / {}", other.name, a.name))));
     }
     let doc = &app.doc;
-    let parent_is_artboard = page.parent(layer.id).flatten().and_then(|p| page.find(p)).is_some_and(|p| p.is_artboard());
+    let in_artboard = own.is_some();
     section(ui, "Prototyping");
     let name_of = |d: Option<Destination>| match d {
         None => "None".to_owned(),
@@ -447,7 +447,7 @@ fn prototype_section(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
             ui.checkbox(&mut link.overlay, "Open as overlay").on_hover_text("Show it over the current artboard; clicking outside closes it");
         }
     }
-    if parent_is_artboard {
+    if in_artboard {
         ui.checkbox(&mut layer.fixed_to_viewport, "Fix position when scrolling");
     }
 }

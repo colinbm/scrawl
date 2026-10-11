@@ -1460,3 +1460,20 @@ fn blurs_from_the_inspector_render_on_the_canvas() {
     assert!(h.query_by_label("BLUR").is_some());
     save(&mut h, "blurs");
 }
+
+#[test]
+fn preview_in_a_device_frame() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let buttons = layer_named(&h, "Buttons").id;
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+    h.run_steps(3);
+    h.get_by_label("Device").click();
+    h.run_steps(3);
+    assert!(h.state().front().preview.as_ref().unwrap().device_frame);
+    save(&mut h, "device_frame");
+    let card = preview_pos(&h, 200.0, 300.0);
+    click_at(&mut h, card);
+    h.run_steps(30);
+    assert_eq!(h.state().front().preview.as_ref().unwrap().player.current, buttons, "links still work inside the frame");
+}

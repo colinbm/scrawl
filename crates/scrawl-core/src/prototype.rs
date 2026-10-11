@@ -175,22 +175,30 @@ pub struct LinkArea {
 /// Layers fixed to the viewport don't scroll, and sit above the rest.
 pub fn link_areas(artboard: &Layer, scroll: f64) -> Vec<LinkArea> {
     let Some(children) = artboard.children() else { return vec![] };
-    let (fixed, flowing): (Vec<&Layer>, Vec<&Layer>) = children.iter().partition(|l| l.fixed_to_viewport);
     let mut out = vec![];
-    for (layers, offset) in [(fixed, 0.0), (flowing, -scroll)] {
-        for l in layers.into_iter().rev() {
-            collect_areas(l, Affine::translate((0.0, offset)), None, &mut out);
+    // Fixed layers (at any depth) sit above the rest and don't scroll.
+    for fixed_pass in [true, false] {
+        for l in children.iter().rev() {
+            collect_areas(l, Affine::IDENTITY, None, scroll, fixed_pass, false, &mut out);
         }
     }
     out
 }
 
-fn collect_areas(layer: &Layer, parent: Affine, inherited: Option<FlowLink>, out: &mut Vec<LinkArea>) {
+#[allow(clippy::too_many_arguments)]
+fn collect_areas(layer: &Layer, parent: Affine, inherited: Option<FlowLink>, scroll: f64, fixed_pass: bool, in_fixed: bool, out: &mut Vec<LinkArea>) {
     if !layer.visible {
         return;
     }
+    let in_fixed = in_fixed || layer.fixed_to_viewport;
     let t = parent * layer.local_transform();
     let link = layer.flow.or(inherited);
+    let shift = Affine::translate((0.0, if in_fixed { 0.0 } else { -scroll }));
+    let push = |link: FlowLink, out: &mut Vec<LinkArea>| {
+        if in_fixed == fixed_pass {
+            out.push(LinkArea { layer: layer.id, link, outline: shift * t * layer.frame.local_rect().to_path(0.1) });
+        }
+    };
     let children = match &layer.kind {
         LayerKind::Symbol(s) => Some(&s.expanded),
         _ => layer.children(),
@@ -200,18 +208,59 @@ fn collect_areas(layer: &Layer, parent: Affine, inherited: Option<FlowLink>, out
         // they have none.
         Some(children) => {
             for c in children.iter().rev() {
-                collect_areas(c, t, link, out);
+                collect_areas(c, t, link, scroll, fixed_pass, in_fixed, out);
             }
             if let (Some(link), LayerKind::Symbol(_)) = (layer.flow, &layer.kind) {
-                out.push(LinkArea { layer: layer.id, link, outline: t * layer.frame.local_rect().to_path(0.1) });
+                push(link, out);
             }
         }
         None => {
             if let Some(link) = link {
-                out.push(LinkArea { layer: layer.id, link, outline: t * layer.frame.local_rect().to_path(0.1) });
+                push(link, out);
             }
         }
     }
+}
+
+/// An artboard split for scrolling: itself without its fixed layers, and those layers (from any
+/// depth) moved into the artboard's own space, bottom to top.
+pub fn split_fixed(artboard: &Layer) -> (Layer, Vec<Layer>) {
+    fn lift(layers: &mut Vec<Layer>, parent: Affine, out: &mut Vec<Layer>) {
+        let mut i = 0;
+        while i < layers.len() {
+            if layers[i].fixed_to_viewport {
+                let mut l = layers.remove(i);
+                place_in(&mut l, parent);
+                out.push(l);
+                continue;
+            }
+            let t = parent * layers[i].local_transform();
+            if let Some(children) = layers[i].children_mut() {
+                lift(children, t, out);
+            }
+            i += 1;
+        }
+    }
+    let mut rest = artboard.clone();
+    let mut fixed = vec![];
+    if let Some(children) = rest.children_mut() {
+        lift(children, Affine::IDENTITY, &mut fixed);
+    }
+    (rest, fixed)
+}
+
+/// Re-expresses `layer`, whose parent maps to artboard space by `parent` (rotation, flips and
+/// translation), directly in artboard space.
+fn place_in(layer: &mut Layer, parent: Affine) {
+    let c = layer.frame.local_rect().center();
+    let center = parent * layer.local_transform() * c;
+    let [a, b, cc, d, _, _] = parent.as_coeffs();
+    if a * d - b * cc < 0.0 {
+        layer.flip_horizontal = !layer.flip_horizontal;
+    }
+    layer.rotation = (layer.rotation + b.atan2(a).to_degrees()).rem_euclid(360.0);
+    layer.frame.x = center.x - layer.frame.width / 2.0;
+    layer.frame.y = center.y - layer.frame.height / 2.0;
 }
 
 /// The link under `point` (viewport coordinates) on `artboard` scrolled by `scroll`.
@@ -470,6 +519,27 @@ mod tests {
         assert_eq!(link_at(ab, Point::new(30.0, 10.0), 500.0), Some(FlowLink::back()));
         assert_eq!(link_at(ab, Point::new(30.0, 55.0), 0.0), Some(FlowLink::to(detail)));
         assert_eq!(link_at(ab, Point::new(30.0, 25.0), 0.0), Some(FlowLink::back()));
+    }
+
+    #[test]
+    fn fixed_layers_inside_groups() {
+        let (mut page, home, detail, _) = sample();
+        // A fixed tab bar nested in a group near the bottom.
+        let mut tab = Layer::hotspot(Frame::new(0.0, 550.0, 300.0, 50.0));
+        tab.flow = Some(FlowLink::to(detail));
+        tab.fixed_to_viewport = true;
+        let tab_id = ops::insert_drawn(&mut page, tab);
+        let other = ops::insert_drawn(&mut page, Layer::rectangle(Frame::new(0.0, 500.0, 10.0, 10.0)));
+        ops::group(&mut page, &[tab_id, other]).unwrap();
+        let ab = page.find(home).unwrap();
+        // Scrolled by 200, the bar stays at the bottom of the viewport.
+        assert_eq!(link_at(ab, Point::new(100.0, 575.0), 200.0), Some(FlowLink::to(detail)));
+        let (rest, fixed) = split_fixed(ab);
+        assert_eq!(fixed.len(), 1);
+        assert!((fixed[0].frame.y - 550.0).abs() < 1e-9 && (fixed[0].frame.x).abs() < 1e-9, "{:?}", fixed[0].frame);
+        let mut ids = vec![];
+        rest.walk(&mut |l| ids.push(l.id));
+        assert!(!ids.contains(&tab_id));
     }
 
     #[test]
