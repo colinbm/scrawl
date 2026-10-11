@@ -23,7 +23,7 @@ Scripts get 5 seconds and 512 MB, then they're stopped.
 
 A plugin is either:
 
-- a loose `.js` file: one command, named after the file, or after a first line like
+- a loose `.js` file: one command, named after the file, or after a line near the top like
   `// @name Make It Pop`; or
 - a folder with a `plugin.json` naming its commands:
 
@@ -39,6 +39,33 @@ A plugin is either:
   These appear in the Plugins menu as "Examples › Rename Layers by Type".
 
 A script's top level runs inside a function, so it can `return` early.
+
+### Running on events
+
+A command can also run by itself when something happens: add `"on": ["save"]` to its entry in
+`plugin.json`, or a line `// @on save` near the top of a loose script. The events are:
+
+- `open`: a document was opened;
+- `save`: it was saved (changes the script makes are left unsaved);
+- `selection`: the selection changed (once the mouse is released, not during a drag).
+
+`scrawl.event` says which event ran the script, or is `null` when it was run from the menu.
+
+### Files and the network
+
+Scripts can't touch files or the network directly; they ask the user through the app:
+
+| | |
+|---|---|
+| `scrawl.chooseFile(extensions?)` | Asks the user to pick a file (e.g. `["csv"]`). Its path, or `null` if cancelled. |
+| `scrawl.readText(path)` | The text of a file picked with `chooseFile()` this run, or of one in the plugin's own folder. Other paths throw. |
+| `scrawl.saveText(name, text)` | Asks where to save `text`, suggesting `name`. The path, or `null` if cancelled. |
+| `scrawl.fetch(url)` | GETs `url` and returns the body as text. |
+| `scrawl.fetchJSON(url)` | `fetch()` parsed as JSON. |
+
+The first time a plugin fetches from a host, Scrawl asks whether to allow it; the answer "yes" is
+remembered in `Plugins/permissions.json` (delete a line there to revoke it). Time spent in
+dialogs and downloads doesn't count towards the 5-second limit.
 
 ## The `scrawl` object
 
@@ -61,6 +88,8 @@ A script's top level runs inside a function, so it can `return` early.
 | `scrawl.fill(hex)` | A solid fill, for `layer.style.fills`. |
 | `scrawl.uuid()` | A fresh id. |
 | `scrawl.message(text)` | Shown in the window when the script finishes. |
+| `scrawl.event` | The event that ran the script (`"open"`, `"save"`, `"selection"`), or `null`. |
+| `scrawl.chooseFile()`, `readText()`, `saveText()`, `fetch()` | See [Files and the network](#files-and-the-network). |
 | `console.log(...)` | Printed in the script console (and the log). |
 
 ## Layers

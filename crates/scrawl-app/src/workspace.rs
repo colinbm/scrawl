@@ -25,6 +25,10 @@ pub struct Workspace {
     /// Quitting: every window has agreed to close.
     quitting: bool,
     pub plugins: crate::plugins::Plugins,
+    /// Stands in for dialogs and the network in plugins; `None` uses the real ones.
+    pub plugin_host: Option<std::rc::Rc<dyn crate::plugins::Host>>,
+    /// Each window's selection when plugins last saw it, for "selection" handlers.
+    seen_selection: Vec<(u64, Vec<scrawl_core::LayerId>)>,
     #[cfg(target_os = "macos")]
     menu: Option<crate::native_menu::NativeMenu>,
 }
@@ -44,6 +48,8 @@ impl Workspace {
             was_focused: vec![],
             quitting: false,
             plugins,
+            plugin_host: None,
+            seen_selection: vec![],
             #[cfg(target_os = "macos")]
             menu: None,
         };
@@ -112,11 +118,36 @@ impl Workspace {
         };
         let w = &mut self.windows[i];
         w.open_path(path);
-        if w.error.is_none() {
+        let opened = w.error.is_none();
+        if opened {
             self.prefs.add_recent(path);
             self.save_prefs();
         }
         self.focused = self.windows[i].uid;
+        if opened {
+            crate::plugins::run_handlers(self, i, "open");
+        }
+    }
+
+    /// Runs "selection" handlers for windows whose selection changed, once the pointer is up
+    /// (not every frame of a drag).
+    fn selection_events(&mut self, ctx: &egui::Context) {
+        if self.plugins.handlers("selection").is_empty() || ctx.input(|i| i.pointer.any_down()) {
+            return;
+        }
+        for i in 0..self.windows.len() {
+            let (uid, selection) = (self.windows[i].uid, self.windows[i].selection.clone());
+            let before = self.seen_selection.iter().find(|(u, _)| *u == uid).map(|(_, s)| s);
+            if before.is_some_and(|s| *s != selection) {
+                crate::plugins::run_handlers(self, i, "selection");
+            }
+            // A handler may change the selection itself; that doesn't count as a new change.
+            let now = self.windows[i].selection.clone();
+            self.seen_selection.retain(|(u, _)| *u != uid);
+            self.seen_selection.push((uid, now));
+        }
+        let open: Vec<u64> = self.windows.iter().map(|w| w.uid).collect();
+        self.seen_selection.retain(|(u, _)| open.contains(u));
     }
 
     fn focus(&mut self, i: usize) {
@@ -223,6 +254,7 @@ impl Workspace {
                     crate::autosave::remove(support, &w.autosave_name);
                 }
                 w.autosaved = None;
+                crate::plugins::run_handlers(self, i, "save");
             }
             Request::CloseWindow => self.close(ctx, i),
             Request::Quit => {
@@ -369,6 +401,7 @@ impl eframe::App for Workspace {
         }
 
         self.handle_requests(&ctx);
+        self.selection_events(&ctx);
 
         if let Some(support) = self.support.clone() {
             let now = ctx.input(|i| i.time);

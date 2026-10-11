@@ -1021,7 +1021,7 @@ fn scripts_edit_the_document_undoably() {
         console.log("made", dot.name);
         scrawl.message("Done");
     "#;
-    let out = crate::plugins::run(app, src, "test.js").unwrap();
+    let out = crate::plugins::run(app, src, "test.js", &crate::plugins::Access::console(None)).unwrap();
     assert_eq!(out.log, ["made Dot"]);
     assert_eq!(out.messages, ["Done"]);
     h.run();
@@ -1034,7 +1034,7 @@ fn scripts_edit_the_document_undoably() {
 
     // A failing script changes nothing and says why.
     let before = h.state().front().doc.clone();
-    let err = crate::plugins::run(h.state_mut().front_mut(), "scrawl.page.layers = 5;", "bad.js").unwrap_err();
+    let err = crate::plugins::run(h.state_mut().front_mut(), "scrawl.page.layers = 5;", "bad.js", &crate::plugins::Access::console(None)).unwrap_err();
     assert!(err.0.contains("can't read"), "{}", err.0);
     assert_eq!(h.state().front().doc, before);
 
@@ -1476,4 +1476,31 @@ fn preview_in_a_device_frame() {
     click_at(&mut h, card);
     h.run_steps(30);
     assert_eq!(h.state().front().preview.as_ref().unwrap().player.current, buttons, "links still work inside the frame");
+}
+
+#[test]
+fn plugins_run_on_events() {
+    let Some(mut h) = harness() else { return };
+    let support = std::env::temp_dir().join(format!("scrawl-ui-plugin-events-{}", std::process::id()));
+    let dir = crate::plugins::folder(&support);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("tag.js"),
+        "// @name Tag Selection\n// @on selection\nfor (const l of scrawl.selectedLayers) l.name = `${scrawl.event}: ${l.name}`;\n",
+    )
+    .unwrap();
+    h.state_mut().plugins = crate::plugins::Plugins::load(Some(&support));
+    assert_eq!(h.state().plugins.handlers("selection").len(), 1);
+    h.run();
+    select(&mut h, "Card");
+    h.run();
+    let tagged = layer_named(&h, "selection: Card");
+    assert!(h.state().front().selection.contains(&tagged.id));
+    // The handler's own edit doesn't run it again.
+    h.run();
+    h.run();
+    let mut twice = false;
+    h.state().front().page().walk(|l| twice |= l.name.starts_with("selection: selection:"));
+    assert!(!twice);
+    std::fs::remove_dir_all(&support).ok();
 }

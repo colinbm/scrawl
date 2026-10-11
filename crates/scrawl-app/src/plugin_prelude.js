@@ -1,4 +1,5 @@
-// The globals plugin scripts see. `__input`, `__log`, `__make` and `__uuid` come from the host.
+// The globals plugin scripts see. `__input`, `__log`, `__make`, `__uuid`, `__chooseFile`,
+// `__readText`, `__saveText` and `__fetch` come from the host.
 "use strict";
 
 globalThis.console = (() => {
@@ -165,6 +166,28 @@ globalThis.scrawl = (() => {
       };
     },
     uuid: () => __uuid(),
+    /** What ran the script: "open", "save", "selection", or null from a menu or the console. */
+    event: input.event ?? null,
+    /** Asks the user for a file, e.g. `chooseFile(["csv", "txt"])`. Its path, or null if cancelled. */
+    chooseFile(extensions = []) {
+      return __chooseFile(JSON.stringify(extensions)) ?? null;
+    },
+    /** The text of a file chosen with chooseFile(), or one in the plugin's own folder. */
+    readText(path) {
+      return __readText(String(path));
+    },
+    /** Asks where to save `text`, suggesting `name`. The path saved to, or null if cancelled. */
+    saveText(name, text) {
+      return __saveText(String(name), String(text)) ?? null;
+    },
+    /** GETs `url` as text. The first request to each host asks the user's permission. */
+    fetch(url) {
+      return __fetch(String(url));
+    },
+    /** fetch() parsed as JSON. */
+    fetchJSON(url) {
+      return JSON.parse(__fetch(String(url)));
+    },
     /** Shows `text` in the window when the script finishes. */
     message(text) {
       messages.push(String(text));

@@ -3,7 +3,7 @@
 //! freely; when it finishes, the result replaces the document as one undoable step.
 //!
 //! Plugins live in the `Plugins` folder: either a loose `.js` file (one command, named after the
-//! file or a `// @name` comment on its first line) or a folder with a `plugin.json` listing its
+//! file or a `// @name` comment in its first lines) or a folder with a `plugin.json` listing its
 //! commands. See docs/PLUGINS.md for the API.
 
 use std::cell::RefCell;
@@ -34,6 +34,104 @@ pub struct PluginCommand {
     /// Shown in the Plugins menu.
     pub label: String,
     pub script: PathBuf,
+    /// Events that run it by themselves: "open", "save", "selection".
+    pub on: Vec<String>,
+}
+
+/// What scripts may reach outside the document, through the app. Tests use a fake.
+pub trait Host {
+    /// Asks for a file to read, of one of `extensions` (any if empty). `None` if cancelled.
+    fn choose_file(&self, extensions: &[String]) -> Option<PathBuf>;
+    /// Asks where to save a file, suggesting `name`.
+    fn choose_save(&self, name: &str) -> Option<PathBuf>;
+    /// Asks whether `plugin` may fetch from `host`.
+    fn allow_network(&self, plugin: &str, host: &str) -> bool;
+    fn fetch(&self, url: &str) -> Result<String, String>;
+}
+
+/// The real thing: native dialogs and HTTP.
+pub struct DesktopHost;
+
+impl Host for DesktopHost {
+    fn choose_file(&self, extensions: &[String]) -> Option<PathBuf> {
+        let mut d = rfd::FileDialog::new();
+        if !extensions.is_empty() {
+            d = d.add_filter("Files", extensions);
+        }
+        d.pick_file()
+    }
+
+    fn choose_save(&self, name: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new().set_file_name(name).save_file()
+    }
+
+    fn allow_network(&self, plugin: &str, host: &str) -> bool {
+        let answer = rfd::MessageDialog::new()
+            .set_title("Allow network access?")
+            .set_description(format!("The plugin “{plugin}” wants to connect to {host}. Allow it from now on?"))
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show();
+        answer == rfd::MessageDialogResult::Yes
+    }
+
+    fn fetch(&self, url: &str) -> Result<String, String> {
+        let mut response = ureq::get(url).call().map_err(|e| e.to_string())?;
+        response.body_mut().with_config().limit(32 << 20).read_to_string().map_err(|e| e.to_string())
+    }
+}
+
+/// Who a script runs as and what it may reach.
+#[derive(Clone)]
+pub struct Access {
+    pub host: Rc<dyn Host>,
+    /// Names the plugin in permission prompts and records.
+    pub plugin: String,
+    /// The plugin's own folder, which it may always read.
+    pub folder: Option<PathBuf>,
+    /// Where granted network hosts are remembered.
+    pub permissions: Option<PathBuf>,
+    /// The event that ran the script, if any: `scrawl.event`.
+    pub event: Option<String>,
+}
+
+impl Access {
+    /// The console's access: dialogs and prompts, no plugin folder.
+    pub fn console(support: Option<&Path>) -> Self {
+        Self {
+            host: Rc::new(DesktopHost),
+            plugin: "Script console".into(),
+            folder: None,
+            permissions: support.map(|s| folder(s).join("permissions.json")),
+            event: None,
+        }
+    }
+
+    fn granted(&self, host: &str) -> bool {
+        let Some(file) = &self.permissions else { return false };
+        let all: std::collections::BTreeMap<String, Vec<String>> =
+            std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        all.get(&self.plugin).is_some_and(|hosts| hosts.iter().any(|h| h == host))
+    }
+
+    fn grant(&self, host: &str) {
+        let Some(file) = &self.permissions else { return };
+        let mut all: std::collections::BTreeMap<String, Vec<String>> =
+            std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        all.entry(self.plugin.clone()).or_default().push(host.into());
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(file, serde_json::to_vec_pretty(&all).unwrap_or_default());
+    }
+}
+
+/// The host part of a URL, for permissions.
+fn url_host(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split(['/', '?', '#']).next()?;
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let host = host.split(':').next()?;
+    (!host.is_empty()).then_some(host)
 }
 
 #[derive(Deserialize)]
@@ -47,6 +145,8 @@ struct Manifest {
 struct ManifestCommand {
     name: String,
     script: String,
+    #[serde(default)]
+    on: Vec<String>,
 }
 
 #[derive(Default)]
@@ -71,9 +171,11 @@ impl Plugins {
         for path in entries {
             let stem = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
             if path.extension().is_some_and(|e| e == "js") {
-                let first = std::fs::read_to_string(&path).ok().and_then(|s| s.lines().next().map(str::to_owned)).unwrap_or_default();
-                let label = first.trim().strip_prefix("// @name").map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).unwrap_or(stem.clone());
-                out.commands.push(PluginCommand { id: stem, label, script: path });
+                let source = std::fs::read_to_string(&path).unwrap_or_default();
+                let tag = |name: &str| source.lines().take(5).find_map(|l| l.trim().strip_prefix(name).map(|v| v.trim().to_owned())).filter(|v| !v.is_empty());
+                let label = tag("// @name").unwrap_or(stem.clone());
+                let on = tag("// @on").map(|v| v.split([',', ' ']).filter(|s| !s.is_empty()).map(str::to_owned).collect()).unwrap_or_default();
+                out.commands.push(PluginCommand { id: stem, label, script: path, on });
             } else if path.join("plugin.json").is_file() {
                 let manifest = std::fs::read(path.join("plugin.json"))
                     .map_err(|e| e.to_string())
@@ -82,7 +184,7 @@ impl Plugins {
                     Ok(m) => {
                         for c in m.commands {
                             let label = format!("{} › {}", m.name, c.name);
-                            out.commands.push(PluginCommand { id: format!("{stem}/{}", c.name), label, script: path.join(c.script) });
+                            out.commands.push(PluginCommand { id: format!("{stem}/{}", c.name), label, script: path.join(c.script), on: c.on });
                         }
                     }
                     Err(e) => out.problems.push(format!("{}: {e}", path.display())),
@@ -99,6 +201,11 @@ impl Plugins {
 
     pub fn find(&self, id: &str) -> Option<&PluginCommand> {
         self.commands.iter().find(|c| c.id == id)
+    }
+
+    /// Commands that run on `event`.
+    pub fn handlers(&self, event: &str) -> Vec<PluginCommand> {
+        self.commands.iter().filter(|c| c.on.iter().any(|e| e == event)).cloned().collect()
     }
 }
 
@@ -122,14 +229,15 @@ struct Result_ {
 
 /// Runs `source` against `app`'s document. On success the script's edits are applied (as one
 /// undo step); on failure nothing changes and the error says why, with what it logged so far.
-pub fn run(app: &mut ScrawlApp, source: &str, name: &str) -> Result<Output, (String, Vec<String>)> {
+pub fn run(app: &mut ScrawlApp, source: &str, name: &str, access: &Access) -> Result<Output, (String, Vec<String>)> {
     let input = serde_json::json!({
         "document": serde_json::to_string(&app.doc).map_err(|e| (e.to_string(), vec![]))?,
         "selection": serde_json::to_string(&app.selection).map_err(|e| (e.to_string(), vec![]))?,
         "page": app.page.0.to_string(),
+        "event": access.event,
     });
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let result = evaluate(source, name, &input, log.clone());
+    let result = evaluate(source, name, &input, log.clone(), access);
     let log = log.take();
     let json = result.map_err(|e| (e, log.clone()))?;
     let out: Result_ = serde_json::from_str(&json).map_err(|e| (format!("unexpected script result: {e}"), log.clone()))?;
@@ -156,11 +264,23 @@ pub fn run(app: &mut ScrawlApp, source: &str, name: &str) -> Result<Output, (Str
 }
 
 /// Evaluates the prelude and the script in a fresh engine, returning the JSON of the result.
-fn evaluate(source: &str, name: &str, input: &serde_json::Value, log: Rc<RefCell<Vec<String>>>) -> Result<String, String> {
+fn evaluate(source: &str, name: &str, input: &serde_json::Value, log: Rc<RefCell<Vec<String>>>, access: &Access) -> Result<String, String> {
     let rt = Runtime::new().map_err(|e| e.to_string())?;
     rt.set_memory_limit(MEMORY_LIMIT);
     let start = Instant::now();
-    rt.set_interrupt_handler(Some(Box::new(move || start.elapsed() > TIME_LIMIT)));
+    // Time spent in dialogs and downloads doesn't count against the script.
+    let waited = Rc::new(std::cell::Cell::new(Duration::ZERO));
+    let w = waited.clone();
+    rt.set_interrupt_handler(Some(Box::new(move || start.elapsed().saturating_sub(w.get()) > TIME_LIMIT)));
+    let timed = {
+        let waited = waited.clone();
+        move |f: &mut dyn FnMut()| {
+            let t = Instant::now();
+            f();
+            waited.set(waited.get() + t.elapsed());
+        }
+    };
+    let timed = Rc::new(timed);
     let ctx = Context::full(&rt).map_err(|e| e.to_string())?;
     ctx.with(|ctx| {
         let globals = ctx.globals();
@@ -170,9 +290,93 @@ fn evaluate(source: &str, name: &str, input: &serde_json::Value, log: Rc<RefCell
         globals.set("__log", Function::new(ctx.clone(), move |line: String| logger.borrow_mut().push(line)).map_err(fail)?).map_err(fail)?;
         globals.set("__make", Function::new(ctx.clone(), make_layer).map_err(fail)?).map_err(fail)?;
         globals.set("__uuid", Function::new(ctx.clone(), || uuid::Uuid::new_v4().to_string()).map_err(fail)?).map_err(fail)?;
+        // Files the user chose this run, which the script may read.
+        let chosen: Rc<RefCell<HashSet<PathBuf>>> = Default::default();
+        let err = |m: String| rquickjs::Error::new_from_js_message("host", "value", m);
+        {
+            let (access, chosen, timed) = (access.clone(), chosen.clone(), timed.clone());
+            globals
+                .set(
+                    "__chooseFile",
+                    Function::new(ctx.clone(), move |exts: String| {
+                        let exts: Vec<String> = serde_json::from_str(&exts).unwrap_or_default();
+                        let mut picked = None;
+                        timed(&mut || picked = access.host.choose_file(&exts));
+                        picked.map(|p| {
+                            chosen.borrow_mut().insert(p.clone());
+                            p.to_string_lossy().into_owned()
+                        })
+                    })
+                    .map_err(fail)?,
+                )
+                .map_err(fail)?;
+        }
+        {
+            let (access, chosen) = (access.clone(), chosen.clone());
+            globals
+                .set(
+                    "__readText",
+                    Function::new(ctx.clone(), move |path: String| -> rquickjs::Result<String> {
+                        let p = PathBuf::from(&path);
+                        let own = access.folder.as_ref().is_some_and(|f| {
+                            std::fs::canonicalize(&p).ok().zip(std::fs::canonicalize(f).ok()).is_some_and(|(p, f)| p.starts_with(f))
+                        });
+                        if !own && !chosen.borrow().contains(&p) {
+                            return Err(err(format!("{path} wasn't chosen with scrawl.chooseFile()")));
+                        }
+                        std::fs::read_to_string(&p).map_err(|e| err(e.to_string()))
+                    })
+                    .map_err(fail)?,
+                )
+                .map_err(fail)?;
+        }
+        {
+            let (access, timed) = (access.clone(), timed.clone());
+            globals
+                .set(
+                    "__saveText",
+                    Function::new(ctx.clone(), move |name: String, text: String| -> rquickjs::Result<Option<String>> {
+                        let mut picked = None;
+                        timed(&mut || picked = access.host.choose_save(&name));
+                        let Some(p) = picked else { return Ok(None) };
+                        std::fs::write(&p, text).map_err(|e| err(e.to_string()))?;
+                        Ok(Some(p.to_string_lossy().into_owned()))
+                    })
+                    .map_err(fail)?,
+                )
+                .map_err(fail)?;
+        }
+        {
+            let (access, timed) = (access.clone(), timed.clone());
+            globals
+                .set(
+                    "__fetch",
+                    Function::new(ctx.clone(), move |url: String| -> rquickjs::Result<String> {
+                        let host = url_host(&url).ok_or_else(|| err(format!("not a URL: {url}")))?.to_owned();
+                        let mut result = Err(String::new());
+                        timed(&mut || {
+                            let allowed = access.granted(&host) || {
+                                let yes = access.host.allow_network(&access.plugin, &host);
+                                if yes {
+                                    access.grant(&host);
+                                }
+                                yes
+                            };
+                            result = if allowed { access.host.fetch(&url) } else { Err(format!("not allowed to reach {host}")) };
+                        });
+                        result.map_err(err)
+                    })
+                    .map_err(fail)?,
+                )
+                .map_err(fail)?;
+        }
         let report = |e: rquickjs::CaughtError<'_>| {
             let msg = e.to_string();
-            if start.elapsed() > TIME_LIMIT { format!("the script took longer than {} seconds and was stopped", TIME_LIMIT.as_secs()) } else { msg }
+            if start.elapsed().saturating_sub(waited.get()) > TIME_LIMIT {
+                format!("the script took longer than {} seconds and was stopped", TIME_LIMIT.as_secs())
+            } else {
+                msg
+            }
         };
         ctx.eval::<(), _>(PRELUDE).catch(&ctx).map_err(report)?;
         // Wrapped in a function so scripts can `return` early.
@@ -223,6 +427,24 @@ fn dedupe_ids(doc: &mut Document) {
 /// Runs plugin command `id` in window `i`.
 pub fn run_command(ws: &mut Workspace, i: usize, id: &str) {
     let Some(cmd) = ws.plugins.find(id).cloned() else { return };
+    run_plugin(ws, i, &cmd, None);
+}
+
+/// Runs the plugins that handle `event` ("open", "save", "selection") in window `i`.
+pub fn run_handlers(ws: &mut Workspace, i: usize, event: &str) {
+    for cmd in ws.plugins.handlers(event) {
+        run_plugin(ws, i, &cmd, Some(event));
+    }
+}
+
+fn run_plugin(ws: &mut Workspace, i: usize, cmd: &PluginCommand, event: Option<&str>) {
+    let mut access = Access::console(ws.support());
+    access.plugin = cmd.id.split('/').next().unwrap_or(&cmd.id).to_owned();
+    access.folder = cmd.script.parent().filter(|p| p.join("plugin.json").exists()).map(Path::to_path_buf);
+    access.event = event.map(str::to_owned);
+    if let Some(host) = &ws.plugin_host {
+        access.host = host.clone();
+    }
     let app = &mut ws.windows[i];
     let source = match std::fs::read_to_string(&cmd.script) {
         Ok(s) => s,
@@ -232,7 +454,7 @@ pub fn run_command(ws: &mut Workspace, i: usize, id: &str) {
         }
     };
     let name = cmd.script.file_name().map_or_else(|| cmd.label.clone(), |n| n.to_string_lossy().into_owned());
-    match run(app, &source, &name) {
+    match run(app, &source, &name, &access) {
         Ok(out) => {
             for line in &out.log {
                 log::info!("{}: {line}", cmd.label);
@@ -300,7 +522,8 @@ pub fn show_console(app: &mut ScrawlApp, ctx: &egui::Context) {
     }
     if run_now {
         let code = console.code.clone();
-        let result = run(app, &code, "script.js");
+        let access = Access::console(app.support.as_deref());
+        let result = run(app, &code, "script.js", &access);
         let Some(console) = &mut app.console else { return };
         match result {
             Ok(out) => {
@@ -356,6 +579,95 @@ fn install_examples(dir: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Answers dialogs and requests from fixed values, and records what was asked.
+    #[derive(Default)]
+    struct FakeHost {
+        file: Option<PathBuf>,
+        save: Option<PathBuf>,
+        allow: bool,
+        asked: RefCell<Vec<String>>,
+    }
+
+    impl Host for FakeHost {
+        fn choose_file(&self, _: &[String]) -> Option<PathBuf> {
+            self.file.clone()
+        }
+        fn choose_save(&self, _: &str) -> Option<PathBuf> {
+            self.save.clone()
+        }
+        fn allow_network(&self, _: &str, host: &str) -> bool {
+            self.asked.borrow_mut().push(host.into());
+            self.allow
+        }
+        fn fetch(&self, url: &str) -> Result<String, String> {
+            Ok(format!("{{\"url\": \"{url}\"}}"))
+        }
+    }
+
+    fn access(host: impl Into<Rc<FakeHost>>, permissions: Option<PathBuf>) -> Access {
+        Access { host: host.into(), plugin: "test".into(), folder: None, permissions, event: None }
+    }
+
+    fn eval_js(source: &str, name: &str, input: &serde_json::Value, log: Rc<RefCell<Vec<String>>>) -> Result<String, String> {
+        evaluate(source, name, input, log, &access(FakeHost::default(), None))
+    }
+
+    fn empty_input() -> serde_json::Value {
+        serde_json::json!({ "document": serde_json::to_string(&Document::default()).unwrap(), "selection": "[]", "page": "", "event": "save" })
+    }
+
+    #[test]
+    fn scripts_read_only_chosen_files_and_save_where_asked() {
+        let dir = std::env::temp_dir().join(format!("scrawl-plugin-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (chosen, other, saved) = (dir.join("in.txt"), dir.join("other.txt"), dir.join("out.txt"));
+        std::fs::write(&chosen, "hello").unwrap();
+        std::fs::write(&other, "secret").unwrap();
+        let host = FakeHost { file: Some(chosen.clone()), save: Some(saved.clone()), ..Default::default() };
+        let log = Rc::new(RefCell::new(vec![]));
+        let source = format!(
+            "const p = scrawl.chooseFile(['txt']); console.log(scrawl.readText(p)); scrawl.saveText('x.txt', 'written');\n\
+             try {{ scrawl.readText({other:?}); }} catch (e) {{ console.log('refused'); }}\n\
+             console.log(scrawl.event);"
+        );
+        evaluate(&source, "files.js", &empty_input(), log.clone(), &access(host, None)).unwrap();
+        assert_eq!(log.borrow().as_slice(), ["hello", "refused", "save"]);
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "written");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn network_access_is_asked_once_per_host_and_remembered() {
+        let dir = std::env::temp_dir().join(format!("scrawl-plugin-net-{}", std::process::id()));
+        let permissions = dir.join("permissions.json");
+        let log = Rc::new(RefCell::new(vec![]));
+        let source = "console.log(scrawl.fetchJSON('https://example.com:8080/a?b').url); scrawl.fetch('https://example.com/c');";
+
+        let host = Rc::new(FakeHost { allow: true, ..Default::default() });
+        let a = access(host.clone(), Some(permissions.clone()));
+        evaluate(source, "net.js", &empty_input(), log.clone(), &a).unwrap();
+        assert_eq!(log.borrow().as_slice(), ["https://example.com:8080/a?b"]);
+        assert_eq!(host.asked.borrow().as_slice(), ["example.com"]);
+
+        // Remembered: not asked again, even by a host that would refuse.
+        let refusing = Rc::new(FakeHost::default());
+        let b = access(refusing.clone(), Some(permissions.clone()));
+        evaluate(source, "net.js", &empty_input(), log.clone(), &b).unwrap();
+        assert!(refusing.asked.borrow().is_empty());
+
+        // Another host, refused.
+        let e = evaluate("scrawl.fetch('https://other.org/')", "net.js", &empty_input(), log, &b).unwrap_err();
+        assert!(e.contains("not allowed to reach other.org"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hosts_of_urls() {
+        assert_eq!(url_host("https://user@api.example.com:443/x"), Some("api.example.com"));
+        assert_eq!(url_host("http://localhost"), Some("localhost"));
+        assert_eq!(url_host("example.com"), None);
+    }
+
     fn layer_named<'a>(doc: &'a Document, name: &str) -> Option<&'a Layer> {
         let mut found = None;
         for p in &doc.pages {
@@ -377,7 +689,7 @@ mod tests {
             "page": doc.pages[0].id.0.to_string(),
         });
         let log = Rc::new(RefCell::new(vec![]));
-        let json = evaluate("console.log('pages', scrawl.pages.length); scrawl.page.name = 'Renamed';", "t.js", &input, log.clone()).unwrap();
+        let json = eval_js("console.log('pages', scrawl.pages.length); scrawl.page.name = 'Renamed';", "t.js", &input, log.clone()).unwrap();
         assert_eq!(log.borrow().as_slice(), ["pages 2"]);
         let out: Result_ = serde_json::from_str(&json).unwrap();
         assert_eq!(out.document["pages"][0]["name"], "Renamed");
@@ -387,9 +699,9 @@ mod tests {
     fn errors_and_runaway_scripts_are_reported() {
         let input = serde_json::json!({ "document": serde_json::to_string(&Document::default()).unwrap(), "selection": "[]", "page": "" });
         let log = Rc::new(RefCell::new(vec![]));
-        let e = evaluate("throw new Error('nope')", "bad.js", &input, log.clone()).unwrap_err();
+        let e = eval_js("throw new Error('nope')", "bad.js", &input, log.clone()).unwrap_err();
         assert!(e.contains("nope"), "{e}");
-        let e = evaluate("while (true) {}", "loop.js", &input, log).unwrap_err();
+        let e = eval_js("while (true) {}", "loop.js", &input, log).unwrap_err();
         assert!(e.contains("stopped"), "{e}");
     }
 
@@ -423,7 +735,7 @@ mod tests {
             "selection": "[]",
             "page": doc.pages[0].id.0.to_string(),
         });
-        let json = evaluate(source, "example.js", &input, Rc::new(RefCell::new(vec![]))).unwrap();
+        let json = eval_js(source, "example.js", &input, Rc::new(RefCell::new(vec![]))).unwrap();
         let out: Result_ = serde_json::from_str(&json).unwrap();
         let back: Document = serde_json::from_value(out.document).unwrap();
         let names: Vec<&str> = back.pages[0].layers.iter().filter(|l| l.is_artboard()).map(|l| l.name.as_str()).collect();
@@ -441,7 +753,7 @@ mod tests {
             "page": doc.pages[0].id.0.to_string(),
         });
         for (path, source) in EXAMPLES.iter().filter(|(p, _)| p.ends_with(".js")) {
-            let json = evaluate(source, path, &input, Rc::new(RefCell::new(vec![]))).unwrap_or_else(|e| panic!("{path}: {e}"));
+            let json = eval_js(source, path, &input, Rc::new(RefCell::new(vec![]))).unwrap_or_else(|e| panic!("{path}: {e}"));
             let out: Result_ = serde_json::from_str(&json).unwrap();
             let mut back: Document = serde_json::from_value(out.document).unwrap_or_else(|e| panic!("{path}: {e}"));
             dedupe_ids(&mut back);

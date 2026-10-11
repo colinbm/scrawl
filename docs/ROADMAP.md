@@ -87,5 +87,6 @@
 - ✅ Prototyping: layers fixed while scrolling at any depth; a phone device frame in the preview
 - ⬜ Prototyping: design-file export of overlays and the newer animations
 - ⬜ Native menus on Windows/Linux (in-window menu bar there for now); macOS document browser and Versions integration
-- ⬜ Plugin API: events/actions, UI panels, network and file access with permissions
+- ✅ Plugin API: commands that run on open/save/selection events; file access through dialogs; network access with per-host permissions
+- ⬜ Plugin UI panels
 - ⬜ Collaboration (CRDT doc model) — out of scope until the model stabilises
