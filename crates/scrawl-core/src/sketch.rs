@@ -578,7 +578,7 @@ impl Importer {
         l.style = self.style(style, entry);
         let shared = text(v, "sharedStyleID");
         l.shared_style = (!shared.is_empty()).then(|| StyleId(uuid_of(shared)));
-        l.flow = v.get("flow").and_then(flow_in);
+        l.flow = v.get("flow").and_then(|f| flow_in(f, &v["userInfo"]["com.scrawl"]["flow"]));
         l.fixed_to_viewport = flag(v, "isFixedToViewport");
         l.boolean_op = match int(v, "booleanOperation") {
             1 => BooleanOp::Subtract,
@@ -1086,6 +1086,11 @@ impl Exporter {
         }
         if let Some(link) = &l.flow {
             v["flow"] = flow_out(link);
+            // What Sketch's format can't say: overlays and the animations it doesn't have.
+            let nearest = ANIMATIONS.iter().any(|(_, a)| *a == link.animation);
+            if link.overlay || !nearest {
+                v["userInfo"]["com.scrawl"]["flow"] = json!({ "animation": link.animation, "overlay": link.overlay });
+            }
         }
         let shape = |v: &mut Value, class: &str, sub: &Subpath| {
             v["_class"] = json!(class);
@@ -1250,8 +1255,10 @@ impl Exporter {
                     attributes
                 };
                 v["attributedString"] = json!({ "_class": "attributedString", "string": t.text, "attributes": attributes });
-                if let Some(extras) = text_extras_out(t, units) {
-                    v["userInfo"] = json!({ "com.scrawl": extras });
+                if let Some(Value::Object(extras)) = text_extras_out(t, units) {
+                    for (k, e) in extras {
+                        v["userInfo"]["com.scrawl"][k] = e;
+                    }
                 }
                 v["automaticallyDrawOnUnderlyingPath"] = json!(false);
                 v["dontSynchroniseWithSymbol"] = json!(false);
@@ -1296,25 +1303,40 @@ impl Exporter {
     }
 }
 
-/// Sketch's `AnimationType`: -1 none, then slide from left, right, bottom, top.
+/// Sketch's `AnimationType`: 0 none, then slide from left, right, bottom, top.
 const ANIMATIONS: [(i64, Animation); 5] = [
-    (-1, Animation::None),
-    (0, Animation::SlideFromLeft),
-    (1, Animation::SlideFromRight),
-    (2, Animation::SlideFromBottom),
-    (3, Animation::SlideFromTop),
+    (0, Animation::None),
+    (1, Animation::SlideFromLeft),
+    (2, Animation::SlideFromRight),
+    (3, Animation::SlideFromBottom),
+    (4, Animation::SlideFromTop),
 ];
 
-fn flow_in(v: &Value) -> Option<FlowLink> {
+/// The Sketch animation closest to one it doesn't have.
+fn sketch_animation(a: Animation) -> i64 {
+    let a = match a {
+        Animation::Dissolve => Animation::None,
+        Animation::PushFromRight => Animation::SlideFromRight,
+        Animation::PushFromLeft => Animation::SlideFromLeft,
+        a => a,
+    };
+    ANIMATIONS.iter().find(|(_, x)| *x == a).map_or(2, |&(c, _)| c)
+}
+
+/// A link from Sketch's flow connection, with `extra` (from the layer's plugin data) restoring
+/// what Sketch can't store.
+fn flow_in(v: &Value, extra: &Value) -> Option<FlowLink> {
     let dest = text(v, "destinationArtboardID");
     let destination = match dest {
         "" => return None,
         "back" => Destination::Back,
         id => Destination::Artboard(LayerId(uuid_of(id))),
     };
-    let code = v.get("animationType").map_or(1, |_| int(v, "animationType"));
-    let animation = ANIMATIONS.iter().find(|(c, _)| *c == code).map_or(Animation::default(), |&(_, a)| a);
-    Some(FlowLink { destination, animation, overlay: false })
+    // Files from earlier versions of Scrawl used -1 for none.
+    let code = v.get("animationType").map_or(2, |_| int(v, "animationType"));
+    let animation = ANIMATIONS.iter().find(|(c, _)| *c == code).map_or(if code < 0 { Animation::None } else { Animation::default() }, |&(_, a)| a);
+    let animation = serde_json::from_value(extra["animation"].clone()).unwrap_or(animation);
+    Some(FlowLink { destination, animation, overlay: extra["overlay"].as_bool().unwrap_or(false) })
 }
 
 fn flow_out(link: &FlowLink) -> Value {
@@ -1322,7 +1344,7 @@ fn flow_out(link: &FlowLink) -> Value {
         Destination::Back => "back".to_owned(),
         Destination::Artboard(id) => id_str(id.0),
     };
-    let code = ANIMATIONS.iter().find(|(_, a)| *a == link.animation).map_or(1, |&(c, _)| c);
+    let code = sketch_animation(link.animation);
     json!({ "_class": "MSImmutableFlowConnection", "destinationArtboardID": dest, "animationType": code, "maintainScrollPosition": false })
 }
 
@@ -1436,6 +1458,26 @@ mod tests {
         assert_eq!(b.runs.len(), 1, "{:?}", b.runs);
         assert_eq!((b.runs[0].start, b.runs[0].end), (a.runs[0].start, a.runs[0].end), "UTF-16 offsets map back to bytes");
         assert_eq!(b.runs[0].style, a.runs[0].style);
+    }
+
+    #[test]
+    fn flow_animations_use_sketchs_codes_and_keep_the_rest() {
+        let link = |animation, overlay| FlowLink { destination: Destination::Back, animation, overlay };
+        let code = |l: &FlowLink| flow_out(l)["animationType"].as_i64().unwrap();
+        assert_eq!(code(&link(Animation::None, false)), 0);
+        assert_eq!(code(&link(Animation::SlideFromRight, false)), 2);
+        assert_eq!(code(&link(Animation::SlideFromTop, false)), 4);
+        assert_eq!(code(&link(Animation::PushFromLeft, false)), 1, "the nearest Sketch has");
+        // Earlier Scrawl files wrote -1 for none.
+        let old = json!({ "destinationArtboardID": "back", "animationType": -1 });
+        assert_eq!(flow_in(&old, &Value::Null).unwrap().animation, Animation::None);
+
+        let mut doc = Document::default();
+        let mut l = Layer::rectangle(Frame::new(0.0, 0.0, 10.0, 10.0));
+        l.flow = Some(link(Animation::Dissolve, true));
+        doc.pages[0].layers.push(l.clone());
+        let back = import(&export(&doc).unwrap()).unwrap();
+        assert_eq!(back.pages[0].layers[0].flow, l.flow);
     }
 
     #[test]

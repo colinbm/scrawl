@@ -85,7 +85,7 @@
 - ✅ Plugins: JavaScript (QuickJS) against the document's JSON, as one undo step; Plugins menu, script console (⌥⌘K), example plugins. See [PLUGINS.md](PLUGINS.md)
 - ✅ Prototyping: overlays (click outside or Back closes), dissolve and push animations, links to artboards on other pages
 - ✅ Prototyping: layers fixed while scrolling at any depth; a phone device frame in the preview
-- ⬜ Prototyping: design-file export of overlays and the newer animations
+- ✅ Prototyping in design files: animation codes per the format's schema; overlays and dissolve/push kept in the layer's plugin data, exported as the nearest supported animation
 - ⬜ Native menus on Windows/Linux (in-window menu bar there for now); macOS document browser and Versions integration
 - ✅ Plugin API: commands that run on open/save/selection events; file access through dialogs; network access with per-host permissions
 - ⬜ Plugin UI panels
