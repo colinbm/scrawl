@@ -29,6 +29,9 @@ pub struct Workspace {
     pub plugin_host: Option<std::rc::Rc<dyn crate::plugins::Host>>,
     /// Each window's selection when plugins last saw it, for "selection" handlers.
     seen_selection: Vec<(u64, Vec<scrawl_core::LayerId>)>,
+    /// What each window's title bar last showed of its document.
+    #[cfg(target_os = "macos")]
+    title_bars: Vec<(u64, crate::macos::TitleBar)>,
     #[cfg(target_os = "macos")]
     menu: Option<crate::native_menu::NativeMenu>,
 }
@@ -51,9 +54,13 @@ impl Workspace {
             plugin_host: None,
             seen_selection: vec![],
             #[cfg(target_os = "macos")]
+            title_bars: vec![],
+            #[cfg(target_os = "macos")]
             menu: None,
         };
         ws.recover();
+        #[cfg(target_os = "macos")]
+        crate::macos::set_context(&cc.egui_ctx);
         for path in paths {
             ws.open(&path, None);
         }
@@ -122,11 +129,37 @@ impl Workspace {
         if opened {
             self.prefs.add_recent(path);
             self.save_prefs();
+            #[cfg(target_os = "macos")]
+            crate::macos::note_recent(path);
         }
         self.focused = self.windows[i].uid;
         if opened {
             crate::plugins::run_handlers(self, i, "open");
         }
+    }
+
+    /// Opens files macOS asked us to (from Finder or the Dock), and shows each window's file and
+    /// edited state in its title bar.
+    #[cfg(target_os = "macos")]
+    fn macos_documents(&mut self) {
+        for path in crate::macos::take_opened() {
+            let into = self.index_of(self.focused);
+            self.open(&path, into);
+        }
+        if self.windows[0].dev.active() {
+            return;
+        }
+        for w in &self.windows {
+            let bar = crate::macos::TitleBar { title: w.title(), file: w.file_path.clone(), edited: w.is_dirty() };
+            let shown = self.title_bars.iter().find(|(u, _)| *u == w.uid).map(|(_, b)| b);
+            // A window's new title may take a frame to arrive; until then it isn't found.
+            if shown != Some(&bar) && crate::macos::set_title_bar(&bar) {
+                self.title_bars.retain(|(u, _)| *u != w.uid);
+                self.title_bars.push((w.uid, bar));
+            }
+        }
+        let open: Vec<u64> = self.windows.iter().map(|w| w.uid).collect();
+        self.title_bars.retain(|(u, _)| open.contains(u));
     }
 
     /// Runs "selection" handlers for windows whose selection changed, once the pointer is up
@@ -247,6 +280,8 @@ impl Workspace {
                 self.focused = self.windows[j].uid;
             }
             Request::Saved(path) => {
+                #[cfg(target_os = "macos")]
+                crate::macos::note_recent(&path);
                 self.prefs.add_recent(&path);
                 self.save_prefs();
                 let w = &mut self.windows[i];
@@ -402,6 +437,8 @@ impl eframe::App for Workspace {
 
         self.handle_requests(&ctx);
         self.selection_events(&ctx);
+        #[cfg(target_os = "macos")]
+        self.macos_documents();
 
         if let Some(support) = self.support.clone() {
             let now = ctx.input(|i| i.time);

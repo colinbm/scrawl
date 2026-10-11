@@ -1,6 +1,8 @@
-//! Versions: each save keeps the file it overwrites in the `Versions` folder (the newest
-//! [`KEEP`] per document), and File › Browse Versions… shows them with a preview, to restore one
-//! or open it as a copy.
+//! Versions: each save keeps the file it overwrites (the newest [`KEEP`] per document), and
+//! File › Browse Versions… shows them with a preview, to restore one or open it as a copy.
+//!
+//! On macOS versions go in the system's version store, where they follow the file when it's
+//! moved or renamed; elsewhere (and if that fails) in the `Versions` folder, by path.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -37,6 +39,11 @@ pub fn keep(support: &Path, path: &Path) {
     if !path.exists() {
         return;
     }
+    #[cfg(all(target_os = "macos", not(test)))]
+    match crate::macos::add_version(path, KEEP) {
+        Ok(()) => return,
+        Err(e) => log::warn!("couldn't keep a version of {} in the system's store: {e}", path.display()),
+    }
     let d = dir(support, path);
     let millis = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
     let result = std::fs::create_dir_all(&d)
@@ -59,8 +66,9 @@ pub struct Version {
 
 /// `path`'s versions, newest first.
 pub fn list(support: &Path, path: &Path) -> Vec<Version> {
-    let Ok(entries) = std::fs::read_dir(dir(support, path)) else { return vec![] };
-    let mut out: Vec<Version> = entries
+    let mut out: Vec<Version> = std::fs::read_dir(dir(support, path))
+        .into_iter()
+        .flatten()
         .flatten()
         .filter_map(|e| {
             let file = e.path();
@@ -68,6 +76,8 @@ pub fn list(support: &Path, path: &Path) -> Vec<Version> {
             (file.extension()? == io::FILE_EXTENSION).then(|| Version { file, saved: UNIX_EPOCH + Duration::from_millis(millis) })
         })
         .collect();
+    #[cfg(all(target_os = "macos", not(test)))]
+    out.extend(crate::macos::versions(path).into_iter().map(|v| Version { file: v.file, saved: v.saved }));
     out.sort_by_key(|v| std::cmp::Reverse(v.saved));
     out
 }

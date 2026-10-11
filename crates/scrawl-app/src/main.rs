@@ -6,6 +6,8 @@ mod dev;
 mod gpu;
 mod import;
 #[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
 mod native_menu;
 mod plugins;
 mod prefs;
@@ -27,6 +29,8 @@ mod workspace;
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(std::path::PathBuf::from).collect();
+    #[cfg(target_os = "macos")]
+    macos::install_open_handler();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Scrawl")

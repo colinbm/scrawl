@@ -16,6 +16,9 @@ cargo run -p scrawl-render --example render -- demo.scrawl out.png 2   # headles
 cargo run -p scrawl-core --example sketch -- demo.scrawl demo.sketch   # convert to/from a design file
 ```
 
+On macOS, `scripts/macos-app.sh` builds `target/release/Scrawl.app`, which Finder uses to open
+`.scrawl` files (copy it to /Applications to keep it as the default).
+
 UI tests run the whole app offscreen with egui_kittest (wgpu); set `SCRAWL_UI_SHOTS=dir` to save
 a PNG of each test's final frame. GPU tests skip themselves when no adapter is available.
 
