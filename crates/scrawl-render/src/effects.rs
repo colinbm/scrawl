@@ -22,6 +22,18 @@ pub struct Effect {
     /// Identifies what went into the effect, so an unchanged one reuses last frame's result.
     /// `None` renders it every time.
     pub key: Option<u64>,
+    pub mode: BlurMode,
+}
+
+/// The shape of a blur.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BlurMode {
+    /// Gaussian in every direction (two passes).
+    Gaussian,
+    /// Gaussian along one direction, in radians.
+    Motion(f32),
+    /// Towards `center` (in effect pixels), by `amount` (0..1) of the way.
+    Zoom { center: [f32; 2], amount: f32 },
 }
 
 /// A hash of anything `Debug`, for effect keys, without building the string.
@@ -48,7 +60,7 @@ impl Effect {
         // its size; zeroed memory is cheap.
         let data = Blob::from(vec![0u8; (width * height * 4) as usize]);
         let image = ImageData { data, format: ImageFormat::Rgba8, alpha_type: ImageAlphaType::AlphaPremultiplied, width, height };
-        Self { image, scene, sigma, backdrop: vello::peniko::Color::TRANSPARENT, key: None }
+        Self { image, scene, sigma, backdrop: vello::peniko::Color::TRANSPARENT, key: None, mode: BlurMode::Gaussian }
     }
 }
 
@@ -56,7 +68,8 @@ impl Effect {
 pub const MAX_SIDE: u32 = 4096;
 
 const SHADER: &str = r#"
-struct Params { direction: vec2<i32>, radius: i32, sigma: f32 };
+// mode 0: Gaussian along `v` (taps rounded to pixels); mode 1: towards the center `v` by `amount`.
+struct Params { mode: i32, radius: i32, sigma: f32, amount: f32, v: vec2<f32>, pad: vec2<f32> };
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var dst: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -68,14 +81,26 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (at.x >= size.x || at.y >= size.y) { return; }
     var acc = vec4<f32>(0.0);
     var total = 0.0;
-    for (var i = -params.radius; i <= params.radius; i = i + 1) {
-        let w = exp(-f32(i * i) / (2.0 * params.sigma * params.sigma));
-        let p = at + params.direction * i;
-        // Outside the texture counts as transparent.
-        if (p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y) {
-            acc = acc + textureLoad(src, p, 0) * w;
+    if (params.mode == 1) {
+        let n = 48;
+        for (var i = 0; i < n; i = i + 1) {
+            let t = f32(i) / f32(n - 1) * params.amount;
+            let p = vec2<i32>(round(vec2<f32>(at) + (params.v - vec2<f32>(at)) * t));
+            if (p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y) {
+                acc = acc + textureLoad(src, p, 0);
+            }
+            total = total + 1.0;
         }
-        total = total + w;
+    } else {
+        for (var i = -params.radius; i <= params.radius; i = i + 1) {
+            let w = exp(-f32(i * i) / (2.0 * params.sigma * params.sigma));
+            let p = vec2<i32>(round(vec2<f32>(at) + params.v * f32(i)));
+            // Outside the texture counts as transparent.
+            if (p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y) {
+                acc = acc + textureLoad(src, p, 0) * w;
+            }
+            total = total + w;
+        }
     }
     textureStore(dst, at, acc / total);
 }
@@ -158,7 +183,7 @@ impl Blurrer {
                 self.used.insert(key);
                 continue;
             }
-            let texture = |label, copy: bool| {
+            let texture = |label| {
                 device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -168,26 +193,37 @@ impl Blurrer {
                     format: wgpu::TextureFormat::Rgba8Unorm,
                     usage: wgpu::TextureUsages::STORAGE_BINDING
                         | wgpu::TextureUsages::TEXTURE_BINDING
-                        | if copy { wgpu::TextureUsages::COPY_SRC } else { wgpu::TextureUsages::empty() },
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
                 })
             };
-            let (a, b) = (texture("effect", true), texture("effect blur", false));
+            let (a, b) = (texture("effect"), texture("effect blur"));
             let (va, vb) = (a.create_view(&Default::default()), b.create_view(&Default::default()));
             let params = RenderParams { base_color: e.backdrop, width: w, height: h, antialiasing_method: AaConfig::Area };
             renderer.render_to_texture(device, queue, &e.scene, &va, &params).map_err(|err| format!("effect render failed: {err}"))?;
-            // Horizontal into `b`, then vertical back into `a`.
+            // Gaussian: horizontal into `b`, then vertical back into `a`. Motion and zoom: one
+            // pass into `b`, copied back into `a`.
             let radius = (e.sigma * 3.0).ceil().clamp(1.0, 512.0) as i32;
+            let passes: Vec<(i32, [f32; 2], f32)> = match e.mode {
+                BlurMode::Gaussian => vec![(0, [1.0, 0.0], 0.0), (0, [0.0, 1.0], 0.0)],
+                BlurMode::Motion(angle) => vec![(0, [angle.cos(), angle.sin()], 0.0)],
+                BlurMode::Zoom { center, amount } => vec![(1, center, amount.clamp(0.0, 1.0))],
+            };
             let mut encoder = device.create_command_encoder(&Default::default());
-            for (src, dst, dir) in [(&va, &vb, [1i32, 0]), (&vb, &va, [0, 1])] {
-                let mut bytes = Vec::with_capacity(16);
-                bytes.extend_from_slice(&dir[0].to_le_bytes());
-                bytes.extend_from_slice(&dir[1].to_le_bytes());
+            for (i, (mode, v, amount)) in passes.iter().enumerate() {
+                let (src, dst) = if i % 2 == 0 { (&va, &vb) } else { (&vb, &va) };
+                let mut bytes = Vec::with_capacity(32);
+                bytes.extend_from_slice(&mode.to_le_bytes());
                 bytes.extend_from_slice(&radius.to_le_bytes());
                 bytes.extend_from_slice(&e.sigma.max(0.5).to_le_bytes());
+                bytes.extend_from_slice(&amount.to_le_bytes());
+                bytes.extend_from_slice(&v[0].to_le_bytes());
+                bytes.extend_from_slice(&v[1].to_le_bytes());
+                bytes.extend_from_slice(&[0u8; 8]);
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("blur params"),
-                    size: 16,
+                    size: 32,
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
@@ -205,6 +241,11 @@ impl Blurrer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &group, &[]);
                 pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+            }
+            // An odd number of passes leaves the result in `b`.
+            if passes.len() % 2 == 1 {
+                let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+                encoder.copy_texture_to_texture(b.as_image_copy(), a.as_image_copy(), size);
             }
             queue.submit([encoder.finish()]);
             renderer.override_image(

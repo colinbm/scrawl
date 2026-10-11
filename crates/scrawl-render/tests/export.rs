@@ -313,7 +313,7 @@ fn layer_and_background_blurs() {
     let mut sq = Layer::rectangle(Frame::new(40.0, 40.0, 40.0, 40.0));
     sq.style.borders.clear();
     sq.style.fills = vec![Fill::solid(Color::rgba(1.0, 0.0, 0.0, 1.0))];
-    sq.style.blur = Some(scrawl_core::Blur { enabled: true, kind: scrawl_core::BlurKind::Layer, radius: 10.0 });
+    sq.style.blur = Some(scrawl_core::Blur { enabled: true, kind: scrawl_core::BlurKind::Layer, radius: 10.0, ..Default::default() });
     ops::insert_drawn(&mut page, sq);
     let img = ex.render_page(&page, Rect::new(0.0, 0.0, 120.0, 120.0), 1.0, peniko::Color::TRANSPARENT).unwrap();
     let a = |x, y| px(&img, x, y)[3];
@@ -333,7 +333,7 @@ fn layer_and_background_blurs() {
     let mut glass = Layer::rectangle(Frame::new(60.0, 0.0, 60.0, 100.0));
     glass.style.borders.clear();
     glass.style.fills = vec![Fill::solid(Color::rgba(1.0, 1.0, 1.0, 0.1))];
-    glass.style.blur = Some(scrawl_core::Blur { enabled: true, kind: scrawl_core::BlurKind::Background, radius: 16.0 });
+    glass.style.blur = Some(scrawl_core::Blur { enabled: true, kind: scrawl_core::BlurKind::Background, radius: 16.0, ..Default::default() });
     ops::insert_drawn(&mut page, glass);
     let img = ex.render_page(&page, Rect::new(0.0, 0.0, 120.0, 100.0), 1.0, peniko::Color::WHITE).unwrap();
     let spread = |x0: u32| {
@@ -342,4 +342,28 @@ fn layer_and_background_blurs() {
     };
     assert!(spread(10) > 200, "sharp stripes: {}", spread(10));
     assert!(spread(80) < 60, "blurred beneath the glass: {}", spread(80));
+}
+
+#[test]
+fn motion_and_zoom_blurs() {
+    let Some(mut ex) = exporter() else { return };
+    let square = |kind| {
+        let mut page = Page::new("P");
+        let mut sq = Layer::rectangle(Frame::new(40.0, 40.0, 40.0, 40.0));
+        sq.style.borders.clear();
+        sq.style.fills = vec![Fill::solid(Color::rgba(1.0, 0.0, 0.0, 1.0))];
+        sq.style.blur = Some(scrawl_core::Blur { enabled: true, kind, radius: 16.0, ..Default::default() });
+        ops::insert_drawn(&mut page, sq);
+        page
+    };
+    // A horizontal motion blur smears sideways, not up and down.
+    let img = ex.render_page(&square(scrawl_core::BlurKind::Motion), Rect::new(0.0, 0.0, 120.0, 120.0), 1.0, peniko::Color::TRANSPARENT).unwrap();
+    assert!(px(&img, 34, 60)[3] > 20, "left of the square: {:?}", px(&img, 34, 60));
+    assert!(px(&img, 60, 34)[3] < 5, "not above it: {:?}", px(&img, 60, 34));
+    // A zoom blur samples towards the center: the square stays solid and streaks outward just
+    // beyond its corners (along the diagonal), but not off to the sides.
+    let img = ex.render_page(&square(scrawl_core::BlurKind::Zoom), Rect::new(0.0, 0.0, 120.0, 120.0), 1.0, peniko::Color::TRANSPARENT).unwrap();
+    assert!(px(&img, 60, 60)[3] > 240, "middle: {:?}", px(&img, 60, 60));
+    assert!(px(&img, 36, 36)[3] > 20, "streak past the corner: {:?}", px(&img, 36, 36));
+    assert!(px(&img, 10, 10)[3] < 5, "nothing far out: {:?}", px(&img, 10, 10));
 }

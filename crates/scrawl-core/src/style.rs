@@ -32,15 +32,21 @@ pub enum BlurKind {
     Layer,
     /// What's behind the layer, inside its shape (frosted glass).
     Background,
+    /// The layer smeared along a direction.
+    Motion,
+    /// The layer smeared towards a center point.
+    Zoom,
 }
 
 impl BlurKind {
-    pub const ALL: [Self; 2] = [Self::Layer, Self::Background];
+    pub const ALL: [Self; 4] = [Self::Layer, Self::Motion, Self::Zoom, Self::Background];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Layer => "Gaussian",
             Self::Background => "Background",
+            Self::Motion => "Motion",
+            Self::Zoom => "Zoom",
         }
     }
 }
@@ -49,13 +55,32 @@ impl BlurKind {
 pub struct Blur {
     pub enabled: bool,
     pub kind: BlurKind,
-    /// In points: about twice the Gaussian's standard deviation.
+    /// In points: about twice the Gaussian's standard deviation; for zoom blurs,
+    /// the strength (100 smears all the way to the center).
     pub radius: f64,
+    /// Motion blur direction, in degrees.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub angle: f64,
+    /// Zoom blur center, normalized to the frame.
+    #[serde(default = "center", skip_serializing_if = "is_center")]
+    pub center: Point,
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+fn center() -> Point {
+    Point::new(0.5, 0.5)
+}
+
+fn is_center(p: &Point) -> bool {
+    *p == center()
 }
 
 impl Default for Blur {
     fn default() -> Self {
-        Self { enabled: true, kind: BlurKind::Layer, radius: 10.0 }
+        Self { enabled: true, kind: BlurKind::Layer, radius: 10.0, angle: 0.0, center: center() }
     }
 }
 
@@ -118,7 +143,7 @@ impl Style {
             .map(|s| s.offset_x.abs().max(s.offset_y.abs()) + s.blur * 1.5 + s.spread.max(0.0))
             .fold(0.0, f64::max);
         // A layer blur spreads it out by about three standard deviations.
-        let blur = Blur::active(&self.blur).filter(|b| b.kind == BlurKind::Layer).map_or(0.0, |b| b.radius * 1.5);
+        let blur = Blur::active(&self.blur).filter(|b| matches!(b.kind, BlurKind::Layer | BlurKind::Motion)).map_or(0.0, |b| b.radius * 1.5);
         self.border_outset().max(shadows) + blur
     }
 }

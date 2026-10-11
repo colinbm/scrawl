@@ -334,15 +334,34 @@ fn blur_section(ui: &mut Ui, blur: &mut Option<scrawl_core::Blur>) {
     if let Some(b) = blur {
         ui.horizontal(|ui| {
             ui.checkbox(&mut b.enabled, "");
-            for kind in scrawl_core::BlurKind::ALL {
-                ui.selectable_value(&mut b.kind, kind, kind.label());
-            }
+            egui::ComboBox::from_id_salt("blur_kind").selected_text(b.kind.label()).width(110.0).show_ui(ui, |ui| {
+                for kind in scrawl_core::BlurKind::ALL {
+                    ui.selectable_value(&mut b.kind, kind, kind.label());
+                }
+            });
             remove = icons::small_button(ui, Icon::Minus, "Remove blur").clicked();
         });
         ui.horizontal(|ui| {
-            ui.label("Radius");
+            ui.label(if b.kind == scrawl_core::BlurKind::Zoom { "Amount" } else { "Radius" });
             ui.add(egui::Slider::new(&mut b.radius, 0.0..=100.0).max_decimals(1));
         });
+        match b.kind {
+            scrawl_core::BlurKind::Motion => {
+                ui.horizontal(|ui| {
+                    num(ui, "Angle", &mut b.angle, 1.0, "°");
+                    b.angle = b.angle.rem_euclid(360.0);
+                });
+            }
+            scrawl_core::BlurKind::Zoom => {
+                ui.horizontal(|ui| {
+                    let (mut x, mut y) = (b.center.x * 100.0, b.center.y * 100.0);
+                    if num(ui, "Center X", &mut x, 1.0, "%") | num(ui, "Center Y", &mut y, 1.0, "%") {
+                        b.center = scrawl_core::kurbo::Point::new(x / 100.0, y / 100.0);
+                    }
+                });
+            }
+            _ => {}
+        }
     }
     if remove {
         *blur = None;

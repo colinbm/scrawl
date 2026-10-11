@@ -218,7 +218,7 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
             (origin, (r.x1.ceil() - origin.x).max(1.0) as u32, (r.y1.ceil() - origin.y).max(1.0) as u32)
         };
         match blur.kind {
-            scrawl_core::BlurKind::Layer => {
+            scrawl_core::BlurKind::Layer | scrawl_core::BlurKind::Motion | scrawl_core::BlurKind::Zoom => {
                 // The layer as it'd draw (its group already applies opacity and blending), blurred.
                 if let Some(b) = layer.bounds_in(parent) {
                     let pad = max_paint_outset(layer) * zoom;
@@ -234,7 +234,21 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
                     // Keyed by the layer and where it lands in pixels (images by id, so changes
                     // to an image asset show once its id changes).
                     let key = effects::debug_key(&[&plain, &(Affine::translate(-origin.to_vec2()) * parent).as_coeffs(), &(w, h)]);
-                    let effect = effects::Effect { key: Some(key), ..effects::Effect::new(sub, w, h, sigma as f32) };
+                    // Motion blurs smear along their angle; zoom blurs towards the center (the
+                    // frame's, normalized, in effect pixels).
+                    let mode = match blur.kind {
+                        scrawl_core::BlurKind::Motion => {
+                            let dir = parent * Point::new(blur.angle.to_radians().cos(), blur.angle.to_radians().sin()) - parent * Point::ORIGIN;
+                            effects::BlurMode::Motion(dir.atan2() as f32)
+                        }
+                        scrawl_core::BlurKind::Zoom => {
+                            let c = Affine::translate(-origin.to_vec2()) * t * Point::new(blur.center.x * layer.frame.width, blur.center.y * layer.frame.height);
+                            effects::BlurMode::Zoom { center: [c.x as f32, c.y as f32], amount: (blur.radius / 100.0) as f32 }
+                        }
+                        _ => effects::BlurMode::Gaussian,
+                    };
+                    let key = effects::debug_key(&[&key, &mode]);
+                    let effect = effects::Effect { key: Some(key), mode, ..effects::Effect::new(sub, w, h, sigma as f32) };
                     scene.draw_image(&effect.image, Affine::translate(origin.to_vec2()));
                     res.effects.push(effect);
                 }

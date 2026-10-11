@@ -388,11 +388,19 @@ impl Importer {
                 .collect(),
             shadows: list(v, "shadows").iter().map(shadow).collect(),
             inner_shadows: list(v, "innerShadows").iter().map(shadow).collect(),
-            // Gaussian (0) and background (3) blurs; motion and zoom blurs aren't modelled.
-            blur: v.get("blur").filter(|b| flag(b, "isEnabled") && matches!(int(b, "type"), 0 | 3)).map(|b| crate::Blur {
+            // Sketch's blur types: 0 Gaussian, 1 motion, 2 zoom, 3 background.
+            blur: v.get("blur").filter(|b| flag(b, "isEnabled")).map(|b| crate::Blur {
                 enabled: true,
-                kind: if int(b, "type") == 3 { crate::BlurKind::Background } else { crate::BlurKind::Layer },
+                kind: match int(b, "type") {
+                    1 => crate::BlurKind::Motion,
+                    2 => crate::BlurKind::Zoom,
+                    3 => crate::BlurKind::Background,
+                    _ => crate::BlurKind::Layer,
+                },
                 radius: num_or(b, "radius", 10.0),
+                // Sketch measures the motion angle counter-clockwise.
+                angle: (-num(b, "motionAngle")).rem_euclid(360.0),
+                center: parse_point(b.get("center").and_then(Value::as_str).unwrap_or("{0.5, 0.5}")),
             }),
             border_options: BorderOptions {
                 dash: list(opts, "dashPattern").iter().filter_map(Value::as_f64).collect(),
@@ -953,11 +961,16 @@ impl Exporter {
             "blur": {
                 "_class": "blur",
                 "isEnabled": crate::Blur::active(&s.blur).is_some(),
-                "center": "{0.5, 0.5}",
-                "motionAngle": 0,
+                "center": point_str(s.blur.map_or(kurbo::Point::new(0.5, 0.5), |b| b.center)),
+                "motionAngle": s.blur.map_or(0.0, |b| if b.angle == 0.0 { 0.0 } else { -b.angle }),
                 "radius": s.blur.map_or(10.0, |b| b.radius),
                 "saturation": 1,
-                "type": if s.blur.is_some_and(|b| b.kind == crate::BlurKind::Background) { 3 } else { 0 },
+                "type": match s.blur.map(|b| b.kind) {
+                    Some(crate::BlurKind::Motion) => 1,
+                    Some(crate::BlurKind::Zoom) => 2,
+                    Some(crate::BlurKind::Background) => 3,
+                    _ => 0,
+                },
             },
             "borderOptions": {
                 "_class": "borderOptions",
@@ -1390,9 +1403,9 @@ mod tests {
     #[test]
     fn blurs_round_trip() {
         let mut doc = Document::default();
-        for kind in [crate::BlurKind::Layer, crate::BlurKind::Background] {
+        for kind in [crate::BlurKind::Layer, crate::BlurKind::Background, crate::BlurKind::Motion, crate::BlurKind::Zoom] {
             let mut l = Layer::rectangle(crate::Frame::new(0.0, 0.0, 10.0, 10.0));
-            l.style.blur = Some(crate::Blur { enabled: true, kind, radius: 12.0 });
+            l.style.blur = Some(crate::Blur { enabled: true, kind, radius: 12.0, angle: 30.0, center: kurbo::Point::new(0.25, 0.75) });
             doc.pages[0].layers.push(l);
         }
         let back = import(&export(&doc).unwrap()).unwrap();
