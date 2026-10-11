@@ -154,7 +154,7 @@ pub fn paint_button(ui: &mut Ui, id_salt: &str, target: PaintTarget<'_>, palette
 }
 
 fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'_>) -> bool {
-    let PaintTarget { mut fill_type, color, mut gradient, blend, mut swatch, image, noise } = target;
+    let PaintTarget { mut fill_type, color, mut gradient, blend, swatch, image, noise } = target;
     let stop_id = id.with("stop");
     let mut selected_stop: usize = ui.data(|d| d.get_temp(stop_id)).unwrap_or(0);
 
@@ -241,7 +241,7 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
         let stop = &mut g.stops[selected_stop];
         (&mut stop.color, Some(&mut stop.swatch))
     } else {
-        (color, swatch.as_deref_mut())
+        (color, swatch)
     };
     if let Some(l) = link.as_deref_mut()
         && let Some(var) = l.and_then(|id| palette.find(id))
