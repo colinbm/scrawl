@@ -39,6 +39,9 @@ impl Style {
     pub fn colors_mut(&mut self, mut f: impl FnMut(&mut Color, &mut Option<SwatchId>)) {
         self.fills.iter_mut().for_each(|x| f(&mut x.color, &mut x.swatch));
         self.borders.iter_mut().for_each(|x| f(&mut x.color, &mut x.swatch));
+        // Gradient stops can follow variables too.
+        let gradients = self.fills.iter_mut().map(|x| &mut x.gradient).chain(self.borders.iter_mut().map(|x| &mut x.gradient));
+        gradients.flat_map(|g| g.stops.iter_mut()).for_each(|s| f(&mut s.color, &mut s.swatch));
         self.shadows.iter_mut().chain(&mut self.inner_shadows).for_each(|x| f(&mut x.color, &mut x.swatch));
     }
 
@@ -375,7 +378,7 @@ impl Default for Gradient {
             kind: GradientKind::Linear,
             from: Point::new(0.5, 0.0),
             to: Point::new(0.5, 1.0),
-            stops: vec![GradientStop { position: 0.0, color: Color::WHITE }, GradientStop { position: 1.0, color: Color::BLACK }],
+            stops: vec![GradientStop { position: 0.0, color: Color::WHITE, swatch: None }, GradientStop { position: 1.0, color: Color::BLACK, swatch: None }],
             interpolation: Interpolation::Srgb,
         }
     }
@@ -386,7 +389,7 @@ impl Gradient {
     /// solid fill to a gradient.
     pub fn from_color(color: Color) -> Self {
         Self {
-            stops: vec![GradientStop { position: 0.0, color }, GradientStop { position: 1.0, color: color.with_alpha(0.0) }],
+            stops: vec![GradientStop { position: 0.0, color, swatch: None }, GradientStop { position: 1.0, color: color.with_alpha(0.0), swatch: None }],
             ..Self::default()
         }
     }
@@ -404,7 +407,7 @@ impl Gradient {
             for i in 1..=STEPS {
                 let t = w[0].position + (w[1].position - w[0].position) * i as f64 / STEPS as f64;
                 let k = i as f32 / STEPS as f32;
-                out.push(GradientStop { position: t, color: self.interpolation.mix(w[0].color, w[1].color, k) });
+                out.push(GradientStop { position: t, color: self.interpolation.mix(w[0].color, w[1].color, k), swatch: None });
             }
         }
         out
@@ -429,7 +432,7 @@ impl Gradient {
 
     /// Inserts a stop at `t` with the interpolated color. Returns its index.
     pub fn add_stop(&mut self, t: f64) -> usize {
-        let stop = GradientStop { position: t.clamp(0.0, 1.0), color: self.color_at(t) };
+        let stop = GradientStop { position: t.clamp(0.0, 1.0), color: self.color_at(t), swatch: None };
         let i = self.stops.iter().position(|s| s.position > stop.position).unwrap_or(self.stops.len());
         self.stops.insert(i, stop);
         i
@@ -447,6 +450,9 @@ impl Gradient {
 pub struct GradientStop {
     pub position: f64,
     pub color: Color,
+    /// The color variable `color` follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swatch: Option<SwatchId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -724,7 +730,7 @@ mod tests {
         let red = Color::rgba(1.0, 0.0, 0.0, 1.0);
         let blue = Color::rgba(0.0, 0.0, 1.0, 1.0);
         let mut g = Gradient {
-            stops: vec![GradientStop { position: 0.0, color: red }, GradientStop { position: 1.0, color: blue }],
+            stops: vec![GradientStop { position: 0.0, color: red, swatch: None }, GradientStop { position: 1.0, color: blue, swatch: None }],
             ..Gradient::default()
         };
         let srgb = g.color_at(0.5);

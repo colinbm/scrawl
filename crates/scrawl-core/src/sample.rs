@@ -21,7 +21,7 @@ fn gradient(kind: GradientKind, from: (f64, f64), to: (f64, f64), stops: &[(&str
         kind,
         from: Point::new(from.0, from.1),
         to: Point::new(to.0, to.1),
-        stops: stops.iter().map(|&(c, p)| GradientStop { position: p, color: hex(c) }).collect(),
+        stops: stops.iter().map(|&(c, p)| GradientStop { position: p, color: hex(c), swatch: None }).collect(),
         interpolation: Default::default(),
     };
     Fill { fill_type: FillType::Gradient, gradient: g, ..Fill::solid(Color::BLACK) }

@@ -140,7 +140,7 @@ pub fn import(bytes: &[u8]) -> Result<Document, String> {
     let library = |doc: &mut Document, v: &Value| -> LibraryId {
         let id = LibraryId(uuid_of(text(v, "libraryID")));
         if doc.library(id).is_none() {
-            doc.libraries.push(LibraryRef { id, name: text(v, "sourceLibraryName").to_owned(), path: String::new() });
+            doc.libraries.push(LibraryRef { id, name: text(v, "sourceLibraryName").to_owned(), path: String::new(), relative: None });
         }
         id
     };
@@ -204,7 +204,7 @@ fn gradient_in(v: &Value) -> Gradient {
         },
         from: parse_point(text(v, "from")),
         to: parse_point(text(v, "to")),
-        stops: list(v, "stops").iter().map(|s| GradientStop { position: num(s, "position"), color: color_in(&s["color"]) }).collect(),
+        stops: list(v, "stops").iter().map(|s| GradientStop { position: num(s, "position"), color: color_in(&s["color"]), swatch: swatch_of(&s["color"]) }).collect(),
         interpolation: crate::Interpolation::Srgb,
     }
 }
@@ -826,7 +826,7 @@ fn gradient_out(g: &Gradient) -> Value {
         "to": point_str(g.to),
         "gradientType": match g.kind { GradientKind::Linear => 0, GradientKind::Radial => 1, GradientKind::Angular => 2 },
         // Sketch blends in sRGB; other spaces are sampled into extra stops.
-        "stops": g.srgb_stops().iter().map(|s| json!({ "_class": "gradientStop", "position": s.position, "color": color_out(s.color, None) })).collect::<Vec<_>>(),
+        "stops": g.srgb_stops().iter().map(|s| json!({ "_class": "gradientStop", "position": s.position, "color": color_out(s.color, s.swatch) })).collect::<Vec<_>>(),
     })
 }
 

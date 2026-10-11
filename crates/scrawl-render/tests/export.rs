@@ -231,8 +231,8 @@ fn noise_fills_and_oklab_gradients() {
         from: scrawl_core::kurbo::Point::new(0.0, 0.5),
         to: scrawl_core::kurbo::Point::new(1.0, 0.5),
         stops: vec![
-            scrawl_core::GradientStop { position: 0.0, color: Color::rgba(1.0, 0.0, 0.0, 1.0) },
-            scrawl_core::GradientStop { position: 1.0, color: Color::rgba(0.0, 0.0, 1.0, 1.0) },
+            scrawl_core::GradientStop { position: 0.0, color: Color::rgba(1.0, 0.0, 0.0, 1.0), swatch: None },
+            scrawl_core::GradientStop { position: 1.0, color: Color::rgba(0.0, 0.0, 1.0, 1.0), swatch: None },
         ],
         ..Default::default()
     };

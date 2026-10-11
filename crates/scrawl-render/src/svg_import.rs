@@ -161,7 +161,7 @@ fn paint(p: &usvg::Paint, opacity: f32, t: Affine, bounds: Rect) -> (FillType, C
     let stops = |stops: &[usvg::Stop]| -> Vec<GradientStop> {
         stops
             .iter()
-            .map(|s| GradientStop { position: s.offset().get() as f64, color: color(s.color(), s.opacity().get() * opacity) })
+            .map(|s| GradientStop { position: s.offset().get() as f64, color: color(s.color(), s.opacity().get() * opacity), swatch: None })
             .collect()
     };
     let (kind, from, to, list) = match p {

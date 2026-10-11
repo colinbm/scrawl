@@ -1371,3 +1371,43 @@ fn stack_padding_and_child_sizing_from_the_inspector() {
     assert!(h.state().front().page().find(ids[0]).unwrap().stack_item.fill);
     save(&mut h, "stack_options");
 }
+
+#[test]
+fn library_files_are_watched_and_stops_follow_variables() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let dir = std::env::temp_dir().join(format!("scrawl-ui-watch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib_path = dir.join("Lib.scrawl");
+    let mut lib = scrawl_core::Document::default();
+    lib.add_swatch(scrawl_core::Color::rgba(1.0, 0.0, 0.0, 1.0));
+    scrawl_core::io::save(&lib, &lib_path).unwrap();
+    let app = h.state_mut().front_mut();
+    app.add_library_path(&lib_path);
+    let id = app.doc.libraries[0].id;
+    assert!(app.check_libraries(1000.0).is_empty(), "nothing changed yet");
+    // Edit the library elsewhere (a later modification time).
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    lib.swatches[0].color = scrawl_core::Color::rgba(0.0, 1.0, 0.0, 1.0);
+    scrawl_core::io::save(&lib, &lib_path).unwrap();
+    let file = std::fs::File::options().write(true).open(&lib_path).unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+    let app = h.state_mut().front_mut();
+    assert_eq!(app.check_libraries(2000.0), ["Lib"]);
+    assert_eq!(app.library_doc(id).unwrap().swatches[0].color, scrawl_core::Color::rgba(0.0, 1.0, 0.0, 1.0));
+
+    // A gradient stop linked to a local variable recolors when the variable does.
+    let header = layer_named(&h, "Header").id;
+    let app = h.state_mut().front_mut();
+    let var = app.doc.add_swatch(scrawl_core::Color::rgba(0.2, 0.2, 0.2, 1.0));
+    if let Some(l) = app.page_mut().find_mut(header) {
+        let stop = &mut l.style.fills[0].gradient.stops[0];
+        stop.swatch = Some(var);
+        stop.color = scrawl_core::Color::rgba(0.2, 0.2, 0.2, 1.0);
+    }
+    let blue = scrawl_core::Color::rgba(0.0, 0.0, 1.0, 1.0);
+    app.doc.set_swatch_color(var, blue);
+    let stop = &h.state().front().page().find(header).unwrap().style.fills[0].gradient.stops[0];
+    assert_eq!((stop.color, stop.swatch), (blue, Some(var)));
+    std::fs::remove_dir_all(&dir).ok();
+}

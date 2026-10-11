@@ -65,7 +65,7 @@
 - ✅ Symbols: masters (artboards), instances resized by constraints, text / nested-swap / style overrides, nested symbols, Create Symbol ⌥⌘Y, Detach ⌥⌘B, Edit Master
 - ✅ Libraries: link other `.scrawl` files, use their symbols, styles and variables (copied in with dependencies), update when the library changes, unlink to keep them locally
 - ✅ Masters choose which overrides instances may use; image overrides and color overrides (for fills following a color variable); color overrides and master settings round-trip through design files (image overrides don't yet)
-- ⬜ Watch library files for changes; relative library paths; gradient stops linked to variables
+- ✅ Library files are watched and re-read when they change; libraries are remembered relative to the document too; gradient stops can follow color variables
 
 ## Milestone 7 — Export & interop
 - ✅ Export formats per layer (scale, suffix, type) and slices (S): PNG, JPG, WEBP via the headless renderer; SVG via a structure-preserving writer; PDF from that SVG (svg2pdf)

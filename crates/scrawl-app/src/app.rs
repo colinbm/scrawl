@@ -60,6 +60,10 @@ pub struct ScrawlApp {
     pub notice: Option<(String, f64)>,
     /// Linked libraries' documents as last read from disk, or why they couldn't be.
     pub libraries: HashMap<LibraryId, Result<Document, String>>,
+    /// Each library file's modification time when last read, to notice changes.
+    library_stamps: HashMap<LibraryId, Option<std::time::SystemTime>>,
+    /// When library files were last checked (egui time).
+    library_check: f64,
     /// The gradient whose handles are shown on the canvas.
     pub gradient_edit: Option<crate::canvas::GradientTarget>,
     pub file_path: Option<PathBuf>,
@@ -142,6 +146,8 @@ impl ScrawlApp {
             layer_filter: Default::default(),
             sidebar: Sidebar::Layers,
             libraries: HashMap::new(),
+            library_stamps: HashMap::new(),
+            library_check: 0.0,
             exporter: None,
             notice: None,
             gradient_edit: None,
@@ -398,6 +404,10 @@ impl ScrawlApp {
         if let Some(support) = &self.support {
             crate::versions::keep(support, path);
         }
+        // Libraries are remembered relative to where the document now lives.
+        if let Some(dir) = path.parent() {
+            self.doc.refresh_library_paths(dir);
+        }
         match io::save(&self.doc, path) {
             Ok(()) => {
                 self.saved = self.doc.clone();
@@ -555,10 +565,41 @@ impl ScrawlApp {
     /// Re-reads every linked library from disk.
     pub fn reload_libraries(&mut self) {
         self.libraries.clear();
+        self.library_stamps.clear();
         for lib in self.doc.libraries.clone() {
-            let loaded = io::load(Path::new(&lib.path)).map_err(|e| e.to_string());
-            self.libraries.insert(lib.id, loaded);
+            self.load_library(&lib);
         }
+    }
+
+    /// The file library `lib` is read from: next to this document if it moved with it.
+    fn library_file(&self, lib: &scrawl_core::library::LibraryRef) -> PathBuf {
+        lib.resolve(self.file_path.as_deref().and_then(Path::parent))
+    }
+
+    fn load_library(&mut self, lib: &scrawl_core::library::LibraryRef) {
+        let file = self.library_file(lib);
+        let stamp = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+        let loaded = io::load(&file).map_err(|e| e.to_string());
+        self.libraries.insert(lib.id, loaded);
+        self.library_stamps.insert(lib.id, stamp);
+    }
+
+    /// Re-reads libraries whose files changed since they were read, every couple of seconds.
+    /// Returns the names of the ones that changed.
+    pub fn check_libraries(&mut self, now: f64) -> Vec<String> {
+        if now - self.library_check < 2.0 || self.doc.libraries.is_empty() {
+            return vec![];
+        }
+        self.library_check = now;
+        let mut changed = vec![];
+        for lib in self.doc.libraries.clone() {
+            let stamp = std::fs::metadata(self.library_file(&lib)).and_then(|m| m.modified()).ok();
+            if self.library_stamps.get(&lib.id) != Some(&stamp) {
+                self.load_library(&lib);
+                changed.push(lib.name.clone());
+            }
+        }
+        changed
     }
 
     /// Asks for a library file to link.
@@ -1111,6 +1152,15 @@ impl ScrawlApp {
             self.history.commit(&self.doc);
         }
 
+        // Linked library files edited elsewhere are re-read, offering their updates.
+        let now = ctx.input(|i| i.time);
+        let changed = self.check_libraries(now);
+        if !changed.is_empty() {
+            self.notify(format!("{} changed — updates are in Components", changed.join(", ")));
+        }
+        if !self.doc.libraries.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(2));
+        }
         let title = self.title();
         if title != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));

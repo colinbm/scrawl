@@ -226,22 +226,8 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
     }
 
     let is_gradient = fill_type.as_deref() == Some(&FillType::Gradient) && gradient.is_some();
-    // Only solid colors link to variables; gradient stops just take their value.
-    let link = if is_gradient { None } else { swatch.as_deref_mut() };
-    if let Some(link) = link
-        && let Some(var) = link.and_then(|id| palette.find(id))
-    {
-        ui.horizontal(|ui| {
-            variable_label(ui, &var.name);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Detach").on_hover_text("Stop following this color variable").clicked() {
-                    *link = None;
-                }
-            });
-        });
-        ui.separator();
-    }
-    let editing: &mut Color = if is_gradient {
+    // What's being edited: the color (or the selected gradient stop's) and its variable link.
+    let (editing, mut link): (&mut Color, Option<&mut Option<SwatchId>>) = if is_gradient {
         let g = gradient.expect("checked");
         selected_stop = selected_stop.min(g.stops.len().saturating_sub(1));
         stops_editor(ui, id, g, &mut selected_stop);
@@ -252,10 +238,25 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
                 ui.selectable_value(&mut g.interpolation, space, space.label());
             }
         });
-        &mut g.stops[selected_stop].color
+        let stop = &mut g.stops[selected_stop];
+        (&mut stop.color, Some(&mut stop.swatch))
     } else {
-        color
+        (color, swatch.as_deref_mut())
     };
+    if let Some(l) = link.as_deref_mut()
+        && let Some(var) = l.and_then(|id| palette.find(id))
+    {
+        let name = var.name.clone();
+        ui.horizontal(|ui| {
+            variable_label(ui, &name);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Detach").on_hover_text("Stop following this color variable").clicked() {
+                    *l = None;
+                }
+            });
+        });
+        ui.separator();
+    }
 
     // Color picker.
     // The picker sizes itself from the slider width; fill the popover.
@@ -286,8 +287,8 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if crate::ui::icons::small_button(ui, crate::ui::icons::Icon::Plus, "Create color variable").clicked() {
                 let id = Swatch::add_to(palette.variables, *editing);
-                if !is_gradient && let Some(link) = swatch.as_deref_mut() {
-                    *link = Some(id);
+                if let Some(l) = link.as_deref_mut() {
+                    *l = Some(id);
                 }
             }
         });
@@ -296,13 +297,13 @@ fn popover(ui: &mut Ui, id: Id, target: PaintTarget<'_>, palette: &mut Palette<'
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
         let library_ids: Vec<SwatchId> = palette.library.iter().map(|v| v.id).collect();
         for v in palette.variables.iter().chain(&palette.library) {
-            let linked = !is_gradient && swatch.as_deref().is_some_and(|l| *l == Some(v.id));
+            let linked = link.as_deref().is_some_and(|l| *l == Some(v.id));
             let tip = if library_ids.contains(&v.id) { format!("{} (library)", v.name) } else { v.name.clone() };
             let resp = swatch_chip(ui, v.color, linked).on_hover_text(tip);
             if resp.clicked() {
                 *editing = v.color;
-                if !is_gradient && let Some(link) = swatch.as_deref_mut() {
-                    *link = Some(v.id);
+                if let Some(l) = link.as_deref_mut() {
+                    *l = Some(v.id);
                 }
             }
         }

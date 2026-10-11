@@ -25,6 +25,42 @@ pub struct LibraryRef {
     pub name: String,
     /// Where the library's `.scrawl` file is.
     pub path: String,
+    /// The same file relative to the document's folder, as of the last save: tried first, so a
+    /// folder of documents and libraries can move as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative: Option<String>,
+}
+
+impl LibraryRef {
+    /// The library's file for a document in `doc_dir`: by its relative path if that exists,
+    /// else the absolute one.
+    pub fn resolve(&self, doc_dir: Option<&std::path::Path>) -> std::path::PathBuf {
+        if let (Some(dir), Some(rel)) = (doc_dir, &self.relative) {
+            let p = dir.join(rel);
+            if p.exists() {
+                return p;
+            }
+        }
+        std::path::PathBuf::from(&self.path)
+    }
+}
+
+/// `to` relative to the folder `from`, with `..` as needed. `None` across drives or roots.
+pub fn relative_path(from: &std::path::Path, to: &std::path::Path) -> Option<String> {
+    use std::path::Component as C;
+    let (from, to): (Vec<C>, Vec<C>) = (from.components().collect(), to.components().collect());
+    if from.first() != to.first() {
+        return None;
+    }
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut out = std::path::PathBuf::new();
+    for _ in common..from.len() {
+        out.push("..");
+    }
+    for c in &to[common..] {
+        out.push(c.as_os_str());
+    }
+    Some(out.to_string_lossy().into_owned())
 }
 
 /// A copy of a library component.
@@ -89,8 +125,24 @@ impl Document {
             return l.id;
         }
         let id = LibraryId::new();
-        self.libraries.push(LibraryRef { id, name: name.into(), path });
+        self.libraries.push(LibraryRef { id, name: name.into(), path, relative: None });
         id
+    }
+
+    /// Brings every library's relative path up to date for a document saved in `doc_dir`, and
+    /// its absolute path to where it was found.
+    pub fn refresh_library_paths(&mut self, doc_dir: &std::path::Path) {
+        for lib in &mut self.libraries {
+            let found = lib.resolve(Some(doc_dir));
+            // A library that can't be found keeps the paths it had.
+            if !found.exists() {
+                continue;
+            }
+            let found = std::fs::canonicalize(&found).unwrap_or(found);
+            let dir = std::fs::canonicalize(doc_dir).unwrap_or_else(|_| doc_dir.to_path_buf());
+            lib.relative = relative_path(&dir, &found);
+            lib.path = found.to_string_lossy().into_owned();
+        }
     }
 
     pub fn library(&self, id: LibraryId) -> Option<&LibraryRef> {
@@ -321,5 +373,28 @@ mod tests {
         assert!(doc.find_master(symbol).is_some());
         assert_eq!(doc.layer_styles.len(), 1);
         assert_eq!(doc.swatches.len(), 1);
+    }
+
+    #[test]
+    fn libraries_follow_their_documents_by_relative_path() {
+        let root = std::env::temp_dir().join(format!("scrawl-relative-{}", std::process::id()));
+        let (a, b) = (root.join("a"), root.join("b"));
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d.join("libs")).unwrap();
+        }
+        std::fs::write(a.join("libs/UI.scrawl"), b"x").unwrap();
+        let mut doc = Document::default();
+        let id = doc.add_library("UI", a.join("libs/UI.scrawl").to_string_lossy());
+        doc.refresh_library_paths(&a);
+        assert_eq!(doc.library(id).unwrap().relative.as_deref(), Some(std::path::Path::new("libs").join("UI.scrawl").to_str().unwrap()));
+        // Copy the folder: the document in `b` finds `b`'s library, not `a`'s.
+        std::fs::write(b.join("libs/UI.scrawl"), b"y").unwrap();
+        let found = doc.library(id).unwrap().resolve(Some(&b));
+        assert_eq!(std::fs::read(found).unwrap(), b"y");
+        // Without a copy there, the absolute path still works.
+        std::fs::remove_file(b.join("libs/UI.scrawl")).unwrap();
+        assert_eq!(std::fs::read(doc.library(id).unwrap().resolve(Some(&b))).unwrap(), b"x");
+        assert_eq!(relative_path(std::path::Path::new("/x/y"), std::path::Path::new("/x/z/f")).as_deref(), Some("../z/f"));
+        std::fs::remove_dir_all(&root).ok();
     }
 }
