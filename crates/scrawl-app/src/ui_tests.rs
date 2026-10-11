@@ -1534,3 +1534,24 @@ fn lists_apply_to_the_paragraphs_being_edited() {
     assert_eq!(lists, [Plain, Bullet, Bullet]);
     save(&mut h, "paragraph_lists");
 }
+
+#[test]
+fn opening_an_svg_makes_a_document() {
+    let Some(mut h) = harness() else { return };
+    let dir = std::env::temp_dir().join(format!("scrawl-ui-svg-open-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Logo.svg");
+    std::fs::write(&path, r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect x="20" y="20" width="60" height="60" fill="#3366ff"/></svg>"##).unwrap();
+
+    // Through the workspace, as File › Open does.
+    h.state_mut().open(&path, Some(0));
+    h.step();
+    let app = h.state().front();
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let ab = layer_named(&h, "Logo");
+    assert!(ab.is_artboard());
+    assert_eq!((ab.frame.width, ab.frame.height), (200.0, 100.0));
+    assert!(app.file_path.is_none() && app.is_dirty(), "imported, not yet saved as Scrawl");
+    assert!(h.query_by_label("Imported Logo.svg").is_some());
+    std::fs::remove_dir_all(&dir).ok();
+}

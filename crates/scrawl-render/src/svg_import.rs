@@ -27,6 +27,24 @@ pub fn import_svg(data: &[u8], name: &str, assets: &mut Assets) -> Result<Layer,
     Ok(layer)
 }
 
+/// An SVG file as a document: one artboard the size of its canvas, holding its layers where they
+/// are on it.
+pub fn import_document(data: &[u8], name: &str) -> Result<scrawl_core::Document, String> {
+    let mut doc = scrawl_core::Document::default();
+    let tree = usvg::Tree::from_data(data, &options()).map_err(|e| format!("not a valid SVG: {e}"))?;
+    let size = tree.size();
+    let mut layers = group_children(tree.root(), &mut doc.assets);
+    if layers.is_empty() {
+        return Err("the SVG has no shapes Scrawl can import".into());
+    }
+    let mut artboard = Layer::artboard(if name.is_empty() { "SVG" } else { name }, scrawl_core::Frame::new(0.0, 0.0, size.width().into(), size.height().into()));
+    if let Some(children) = artboard.children_mut() {
+        children.append(&mut layers);
+    }
+    doc.pages[0].layers.push(artboard);
+    Ok(doc)
+}
+
 /// Parsing options with the system's fonts, loaded once, so text becomes outlines.
 fn options() -> usvg::Options<'static> {
     static FONTS: std::sync::OnceLock<std::sync::Arc<usvg::fontdb::Database>> = std::sync::OnceLock::new();
@@ -226,6 +244,22 @@ fn blend(b: usvg::BlendMode) -> BlendMode {
 mod tests {
     use super::*;
     use scrawl_core::LayerKind;
+
+    #[test]
+    fn svg_files_open_as_an_artboard() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80">
+            <rect x="10" y="20" width="30" height="40" fill="#00ff00"/>
+            <circle cx="90" cy="40" r="10" fill="red"/>
+        </svg>"##;
+        let doc = import_document(svg, "Icon").unwrap();
+        let ab = &doc.pages[0].layers[0];
+        assert!(ab.is_artboard());
+        assert_eq!((ab.name.as_str(), ab.frame.width, ab.frame.height), ("Icon", 120.0, 80.0));
+        let kids = ab.children().unwrap();
+        assert_eq!(kids.len(), 2);
+        assert_eq!((kids[0].frame.x, kids[0].frame.y), (10.0, 20.0));
+        assert!(import_document(b"<svg xmlns='http://www.w3.org/2000/svg'/>", "").is_err());
+    }
 
     #[test]
     fn shapes_fills_strokes_and_gradients() {

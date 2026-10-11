@@ -292,9 +292,10 @@ impl ScrawlApp {
     /// File › Open…: asks for a file, which the workspace opens (here if this window is empty).
     pub fn open(&mut self) {
         let dialog = rfd::FileDialog::new()
-            .add_filter("Documents", &[io::FILE_EXTENSION, scrawl_core::sketch::FILE_EXTENSION])
+            .add_filter("Documents", &[io::FILE_EXTENSION, scrawl_core::sketch::FILE_EXTENSION, "svg"])
             .add_filter("Scrawl document", &[io::FILE_EXTENSION])
-            .add_filter("Sketch document", &[scrawl_core::sketch::FILE_EXTENSION]);
+            .add_filter("Sketch document", &[scrawl_core::sketch::FILE_EXTENSION])
+            .add_filter("SVG image", &["svg"]);
         if let Some(path) = dialog.pick_file() {
             self.requests.push(Request::Open(path));
         }
@@ -331,6 +332,10 @@ impl ScrawlApp {
             self.import_sketch(path);
             return;
         }
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+            self.import_svg_document(path);
+            return;
+        }
         match io::load(path) {
             Ok(doc) => self.set_document(doc, Some(path.to_path_buf())),
             Err(e) => self.error = Some(format!("Couldn't open {}: {e}", path.display())),
@@ -344,6 +349,20 @@ impl ScrawlApp {
             Ok(doc) => {
                 self.set_document(doc, None);
                 // Unsaved, since it isn't a Scrawl file yet.
+                self.saved = Document::default();
+                self.notify(format!("Imported {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+            }
+            Err(e) => self.error = Some(format!("Couldn't open {}: {e}", path.display())),
+        }
+    }
+
+    /// Opens an SVG file as a new, untitled document with one artboard.
+    pub fn import_svg_document(&mut self, path: &Path) {
+        let name = path.file_stem().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| scrawl_render::svg_import::import_document(&b, &name));
+        match result {
+            Ok(doc) => {
+                self.set_document(doc, None);
                 self.saved = Document::default();
                 self.notify(format!("Imported {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
             }
