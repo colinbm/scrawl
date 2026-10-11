@@ -1,8 +1,9 @@
 //! The text layer model. Layout lives in the `scrawl-text` crate; this is just data.
 //!
 //! A layer has one [`TextStyle`] for the whole text plus optional [`TextRun`]s: byte ranges that
-//! override character-level properties (font, size, weight, color…). Paragraph-level properties
-//! (alignment, line height, sizing) stay with the layer.
+//! override character-level properties (font, size, weight, features, color…). Most
+//! paragraph-level properties (alignment, line height, sizing) stay with the layer; a run's list
+//! style applies to the paragraphs it starts.
 
 use std::ops::Range;
 
@@ -64,6 +65,11 @@ pub struct RunStyle {
     pub underline: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strikethrough: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<FontFeature>>,
+    /// The list style of paragraphs starting in this run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list: Option<ListStyle>,
     /// Paints this range instead of the layer's fills.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<Color>,
@@ -86,6 +92,10 @@ impl RunStyle {
         s.letter_spacing = self.letter_spacing.unwrap_or(s.letter_spacing);
         s.underline = self.underline.unwrap_or(s.underline);
         s.strikethrough = self.strikethrough.unwrap_or(s.strikethrough);
+        if let Some(v) = &self.features {
+            s.features = v.clone();
+        }
+        s.list = self.list.unwrap_or(s.list);
         s
     }
 
@@ -101,6 +111,8 @@ impl RunStyle {
             letter_spacing: some(base.letter_spacing == styled.letter_spacing).then_some(styled.letter_spacing),
             underline: some(base.underline == styled.underline).then_some(styled.underline),
             strikethrough: some(base.strikethrough == styled.strikethrough).then_some(styled.strikethrough),
+            features: some(base.features == styled.features).then(|| styled.features.clone()),
+            list: some(base.list == styled.list).then_some(styled.list),
             color,
         }
     }
@@ -122,6 +134,25 @@ impl TextLayer {
             Some(r) => (r.style.apply(&self.style), r.style.color),
             None => (self.style.clone(), None),
         }
+    }
+
+    /// The byte range of the paragraph holding byte `at`, with its newline.
+    pub fn paragraph_range(&self, at: usize) -> Range<usize> {
+        let at = at.min(self.text.len());
+        let start = self.text[..at].rfind('\n').map_or(0, |i| i + 1);
+        let end = self.text[at..].find('\n').map_or(self.text.len(), |i| at + i + 1);
+        start..end
+    }
+
+    /// The list style of the paragraph starting at byte `start`.
+    pub fn list_at(&self, start: usize) -> ListStyle {
+        self.run_at(start).and_then(|r| r.style.list).unwrap_or(self.style.list)
+    }
+
+    /// Changes the run styles of every paragraph `range` touches, for paragraph properties.
+    pub fn set_paragraph_style(&mut self, range: Range<usize>, f: impl Fn(&mut RunStyle)) {
+        let (a, b) = (self.paragraph_range(range.start), self.paragraph_range(range.end.max(range.start + 1) - 1));
+        self.set_run_style(a.start..b.end.max(a.end), f);
     }
 
     /// Changes the run styles over `range` with `f`, splitting and merging runs as needed.
@@ -435,6 +466,24 @@ pub fn weight_name(weight: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_styles_cover_whole_paragraphs() {
+        let mut t = TextLayer::new("one\ntwo\nthree");
+        assert_eq!(t.paragraph_range(5), 4..8);
+        assert_eq!(t.paragraph_range(10), 8..13);
+        // A selection inside "two" lists the whole paragraph, newline included.
+        t.set_paragraph_style(5..6, |s| s.list = Some(ListStyle::Bullet));
+        assert_eq!((t.runs[0].start, t.runs[0].end), (4, 8));
+        assert_eq!((t.list_at(0), t.list_at(4), t.list_at(8)), (ListStyle::None, ListStyle::Bullet, ListStyle::None));
+        // Typing at the end of a listed paragraph, then a new line, continues the list.
+        t.replace_range(7..7, "!\nfour");
+        assert_eq!(t.list_at(t.paragraph_range(10).start), ListStyle::Bullet);
+        // Features ride along with the other character styles.
+        t.set_run_style(0..3, |s| s.features = Some(vec![FontFeature { tag: "smcp".into(), value: 1 }]));
+        assert!(t.style_at(1).0.feature_on("smcp"));
+        assert!(!t.style_at(4).0.feature_on("smcp"));
+    }
 
     fn bold(t: &mut TextLayer, r: Range<usize>) {
         t.set_run_style(r, |s| s.font_weight = Some(700));

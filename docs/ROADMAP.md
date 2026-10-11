@@ -50,7 +50,7 @@
 - ✅ OpenType features (ligatures, figures, small caps…), paragraph spacing, bulleted and numbered lists (shared text styles: see Milestone 6)
 - ✅ Text on path: Layer › Attach Text to Path, with a start offset; lies flat while editing
 - ✅ Underlines and strikethroughs along paths
-- ⬜ Lists and features per style run; lists and features in design files
+- ✅ Lists per paragraph and OpenType features per style run; kept in design files through the layer's plugin data (the format has no fields for them)
 
 ## Milestone 5 — Productivity
 - ✅ Smart guides: edge/center alignment and equal-spacing snaps while moving, resizing and drawing (⌃ suspends; View > Snap to Layers)

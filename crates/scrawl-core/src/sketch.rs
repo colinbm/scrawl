@@ -26,7 +26,7 @@ use crate::exportable::{ExportFormat, FileFormat};
 use crate::library::{Foreign, LibraryId, LibraryRef};
 use crate::ops::BooleanOp;
 use crate::prototype::{Animation, Destination, FlowLink};
-use crate::text::{TextAlign, TextLayer, TextSizing, TextStyle, TextTransform, VerticalAlign, WEIGHT_NAMES};
+use crate::text::{FontFeature, TextAlign, TextLayer, TextSizing, TextStyle, TextTransform, VerticalAlign, WEIGHT_NAMES};
 use crate::{
     Artboard, BlendMode, Border, BorderOptions, BorderPosition, Color, CurvePoint, Document, Fill, FillRule, FillType, Frame, Gradient,
     GradientKind, GradientStop, Group, ImageLayer, ImageMode, Layer, LayerId, LayerKind, LineCap, LineJoin, Marker, Override, OverrideValue,
@@ -527,6 +527,7 @@ impl Importer {
                 }
                 let mut t = TextLayer { text: string.to_owned(), style, sizing, runs, on_path: None };
                 t.normalize();
+                text_extras_in(&mut t, &v["userInfo"]["com.scrawl"], byte_at);
                 let mut layer = self.common(v, frame, LayerKind::Text(t), entry);
                 // The text color lives in the string attributes; a clear one means no fill.
                 let color = color.unwrap_or(Color::BLACK);
@@ -857,6 +858,40 @@ fn gradient_out(g: &Gradient) -> Value {
 fn context(blend: BlendMode, opacity: f64) -> Value {
     let i = BlendMode::ALL.iter().position(|b| *b == blend).unwrap_or(0);
     json!({ "_class": "graphicsContextSettings", "blendMode": i, "opacity": opacity })
+}
+
+/// Lists and OpenType features, which Sketch's format has no place for, kept in the layer's
+/// `userInfo` (plugin data, which Sketch preserves) with run offsets in UTF-16 units.
+fn text_extras_out(t: &TextLayer, units: impl Fn(usize) -> usize) -> Option<Value> {
+    let runs: Vec<Value> = t
+        .runs
+        .iter()
+        .filter(|r| r.style.list.is_some() || r.style.features.is_some())
+        .map(|r| json!({ "location": units(r.start), "length": units(r.end) - units(r.start), "list": r.style.list, "features": r.style.features }))
+        .collect();
+    let plain = t.style.list == crate::text::ListStyle::None && t.style.features.is_empty();
+    if plain && runs.is_empty() {
+        return None;
+    }
+    Some(json!({ "list": t.style.list, "features": t.style.features, "runs": runs }))
+}
+
+fn text_extras_in(t: &mut TextLayer, v: &Value, byte_at: impl Fn(usize) -> usize) {
+    if let Some(list) = v.get("list").and_then(|l| serde_json::from_value(l.clone()).ok()) {
+        t.style.list = list;
+    }
+    if let Some(features) = v.get("features").and_then(|f| serde_json::from_value(f.clone()).ok()) {
+        t.style.features = features;
+    }
+    for r in list(v, "runs") {
+        let (loc, len) = (int(r, "location").max(0) as usize, int(r, "length").max(0) as usize);
+        let list: Option<crate::text::ListStyle> = serde_json::from_value(r["list"].clone()).ok().flatten();
+        let features: Option<Vec<FontFeature>> = serde_json::from_value(r["features"].clone()).ok().flatten();
+        t.set_run_style(byte_at(loc)..byte_at(loc + len), |s| {
+            s.list = list;
+            s.features = features.clone();
+        });
+    }
 }
 
 /// Sketch's attributes for a text style and color. The schema allows decorations and case only in
@@ -1215,6 +1250,9 @@ impl Exporter {
                     attributes
                 };
                 v["attributedString"] = json!({ "_class": "attributedString", "string": t.text, "attributes": attributes });
+                if let Some(extras) = text_extras_out(t, units) {
+                    v["userInfo"] = json!({ "com.scrawl": extras });
+                }
                 v["automaticallyDrawOnUnderlyingPath"] = json!(false);
                 v["dontSynchroniseWithSymbol"] = json!(false);
                 v["glyphBounds"] = json!(format!("{{{{0, 0}}, {{{}, {}}}}}", l.frame.width, l.frame.height));
@@ -1398,6 +1436,22 @@ mod tests {
         assert_eq!(b.runs.len(), 1, "{:?}", b.runs);
         assert_eq!((b.runs[0].start, b.runs[0].end), (a.runs[0].start, a.runs[0].end), "UTF-16 offsets map back to bytes");
         assert_eq!(b.runs[0].style, a.runs[0].style);
+    }
+
+    #[test]
+    fn lists_and_features_round_trip() {
+        let mut doc = Document::default();
+        let mut l = Layer::text(Point::ORIGIN, "café\nitem\nother");
+        if let LayerKind::Text(t) = &mut l.kind {
+            t.style.set_feature("tnum", true);
+            t.set_paragraph_style(7..8, |s| s.list = Some(crate::text::ListStyle::Bullet));
+            t.set_run_style(0..5, |s| s.features = Some(vec![FontFeature { tag: "smcp".into(), value: 1 }]));
+        }
+        doc.pages[0].layers.push(l.clone());
+        let back = import(&export(&doc).unwrap()).unwrap();
+        let (LayerKind::Text(a), LayerKind::Text(b)) = (&l.kind, &back.pages[0].layers[0].kind) else { panic!() };
+        assert_eq!(a.style, b.style);
+        assert_eq!(a.runs, b.runs);
     }
 
     #[test]

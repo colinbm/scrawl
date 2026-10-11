@@ -1504,3 +1504,33 @@ fn plugins_run_on_events() {
     assert!(!twice);
     std::fs::remove_dir_all(&support).ok();
 }
+
+#[test]
+fn lists_apply_to_the_paragraphs_being_edited() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let id = select(&mut h, "Body");
+    if let Some(scrawl_core::LayerKind::Text(t)) = h.state_mut().front_mut().page_mut().find_mut(id).map(|l| &mut l.kind) {
+        t.text = "intro\nfirst\nsecond".into();
+    }
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    // Select from inside "first" into "second".
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowUp);
+    for _ in 0..8 {
+        h.key_press(egui::Key::ArrowRight);
+    }
+    for _ in 0..6 {
+        h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowRight);
+    }
+    h.run();
+    h.get_by_label("Bullets").click();
+    h.run();
+    let t = text_layer(&h, id);
+    assert_eq!(t.style.list, scrawl_core::text::ListStyle::None, "the layer's own list is untouched");
+    let lists: Vec<_> = [0, 6, 12].iter().map(|&s| t.list_at(s)).collect();
+    use scrawl_core::text::ListStyle::{Bullet, None as Plain};
+    assert_eq!(lists, [Plain, Bullet, Bullet]);
+    save(&mut h, "paragraph_lists");
+}

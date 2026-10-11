@@ -914,7 +914,11 @@ fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scr
     use scrawl_core::text::{WEIGHT_NAMES, weight_name};
     use scrawl_core::{TextAlign, TextSizing, TextTransform, VerticalAlign};
     let (effective, run_color) = match &range {
-        Some(r) => text.style_at(r.start),
+        Some(r) => {
+            let (mut s, color) = text.style_at(r.start);
+            s.list = text.list_at(text.paragraph_range(r.start).start);
+            (s, color)
+        }
         None => (text.style.clone(), None),
     };
     let mut working = effective.clone();
@@ -1067,16 +1071,28 @@ fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scr
     });
 
     match range {
-        None => text.style = working,
+        None => {
+            // Lists and features set for the whole layer replace those of its parts.
+            if working.list != text.style.list {
+                text.set_run_style(0..text.text.len(), |s| s.list = None);
+            }
+            if working.features != text.style.features {
+                text.set_run_style(0..text.text.len(), |s| s.features = None);
+            }
+            text.style = working;
+        }
         Some(r) => {
-            // Paragraph properties belong to the layer.
+            // Paragraph properties belong to the layer, except lists, which belong to the
+            // paragraphs the range touches.
             text.style.line_height = working.line_height;
             text.style.alignment = working.alignment;
             text.style.vertical_alignment = working.vertical_alignment;
             text.style.transform = working.transform;
             text.style.paragraph_spacing = working.paragraph_spacing;
-            text.style.list = working.list;
-            text.style.features = working.features.clone();
+            if working.list != effective.list {
+                let (list, base) = (working.list, text.style.list);
+                text.set_paragraph_style(r.clone(), |s| s.list = (list != base).then_some(list));
+            }
             // Changed character properties become overrides on the range; values matching the
             // layer's style need none.
             macro_rules! apply {
@@ -1088,7 +1104,7 @@ fn text_section(ui: &mut Ui, text: &mut scrawl_core::TextLayer, engine: &mut scr
                     }
                 )*};
             }
-            apply!(font_family, font_size, font_weight, italic, letter_spacing, underline, strikethrough);
+            apply!(font_family, font_size, font_weight, italic, letter_spacing, underline, strikethrough, features);
         }
     }
 }

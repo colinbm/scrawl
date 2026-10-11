@@ -480,8 +480,8 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resou
     // List markers, in the text's fills, right-aligned in the indent on each paragraph's baseline.
     let anchors = scrawl_text::marker_anchors(layout, &placement);
     let LayerKind::Text(text) = &layer.kind else { return };
-    for (marker, baseline, right) in anchors {
-        let m = engine.marker_layout(&text.style, &marker);
+    for (marker, baseline, right, start) in anchors {
+        let m = engine.marker_layout(&text.style_at(start).0, &marker);
         let mb = m.lines().next().map_or(0.0, |l| l.metrics().baseline as f64);
         let offset = Vec2::new(right - m.width() as f64, baseline - mb);
         fill_pass(scene, m, &|_| offset);

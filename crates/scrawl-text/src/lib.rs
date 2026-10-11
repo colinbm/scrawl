@@ -22,21 +22,24 @@ pub struct RunBrush(pub Option<scrawl_core::Color>);
 pub type Layout = parley::Layout<RunBrush>;
 
 /// Where a laid-out text goes inside its layer: the block's vertical offset (vertical alignment),
-/// the indent left for list markers, each line's extra drop from paragraph spacing, and the
-/// markers themselves.
+/// each line's indent for list markers and extra drop from paragraph spacing, and the markers
+/// themselves.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Placement {
     pub dy: f64,
+    /// The widest indent of any line, which wrapping leaves room for.
     pub indent: f64,
+    pub line_dx: Vec<f64>,
     pub line_dy: Vec<f64>,
-    /// List markers: the line each goes on, and its text.
-    pub markers: Vec<(usize, String)>,
+    /// List markers: the line each goes on, its text, and where its paragraph starts in the text.
+    pub markers: Vec<(usize, String, usize)>,
 }
 
 impl Placement {
     /// Layout space → layer space for line `line`.
     pub fn line_offset(&self, line: usize) -> Vec2 {
-        Vec2::new(self.indent, self.dy + self.line_dy.get(line).copied().unwrap_or(0.0))
+        let dx = self.line_dx.get(line).copied().unwrap_or(self.indent);
+        Vec2::new(dx, self.dy + self.line_dy.get(line).copied().unwrap_or(0.0))
     }
 
     /// The line at layer-space height `y`.
@@ -133,6 +136,27 @@ pub fn list_indent(style: &TextStyle) -> f64 {
     }
 }
 
+/// Each paragraph's start and the style in effect there (with its list style).
+fn paragraph_styles(text: &TextLayer) -> Vec<(usize, TextStyle)> {
+    let starts = std::iter::once(0).chain(text.text.match_indices('\n').map(|(i, _)| i + 1));
+    starts
+        .map(|s| {
+            let mut style = text.style_at(s).0;
+            style.list = text.list_at(s);
+            (s, style)
+        })
+        .collect()
+}
+
+/// The widest list indent of a layer's paragraphs. Lines wrap leaving room for it, so text in
+/// paragraphs without a list wraps a little early when the layer mixes the two.
+pub fn max_indent(text: &TextLayer) -> f64 {
+    if text.style.list == scrawl_core::text::ListStyle::None && text.runs.iter().all(|r| r.style.list.is_none()) {
+        return 0.0;
+    }
+    paragraph_styles(text).iter().map(|(_, s)| list_indent(s)).fold(0.0, f64::max)
+}
+
 /// The font stack used when a layer names no family, or as a fallback after it.
 const FALLBACK_FAMILIES: &str = "system-ui, sans-serif";
 
@@ -198,29 +222,43 @@ pub fn alignment(align: TextAlign) -> Alignment {
 pub fn wrap_width(text: &TextLayer, frame_width: f64) -> Option<f32> {
     match text.sizing {
         TextSizing::Auto => None,
-        TextSizing::FixedWidth | TextSizing::Fixed => Some((frame_width - list_indent(&text.style)).max(1.0) as f32),
+        TextSizing::FixedWidth | TextSizing::Fixed => Some((frame_width - max_indent(text)).max(1.0) as f32),
     }
 }
 
-/// Paragraph spacing and list markers for a laid-out `text` (as displayed).
-fn place(layout: &Layout, text: &str, style: &TextStyle) -> Placement {
-    let mut placement = Placement { indent: list_indent(style), ..Default::default() };
-    let mut paragraphs = 0;
+/// Paragraph spacing, indents and list markers for a laid-out `layer`, whose displayed text is
+/// `text`. Numbering counts the paragraphs of each numbered stretch, empty ones included.
+fn place(layout: &Layout, layer: &TextLayer, text: &str) -> Placement {
+    let mut placement = Placement { indent: max_indent(layer), ..Default::default() };
+    // Runs only line up with the displayed text when the case transform keeps its length.
+    let styled = text.len() == layer.text.len();
+    let styles = paragraph_styles(layer);
+    let style_of = |start: usize| match styles.iter().rev().find(|(s, _)| *s <= start) {
+        Some((_, s)) if styled => s.clone(),
+        _ => layer.style.clone(),
+    };
+    let mut number = 0;
+    let mut first = true;
     let mut drop = 0.0;
+    let mut dx = 0.0;
     for (i, line) in layout.lines().enumerate() {
         let start = line.text_range().start;
         let starts_paragraph = start == 0 || text.as_bytes().get(start - 1) == Some(&b'\n');
         if starts_paragraph {
-            if paragraphs > 0 {
-                drop += style.paragraph_spacing;
+            if !first {
+                drop += layer.style.paragraph_spacing;
             }
-            paragraphs += 1;
+            first = false;
+            let style = style_of(start);
+            dx = list_indent(&style);
+            number = if style.list == scrawl_core::text::ListStyle::Numbered { number + 1 } else { 0 };
             // Empty paragraphs get no marker.
             let empty = text[start.min(text.len())..].starts_with('\n') || start >= text.len();
-            if !empty && let Some(m) = style.list.marker(paragraphs) {
-                placement.markers.push((i, m));
+            if !empty && let Some(m) = style.list.marker(number) {
+                placement.markers.push((i, m, start));
             }
         }
+        placement.line_dx.push(dx);
         placement.line_dy.push(drop);
     }
     placement
@@ -265,6 +303,10 @@ impl TextEngine {
                     for p in style_properties(&styled) {
                         builder.push(p, range.clone());
                     }
+                    // A run turning every feature back to the font's defaults.
+                    if styled.features.is_empty() && !text.style.features.is_empty() {
+                        builder.push(StyleProperty::FontFeatures(parley::FontFeatures::Source("".into())), range.clone());
+                    }
                     builder.push(StyleProperty::Brush(RunBrush(run.style.color)), range);
                 }
             }
@@ -307,7 +349,7 @@ impl TextEngine {
         // Text on a path is one unwrapped line.
         let width = if text.on_path.is_some() { None } else { wrap_width(text, layer.frame.width) };
         let layout = self.layout(text, width);
-        let mut placement = place(layout, &display, &text.style);
+        let mut placement = place(layout, text, &display);
         let slack = frame_h - layout.height() as f64 - placement.extra_height();
         placement.dy = match (sizing, valign) {
             (TextSizing::Fixed, VerticalAlign::Middle) => slack / 2.0,
@@ -333,16 +375,18 @@ impl TextEngine {
         let size = match text.sizing {
             TextSizing::Fixed => return None,
             TextSizing::Auto => {
-                let (indent, display) = (list_indent(&text.style), text.display_text());
+                let display = text.display_text();
                 let l = self.layout(text, None);
-                let extra = place(l, &display, &text.style).extra_height();
+                let p = place(l, text, &display);
+                // The widest line, with its indent.
+                let width = l.lines().enumerate().map(|(i, line)| line.metrics().advance as f64 + p.line_offset(i).x).fold(0.0, f64::max);
                 // An empty layout still gets a caret-sized box.
-                ((l.width() as f64 + indent).max(1.0), (l.height() as f64 + extra).max(text.style.font_size))
+                (width.max(1.0), (l.height() as f64 + p.extra_height()).max(text.style.font_size))
             }
             TextSizing::FixedWidth => {
                 let display = text.display_text();
                 let l = self.layout(text, wrap_width(text, f.width));
-                let extra = place(l, &display, &text.style).extra_height();
+                let extra = place(l, text, &display).extra_height();
                 (f.width, (l.height() as f64 + extra).max(text.style.font_size))
             }
         };
@@ -427,9 +471,9 @@ impl TextEngine {
         glyph_outlines(layout, |i| placement.line_offset(i), &mut groups);
         let anchors = marker_anchors(layout, &placement);
         let LayerKind::Text(text) = &layer.kind else { return None };
-        let style = text.style.clone();
-        for (marker, baseline, right) in anchors {
-            let m = self.marker_layout(&style, &marker);
+        let text = text.clone();
+        for (marker, baseline, right, start) in anchors {
+            let m = self.marker_layout(&text.style_at(start).0, &marker);
             let mb = m.lines().next().map_or(0.0, |l| l.metrics().baseline as f64);
             let at = Vec2::new(right - m.width() as f64, baseline - mb);
             let mut marked = vec![];
@@ -445,14 +489,17 @@ impl TextEngine {
     }
 }
 
-/// Each list marker with the layer-space baseline it sits on and the x its right edge aligns to.
-pub fn marker_anchors(layout: &Layout, placement: &Placement) -> Vec<(String, f64, f64)> {
+/// Each list marker with the layer-space baseline it sits on, the x its right edge aligns to,
+/// and where its paragraph starts in the text (for its style).
+pub fn marker_anchors(layout: &Layout, placement: &Placement) -> Vec<(String, f64, f64, usize)> {
     let lines: Vec<f64> = layout.lines().map(|l| l.metrics().baseline as f64).collect();
-    let gap = placement.indent * 0.25;
     placement
         .markers
         .iter()
-        .filter_map(|(i, m)| Some((m.clone(), lines.get(*i)? + placement.line_offset(*i).y, placement.indent - gap)))
+        .filter_map(|(i, m, start)| {
+            let at = placement.line_offset(*i);
+            Some((m.clone(), lines.get(*i)? + at.y, at.x * 0.75, *start))
+        })
         .collect()
 }
 
@@ -683,10 +730,53 @@ mod tests {
         assert!(list.frame.width > plain.frame.width + 20.0);
         let (_, p) = e.layer_layout(&list).unwrap();
         // The empty middle paragraph is skipped, but still counted.
-        assert_eq!(p.markers.iter().map(|(_, m)| m.as_str()).collect::<Vec<_>>(), ["1.", "3."]);
+        assert_eq!(p.markers.iter().map(|(_, m, _)| m.as_str()).collect::<Vec<_>>(), ["1.", "3."]);
         // Marker glyphs sit in the indent, left of the text.
         let b = e.outlines(&list).unwrap().bounding_box();
         assert!(b.x0 < p.indent * 0.5, "{b:?}");
+    }
+
+    #[test]
+    fn lists_belong_to_paragraphs() {
+        let mut e = engine();
+        // Numbers restart after a paragraph without a list; only listed lines are indented.
+        let mut l = text_layer("a\nb\nplain\nc", |t| {
+            t.set_paragraph_style(0..3, |s| s.list = Some(scrawl_core::text::ListStyle::Numbered));
+            let c = t.text.len() - 1;
+            t.set_paragraph_style(c..c + 1, |s| s.list = Some(scrawl_core::text::ListStyle::Numbered));
+        });
+        e.fit(&mut l);
+        let (_, p) = e.layer_layout(&l).unwrap();
+        assert_eq!(p.markers.iter().map(|(_, m, _)| m.as_str()).collect::<Vec<_>>(), ["1.", "2.", "1."]);
+        assert!(p.line_dx[0] > 0.0 && p.line_dx[2] == 0.0 && p.line_dx[3] > 0.0, "{:?}", p.line_dx);
+        assert_eq!(p.indent, p.line_dx[0]);
+    }
+
+    #[test]
+    fn features_apply_to_runs() {
+        let mut e = engine();
+        let width = |e: &mut TextEngine, l: &Layer| {
+            let (layout, _) = e.layer_layout(l).unwrap();
+            layout.width() as f64
+        };
+        let plain = text_layer("1111", |t| t.style.font_family = "Helvetica Neue".into());
+        let tnum = text_layer("1111", |t| {
+            t.style.font_family = "Helvetica Neue".into();
+            t.set_run_style(0..4, |s| s.features = Some(vec![scrawl_core::text::FontFeature { tag: "tnum".into(), value: 1 }]));
+        });
+        let layer_tnum = text_layer("1111", |t| {
+            t.style.font_family = "Helvetica Neue".into();
+            t.style.set_feature("tnum", true);
+        });
+        let (a, b, c) = (width(&mut e, &plain), width(&mut e, &tnum), width(&mut e, &layer_tnum));
+        assert!((b - c).abs() < 0.01, "a run's features shape like the layer's: {b} vs {c}");
+        // And a run can turn the layer's features back off.
+        let off = text_layer("1111", |t| {
+            t.style.font_family = "Helvetica Neue".into();
+            t.style.set_feature("tnum", true);
+            t.set_run_style(0..4, |s| s.features = Some(vec![]));
+        });
+        assert!((width(&mut e, &off) - a).abs() < 0.01);
     }
 
     #[test]
