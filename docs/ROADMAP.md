@@ -80,7 +80,8 @@
 - ✅ Native macOS menu bar (muda) from the same command model as the in-window menu bar and shortcuts
 - ✅ Multi-window documents (⌘N, ⌘W, Window menu), Open Recent, autosave with crash recovery, versions kept on each save (File › Browse Versions…, Revert to Saved)
 - ✅ Plugins: JavaScript (QuickJS) against the document's JSON, as one undo step; Plugins menu, script console (⌥⌘K), example plugins. See [PLUGINS.md](PLUGINS.md)
-- ⬜ Prototyping: overlays, fixed headers inside groups, more animations (dissolve, push), device frames, flows across pages
+- ✅ Prototyping: overlays (click outside or Back closes), dissolve and push animations, links to artboards on other pages
+- ⬜ Prototyping: fixed layers inside groups, device frames; design-file export of overlays and the newer animations
 - ⬜ Native menus on Windows/Linux (in-window menu bar there for now); macOS document browser and Versions integration
 - ⬜ Plugin API: events/actions, UI panels, network and file access with permissions
 - ⬜ Collaboration (CRDT doc model) — out of scope until the model stabilises

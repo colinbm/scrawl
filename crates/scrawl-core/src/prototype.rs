@@ -29,11 +29,25 @@ pub enum Animation {
     SlideFromLeft,
     SlideFromBottom,
     SlideFromTop,
+    /// Fades the destination in over the current artboard.
+    Dissolve,
+    /// Slides in from the right, pushing the current artboard out to the left.
+    PushFromRight,
+    /// Slides in from the left, pushing the current artboard out to the right.
+    PushFromLeft,
 }
 
 impl Animation {
-    pub const ALL: [Animation; 5] =
-        [Animation::None, Animation::SlideFromRight, Animation::SlideFromLeft, Animation::SlideFromBottom, Animation::SlideFromTop];
+    pub const ALL: [Animation; 8] = [
+        Animation::None,
+        Animation::SlideFromRight,
+        Animation::SlideFromLeft,
+        Animation::SlideFromBottom,
+        Animation::SlideFromTop,
+        Animation::Dissolve,
+        Animation::PushFromRight,
+        Animation::PushFromLeft,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -42,15 +56,23 @@ impl Animation {
             Animation::SlideFromLeft => "Slide from Left",
             Animation::SlideFromBottom => "Slide from Bottom",
             Animation::SlideFromTop => "Slide from Top",
+            Animation::Dissolve => "Dissolve",
+            Animation::PushFromRight => "Push from Right",
+            Animation::PushFromLeft => "Push from Left",
         }
+    }
+
+    /// Whether the outgoing artboard moves too.
+    fn pushes(self) -> bool {
+        matches!(self, Animation::PushFromRight | Animation::PushFromLeft)
     }
 
     /// The direction the incoming artboard starts from, as a fraction of the viewport size.
     fn start_offset(self) -> Vec2 {
         match self {
-            Animation::None => Vec2::ZERO,
-            Animation::SlideFromRight => Vec2::new(1.0, 0.0),
-            Animation::SlideFromLeft => Vec2::new(-1.0, 0.0),
+            Animation::None | Animation::Dissolve => Vec2::ZERO,
+            Animation::SlideFromRight | Animation::PushFromRight => Vec2::new(1.0, 0.0),
+            Animation::SlideFromLeft | Animation::PushFromLeft => Vec2::new(-1.0, 0.0),
             Animation::SlideFromBottom => Vec2::new(0.0, 1.0),
             Animation::SlideFromTop => Vec2::new(0.0, -1.0),
         }
@@ -63,15 +85,23 @@ pub struct FlowLink {
     pub destination: Destination,
     #[serde(default)]
     pub animation: Animation,
+    /// Shows the destination on top of the current artboard, centered, instead of replacing it.
+    /// Clicking outside it or following a Back link closes it.
+    #[serde(default, skip_serializing_if = "crate::prototype::is_false")]
+    pub overlay: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 impl FlowLink {
     pub fn to(artboard: LayerId) -> Self {
-        Self { destination: Destination::Artboard(artboard), animation: Animation::default() }
+        Self { destination: Destination::Artboard(artboard), animation: Animation::default(), overlay: false }
     }
 
     pub fn back() -> Self {
-        Self { destination: Destination::Back, animation: Animation::default() }
+        Self { destination: Destination::Back, animation: Animation::default(), overlay: false }
     }
 }
 
@@ -118,11 +148,16 @@ pub fn links(page: &Page) -> Vec<(LayerId, FlowLink)> {
     out
 }
 
-/// Whether `link` leads somewhere on `page`: back, or to an artboard that still exists.
-pub fn resolves(page: &Page, link: &FlowLink) -> bool {
+/// The artboard `id` on any page of `doc`, with its page.
+pub fn find_artboard(doc: &crate::Document, id: LayerId) -> Option<(crate::PageId, &Layer)> {
+    doc.pages.iter().find_map(|p| p.layers.iter().find(|l| l.id == id && l.is_artboard()).map(|l| (p.id, l)))
+}
+
+/// Whether `link` leads somewhere: back, or to an artboard that still exists on any page.
+pub fn resolves(doc: &crate::Document, link: &FlowLink) -> bool {
     match link.destination {
         Destination::Back => true,
-        Destination::Artboard(id) => page.find(id).is_some_and(Layer::is_artboard),
+        Destination::Artboard(id) => find_artboard(doc, id).is_some(),
     }
 }
 
@@ -205,6 +240,8 @@ pub struct Frames {
     pub to: Vec2,
     /// Draw `from` above `to` (when going back, the old artboard slides off the top).
     pub from_on_top: bool,
+    /// Opacity of whichever artboard is on top (dissolves fade it).
+    pub top_alpha: f64,
 }
 
 impl Transition {
@@ -226,11 +263,14 @@ impl Transition {
         let p = self.progress(now);
         let d = self.animation.start_offset();
         let d = Vec2::new(d.x * size.x, d.y * size.y);
-        if self.reverse {
-            // The artboard we're leaving slides back out the way it came.
-            Frames { from: d * p, to: Vec2::ZERO, from_on_top: true }
-        } else {
-            Frames { from: Vec2::ZERO, to: d * (1.0 - p), from_on_top: false }
+        let push = self.animation.pushes();
+        match (self.animation, self.reverse) {
+            // A dissolve fades the top artboard: in going forward, out going back.
+            (Animation::Dissolve, false) => Frames { from: Vec2::ZERO, to: Vec2::ZERO, from_on_top: false, top_alpha: p },
+            (Animation::Dissolve, true) => Frames { from: Vec2::ZERO, to: Vec2::ZERO, from_on_top: true, top_alpha: 1.0 - p },
+            // The artboard we're leaving slides back out the way it came (pushing the other back).
+            (_, true) => Frames { from: d * p, to: if push { -d * (1.0 - p) } else { Vec2::ZERO }, from_on_top: true, top_alpha: 1.0 },
+            (_, false) => Frames { from: if push { -d * p } else { Vec2::ZERO }, to: d * (1.0 - p), from_on_top: false, top_alpha: 1.0 },
         }
     }
 }
@@ -245,11 +285,18 @@ pub struct Player {
     pub transition: Option<Transition>,
     /// Vertical scroll of the current artboard, in artboard units.
     pub scroll: f64,
+    /// An artboard shown over the current one, and when it appeared (for its fade-in).
+    pub overlay: Option<(LayerId, f64)>,
 }
 
 impl Player {
     pub fn new(start: LayerId) -> Self {
-        Self { current: start, start, history: vec![], transition: None, scroll: 0.0 }
+        Self { current: start, start, history: vec![], transition: None, scroll: 0.0, overlay: None }
+    }
+
+    /// Closes the overlay. Returns whether there was one.
+    pub fn close_overlay(&mut self) -> bool {
+        self.overlay.take().is_some()
     }
 
     pub fn can_go_back(&self) -> bool {
@@ -258,13 +305,24 @@ impl Player {
 
     /// Follows `link` from the current artboard at time `now`. Returns whether the artboard
     /// changed.
-    pub fn follow(&mut self, page: &Page, link: FlowLink, now: f64) -> bool {
+    pub fn follow(&mut self, doc: &crate::Document, link: FlowLink, now: f64) -> bool {
         match link.destination {
+            // Back from an overlay closes it.
+            Destination::Back if self.overlay.is_some() => self.close_overlay(),
             Destination::Back => self.back(now),
-            Destination::Artboard(to) => {
-                if to == self.current || !page.find(to).is_some_and(Layer::is_artboard) {
+            Destination::Artboard(to) if link.overlay => {
+                if find_artboard(doc, to).is_none() || to == self.current {
                     return false;
                 }
+                self.overlay = Some((to, now));
+                true
+            }
+            Destination::Artboard(to) => {
+                if to == self.current || find_artboard(doc, to).is_none() {
+                    return false;
+                }
+                // Leaving for another artboard closes any overlay.
+                self.overlay = None;
                 self.history.push((self.current, link.animation));
                 self.transition = Some(Transition { from: self.current, animation: link.animation, reverse: false, started: now });
                 self.current = to;
@@ -276,6 +334,9 @@ impl Player {
 
     /// Returns to the previous artboard, reversing the animation that left it.
     pub fn back(&mut self, now: f64) -> bool {
+        if self.close_overlay() {
+            return true;
+        }
         let Some((to, animation)) = self.history.pop() else { return false };
         self.transition = Some(Transition { from: self.current, animation, reverse: true, started: now });
         self.current = to;
@@ -289,6 +350,7 @@ impl Player {
         self.history.clear();
         self.transition = None;
         self.scroll = 0.0;
+        self.overlay = None;
     }
 
     pub fn restart(&mut self) {
@@ -306,8 +368,11 @@ impl Player {
 
     /// Forgets artboards that no longer exist, e.g. after an edit in the main window. Returns
     /// false if the current one is gone too.
-    pub fn sanitize(&mut self, page: &Page) -> bool {
-        let exists = |id: LayerId| page.find(id).is_some_and(Layer::is_artboard);
+    pub fn sanitize(&mut self, doc: &crate::Document) -> bool {
+        let exists = |id: LayerId| find_artboard(doc, id).is_some();
+        if self.overlay.is_some_and(|(o, _)| !exists(o)) {
+            self.overlay = None;
+        }
         self.history.retain(|&(id, _)| exists(id));
         if self.transition.is_some_and(|t| !exists(t.from)) {
             self.transition = None;
@@ -323,10 +388,11 @@ pub fn max_scroll(artboard: &Layer, height: f64) -> f64 {
 
 /// The bounds of a link's source layer and its destination artboard on the page, for drawing
 /// the connection on the canvas.
+/// The bounds of a link's source layer and its destination artboard, if that's on the same page.
 pub fn connection(page: &Page, source: LayerId, link: &FlowLink) -> Option<(Rect, Option<Rect>)> {
     let from = page.world_bounds(source)?;
     let to = match link.destination {
-        Destination::Artboard(id) => Some(page.world_bounds(id)?),
+        Destination::Artboard(id) => page.world_bounds(id),
         Destination::Back => None,
     };
     Some((from, to))
@@ -409,9 +475,10 @@ mod tests {
     #[test]
     fn player_follows_links_and_goes_back() {
         let (page, home, detail, _) = sample();
+        let doc = crate::Document { pages: vec![page], ..Default::default() };
         let mut p = Player::new(home);
         assert!(!p.can_go_back());
-        assert!(p.follow(&page, FlowLink::to(detail), 0.0));
+        assert!(p.follow(&doc, FlowLink::to(detail), 0.0));
         assert_eq!(p.current, detail);
         let t = p.transition.unwrap();
         assert_eq!((t.from, t.reverse), (home, false));
@@ -420,13 +487,48 @@ mod tests {
         assert!(f.to.x > 0.0 && f.to.x < 300.0 && f.from == Vec2::ZERO);
         assert!(p.tick(0.1));
         assert!(!p.tick(1.0));
-        assert!(p.follow(&page, FlowLink::back(), 2.0));
+        assert!(p.follow(&doc, FlowLink::back(), 2.0));
         assert_eq!(p.current, home);
         assert!(p.transition.unwrap().reverse);
         assert!(!p.back(3.0));
         // Links to the current artboard or to nothing do nothing.
-        assert!(!p.follow(&page, FlowLink::to(home), 4.0));
-        assert!(!p.follow(&page, FlowLink::to(LayerId::new()), 4.0));
+        assert!(!p.follow(&doc, FlowLink::to(home), 4.0));
+        assert!(!p.follow(&doc, FlowLink::to(LayerId::new()), 4.0));
+    }
+
+    #[test]
+    fn overlays_and_links_across_pages() {
+        let (page, home, detail, _) = sample();
+        let mut other = Page::new("Other");
+        let settings = ops::insert_drawn(&mut other, Layer::artboard("Settings", Frame::new(0.0, 0.0, 200.0, 200.0)));
+        let doc = crate::Document { pages: vec![page, other], ..Default::default() };
+        let mut p = Player::new(home);
+        // An overlay sits over the current artboard without leaving it.
+        assert!(p.follow(&doc, FlowLink { overlay: true, ..FlowLink::to(detail) }, 0.0));
+        assert_eq!((p.current, p.overlay.map(|o| o.0)), (home, Some(detail)));
+        assert!(!p.can_go_back());
+        // Back closes it.
+        assert!(p.follow(&doc, FlowLink::back(), 1.0));
+        assert!(p.overlay.is_none() && p.current == home);
+        // A link to another page's artboard works, and resolves.
+        let link = FlowLink::to(settings);
+        assert!(resolves(&doc, &link));
+        assert!(p.follow(&doc, link, 2.0));
+        assert_eq!(find_artboard(&doc, p.current).map(|(pg, _)| pg), Some(doc.pages[1].id));
+        assert!(p.sanitize(&doc));
+    }
+
+    #[test]
+    fn dissolves_fade_and_pushes_move_both() {
+        let size = Vec2::new(100.0, 100.0);
+        let t = |animation, reverse| Transition { from: LayerId::new(), animation, reverse, started: 0.0 };
+        let f = t(Animation::Dissolve, false).frames(0.1, size);
+        assert!(f.top_alpha > 0.0 && f.top_alpha < 1.0 && f.to == Vec2::ZERO && !f.from_on_top);
+        let f = t(Animation::PushFromRight, false).frames(0.1, size);
+        assert!(f.from.x < 0.0 && f.to.x > 0.0, "the old one leaves left as the new one comes in: {f:?}");
+        assert!((f.to.x - f.from.x - 100.0).abs() < 1e-9, "edge to edge");
+        let f = t(Animation::SlideFromRight, false).frames(0.1, size);
+        assert_eq!(f.from, Vec2::ZERO, "slides leave the old one in place");
     }
 
     #[test]

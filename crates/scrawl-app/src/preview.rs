@@ -3,7 +3,7 @@
 
 use egui::{Color32, CursorIcon, Pos2, Rect as ERect, Sense, Stroke, vec2};
 use scrawl_core::kurbo::{Affine, Point, Rect, Vec2};
-use scrawl_core::prototype::{self, Player};
+use scrawl_core::prototype::{self, FlowLink, Player};
 use scrawl_core::{Layer, LayerId, PageId};
 
 use crate::app::ScrawlApp;
@@ -61,13 +61,9 @@ pub fn open(app: &mut ScrawlApp) {
 /// Shows the preview window, if open.
 pub fn show(app: &mut ScrawlApp, ctx: &egui::Context) {
     let Some(preview) = &mut app.preview else { return };
-    let Some(page) = app.doc.page(preview.page) else {
-        app.preview = None;
-        return;
-    };
     // Edits in the document window may have removed artboards.
-    if !preview.player.sanitize(page) {
-        match prototype::start_artboard(page, &[]) {
+    if !preview.player.sanitize(&app.doc) {
+        match app.doc.page(preview.page).and_then(|p| prototype::start_artboard(p, &[])) {
             Some(start) => preview.player = Player::new(start),
             None => {
                 app.preview = None;
@@ -75,7 +71,7 @@ pub fn show(app: &mut ScrawlApp, ctx: &egui::Context) {
             }
         }
     }
-    let Some(artboard) = page.find(preview.player.current) else { return };
+    let Some((_, artboard)) = prototype::find_artboard(&app.doc, preview.player.current) else { return };
     let size = (artboard.frame.width, artboard.frame.height);
     let title = format!("{} — Preview", artboard.name);
     let inner = [size.0 as f32, size.1.min(MAX_OPEN_HEIGHT) as f32 + BAR_HEIGHT];
@@ -104,7 +100,8 @@ fn contents(app: &mut ScrawlApp, ui: &mut egui::Ui) {
 
 fn bar(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
     let Some(preview) = &mut app.preview else { return };
-    let Some(page) = app.doc.page(preview.page) else { return };
+    // The picker lists the artboards on the current artboard's page (links may cross pages).
+    let Some(page) = prototype::find_artboard(&app.doc, preview.player.current).and_then(|(p, _)| app.doc.page(p)) else { return };
     ui.horizontal_centered(|ui| {
         let back = ui.add_enabled(preview.player.can_go_back(), egui::Button::new("‹ Back")).on_hover_text("Go back (←)");
         let back_key = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
@@ -139,8 +136,8 @@ fn stage(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
     let response = ui.allocate_rect(rect, Sense::click());
     let Some(rs) = app.ensure_gpu() else { return };
     let Some(preview) = &mut app.preview else { return };
-    let Some(page) = app.doc.page(preview.page) else { return };
-    let Some(artboard) = page.find(preview.player.current) else { return };
+    let doc = &app.doc;
+    let Some((_, artboard)) = prototype::find_artboard(doc, preview.player.current) else { return };
 
     // Fit the artboard's width; taller artboards scroll.
     let (w, h) = (artboard.frame.width.max(1.0), artboard.frame.height.max(1.0));
@@ -157,15 +154,37 @@ fn stage(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
     }
     let to_viewport = |pos: Pos2| Point::new(((pos.x - origin.x) / scale as f32) as f64, ((pos.y - origin.y) / scale as f32) as f64);
 
-    // Clicks follow links; a click on nothing flashes the link areas.
+    // An overlay sits centered over the visible part of the artboard, at the same scale.
+    let overlay = preview.player.overlay.and_then(|(id, at)| Some((prototype::find_artboard(doc, id)?.1, at)));
+    let overlay_at = overlay.map(|(o, _)| Vec2::new((w - o.frame.width) / 2.0, (view_h - o.frame.height).max(0.0) / 2.0));
+    // Links under the pointer: the overlay's while it's open (outside it, nothing).
+    let scrolled = preview.player.scroll;
+    let link_under = |pos: Pos2| -> Option<FlowLink> {
+        let p = to_viewport(pos);
+        match (overlay, overlay_at) {
+            (Some((o, _)), Some(at)) => prototype::link_at(o, p - at, 0.0),
+            _ => prototype::link_at(artboard, p, scrolled),
+        }
+    };
+    let inside_overlay = |pos: Pos2| match (overlay, overlay_at) {
+        (Some((o, _)), Some(at)) => Rect::from_origin_size(at.to_point(), (o.frame.width, o.frame.height)).contains(to_viewport(pos)),
+        _ => true,
+    };
+
+    // Clicks follow links; a click on nothing flashes the link areas, and a click
+    // outside an overlay closes it.
     let animating = preview.player.tick(now);
-    let hovered_link = response.hover_pos().and_then(|p| prototype::link_at(artboard, to_viewport(p), preview.player.scroll));
-    if !animating && hovered_link.is_some_and(|l| prototype::resolves(page, &l)) {
+    let hovered_link = response.hover_pos().and_then(link_under);
+    if !animating && hovered_link.is_some_and(|l| prototype::resolves(doc, &l)) {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     if response.clicked() && !animating {
-        match response.interact_pointer_pos().and_then(|p| prototype::link_at(artboard, to_viewport(p), preview.player.scroll)) {
-            Some(link) if preview.player.follow(page, link, now) => {}
+        let pos = response.interact_pointer_pos();
+        match pos.and_then(link_under) {
+            Some(link) if preview.player.follow(doc, link, now) => {}
+            _ if pos.is_some_and(|p| !inside_overlay(p)) => {
+                preview.player.close_overlay();
+            }
             _ => preview.flash = Some(now),
         }
     }
@@ -178,20 +197,39 @@ fn stage(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
     let scene = &mut preview.scene;
     scene.reset();
     scene.push_clip_layer(vello::peniko::Fill::NonZero, pixels, &Rect::new(0.0, 0.0, w, view_h));
-    match preview.player.transition {
-        Some(t) if page.find(t.from).is_some() => {
+    let clip = Rect::new(0.0, 0.0, w, view_h);
+    match preview.player.transition.and_then(|t| Some((t, prototype::find_artboard(doc, t.from)?.1))) {
+        Some((t, from)) => {
             let frames = t.frames(now, viewport);
-            let from = page.find(t.from).expect("checked");
             let mut sides = [(from, frames.from, 0.0), (artboard, frames.to, preview.player.scroll)];
             if frames.from_on_top {
                 sides.reverse();
             }
-            for (ab, offset, scroll) in sides {
-                draw_artboard(scene, ab, pixels * Affine::translate(offset), scroll, &mut app.text, &app.images);
+            let [(below, b_off, b_scroll), (above, a_off, a_scroll)] = sides;
+            draw_artboard(scene, below, pixels * Affine::translate(b_off), b_scroll, &mut app.text, &app.images);
+            // Dissolves fade whichever is on top.
+            let fade = frames.top_alpha < 1.0;
+            if fade {
+                scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::Mix::Normal, frames.top_alpha as f32, pixels, &clip);
+            }
+            draw_artboard(scene, above, pixels * Affine::translate(a_off), a_scroll, &mut app.text, &app.images);
+            if fade {
+                scene.pop_layer();
             }
             ui.ctx().request_repaint();
         }
         _ => draw_artboard(scene, artboard, pixels, preview.player.scroll, &mut app.text, &app.images),
+    }
+    // The overlay, fading in over a dimmed artboard.
+    if let (Some((o, opened)), Some(at)) = (overlay, overlay_at) {
+        let k = ((now - opened) / 0.2).clamp(0.0, 1.0);
+        if k < 1.0 {
+            ui.ctx().request_repaint();
+        }
+        scene.fill(vello::peniko::Fill::NonZero, pixels, vello::peniko::Color::new([0.0, 0.0, 0.0, 0.35 * k as f32]), None, &clip);
+        scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::Mix::Normal, k as f32, pixels, &clip);
+        draw_artboard(scene, o, pixels * Affine::translate(at), 0.0, &mut app.text, &app.images);
+        scene.pop_layer();
     }
     scene.pop_layer();
     let gpu = app.gpu.as_mut().expect("ensured above");

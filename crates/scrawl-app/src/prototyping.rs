@@ -26,7 +26,8 @@ pub fn set_links(app: &mut ScrawlApp, ids: &[LayerId], destination: Option<Desti
     let page = app.page_mut();
     for &id in ids {
         if let Some(l) = page.find_mut(id) {
-            l.flow = destination.map(|destination| FlowLink { destination, animation: l.flow.map(|f| f.animation).unwrap_or_default() });
+            let keep = l.flow;
+            l.flow = destination.map(|destination| FlowLink { destination, ..keep.unwrap_or(FlowLink::back()) });
         }
     }
 }
@@ -90,7 +91,14 @@ pub fn paint(app: &ScrawlApp, p: &Painter, rect: ERect, hover: Option<Pos2>) {
     }
     for (id, link) in shown {
         if let Some((from, to)) = prototype::connection(page, id, &link) {
-            connection(p, from, to, to_screen);
+            // Links that don't land on this page get a hook with where they go.
+            let label = match link.destination {
+                Destination::Back => "Back".to_owned(),
+                Destination::Artboard(target) => prototype::find_artboard(&app.doc, target)
+                    .and_then(|(pg, ab)| Some(format!("{} / {}", app.doc.page(pg)?.name, ab.name)))
+                    .unwrap_or_else(|| "Missing".into()),
+            };
+            connection(p, from, to, to_screen, &label);
         }
     }
 
@@ -102,17 +110,17 @@ pub fn paint(app: &ScrawlApp, p: &Painter, rect: ERect, hover: Option<Pos2>) {
         if let Some(t) = target {
             let r = ERect::from_two_pos(to_pos(to_screen * t.origin()), to_pos(to_screen * Point::new(t.x1, t.y1)));
             p.rect_stroke(r, 0.0, Stroke::new(2.0, PROTOTYPE), StrokeKind::Outside);
-            connection(p, from, Some(t), to_screen);
+            connection(p, from, Some(t), to_screen, "");
         } else {
             let end = app.viewport().to_page(rect, pointer);
-            connection(p, from, Some(Rect::from_points(end, end)), to_screen);
+            connection(p, from, Some(Rect::from_points(end, end)), to_screen, "");
         }
     }
 }
 
 /// A curve from the side of `from` facing the destination to the near side of `to`, with an
 /// arrowhead. Links back get a short hook pointing left.
-fn connection(p: &Painter, from: Rect, to: Option<Rect>, to_screen: scrawl_core::kurbo::Affine) {
+fn connection(p: &Painter, from: Rect, to: Option<Rect>, to_screen: scrawl_core::kurbo::Affine, label: &str) {
     let stroke = Stroke::new(1.5, PROTOTYPE);
     let Some(to) = to else {
         let start = to_screen * Point::new(from.x0, from.center().y);
@@ -121,7 +129,7 @@ fn connection(p: &Painter, from: Rect, to: Option<Rect>, to_screen: scrawl_core:
         p.line_segment([s, end], stroke);
         arrowhead(p, end, vec2(-1.0, 0.0));
         p.circle_filled(s, 3.0, PROTOTYPE);
-        p.text(end - vec2(4.0, 0.0), egui::Align2::RIGHT_CENTER, "Back", egui::FontId::proportional(10.0), PROTOTYPE);
+        p.text(end - vec2(4.0, 0.0), egui::Align2::RIGHT_CENTER, label, egui::FontId::proportional(10.0), PROTOTYPE);
         return;
     };
     let rightwards = to.center().x >= from.center().x;

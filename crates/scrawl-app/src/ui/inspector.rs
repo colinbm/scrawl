@@ -369,15 +369,20 @@ fn prototype_section(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         return;
     }
     let own = prototype::artboard_of(page, layer.id);
-    let targets: Vec<(scrawl_core::LayerId, String)> =
+    // This page's artboards first, then other pages' (named with their page).
+    let mut targets: Vec<(scrawl_core::LayerId, String)> =
         prototype::artboards(page).into_iter().filter(|a| Some(a.id) != own).map(|a| (a.id, a.name.clone())).collect();
+    for other in app.doc.pages.iter().filter(|p| p.id != page.id) {
+        targets.extend(prototype::artboards(other).into_iter().map(|a| (a.id, format!("{} / {}", other.name, a.name))));
+    }
+    let doc = &app.doc;
     let parent_is_artboard = page.parent(layer.id).flatten().and_then(|p| page.find(p)).is_some_and(|p| p.is_artboard());
     section(ui, "Prototyping");
     let name_of = |d: Option<Destination>| match d {
         None => "None".to_owned(),
         Some(Destination::Back) => "Back".to_owned(),
         Some(Destination::Artboard(id)) => {
-            page.find(id).map_or_else(|| "Missing artboard".to_owned(), |l| l.name.clone())
+            prototype::find_artboard(doc, id).map_or_else(|| "Missing artboard".to_owned(), |(_, l)| l.name.clone())
         }
     };
     let mut dest = layer.flow.map(|f| f.destination);
@@ -399,7 +404,8 @@ fn prototype_section(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
         app.canvas.linking = Some(vec![layer.id]);
     }
     if dest != layer.flow.map(|f| f.destination) {
-        layer.flow = dest.map(|destination| FlowLink { destination, animation: layer.flow.map(|f| f.animation).unwrap_or_default() });
+        let keep = layer.flow;
+        layer.flow = dest.map(|destination| FlowLink { destination, ..keep.unwrap_or(FlowLink::back()) });
     }
     if let Some(link) = &mut layer.flow {
         ui.horizontal(|ui| {
@@ -410,6 +416,9 @@ fn prototype_section(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
                 }
             });
         });
+        if matches!(link.destination, Destination::Artboard(_)) {
+            ui.checkbox(&mut link.overlay, "Open as overlay").on_hover_text("Show it over the current artboard; clicking outside closes it");
+        }
     }
     if parent_is_artboard {
         ui.checkbox(&mut layer.fixed_to_viewport, "Fix position when scrolling");

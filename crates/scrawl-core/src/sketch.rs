@@ -1228,7 +1228,7 @@ fn flow_in(v: &Value) -> Option<FlowLink> {
     };
     let code = v.get("animationType").map_or(1, |_| int(v, "animationType"));
     let animation = ANIMATIONS.iter().find(|(c, _)| *c == code).map_or(Animation::default(), |&(_, a)| a);
-    Some(FlowLink { destination, animation })
+    Some(FlowLink { destination, animation, overlay: false })
 }
 
 fn flow_out(link: &FlowLink) -> Value {

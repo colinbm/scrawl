@@ -1411,3 +1411,31 @@ fn library_files_are_watched_and_stops_follow_variables() {
     assert_eq!((stop.color, stop.swatch), (blue, Some(var)));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn preview_overlays_open_and_close() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let card = layer_named(&h, "Card").id;
+    let (phone, buttons) = (layer_named(&h, "iPhone 16").id, layer_named(&h, "Buttons").id);
+    if let Some(l) = h.state_mut().front_mut().page_mut().find_mut(card) {
+        let link = l.flow.as_mut().unwrap();
+        link.overlay = true;
+        link.animation = scrawl_core::prototype::Animation::Dissolve;
+    }
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+    h.run_steps(3);
+    let card_at = preview_pos(&h, 200.0, 300.0);
+    click_at(&mut h, card_at);
+    h.run_steps(20);
+    let player = &h.state().front().preview.as_ref().unwrap().player;
+    assert_eq!((player.current, player.overlay.map(|o| o.0)), (phone, Some(buttons)));
+    save(&mut h, "preview_overlay");
+    // A click outside the overlay (near the bottom) closes it.
+    let outside = preview_pos(&h, 200.0, 830.0);
+    click_at(&mut h, outside);
+    h.run_steps(5);
+    let player = &h.state().front().preview.as_ref().unwrap().player;
+    assert!(player.overlay.is_none());
+    assert_eq!(player.current, phone);
+}
