@@ -251,3 +251,56 @@ fn noise_fills_and_oklab_gradients() {
     let mid = px(&img, 50, 45);
     assert!(mid.iter().zip(expected).take(3).all(|(a, b)| a.abs_diff(b) <= 8), "{mid:?} vs {expected:?}");
 }
+
+fn svg_pixels(page: &Page, area: Rect) -> resvg::tiny_skia::Pixmap {
+    let svg = scrawl_render::svg::page_svg(page, area, 1.0, &mut scrawl_render::TextEngine::new(), &Default::default());
+    let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &Default::default()).unwrap();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(area.width() as u32, area.height() as u32).unwrap();
+    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    pixmap
+}
+
+#[test]
+fn svg_keeps_markers_angular_gradients_and_spread() {
+    use scrawl_core::kurbo::Point;
+    // A line ending in a filled arrow: the arrowhead's wide part is off the line itself.
+    let mut page = Page::new("P");
+    let mut line = Layer::line(Point::new(10.0, 20.0), Point::new(90.0, 20.0));
+    line.style.borders[0] = scrawl_core::Border::solid(Color::rgba(0.0, 0.0, 0.0, 1.0), 2.0);
+    line.style.border_options.end_marker = scrawl_core::Marker::FilledArrow;
+    ops::insert_drawn(&mut page, line);
+    let px = svg_pixels(&page, Rect::new(0.0, 0.0, 100.0, 40.0));
+    assert!(px.pixel(85, 22).unwrap().alpha() > 150, "arrowhead below the line");
+    assert_eq!(px.pixel(30, 25).unwrap().alpha(), 0, "nothing below the line elsewhere");
+
+    // An angular gradient: red at the top going round to blue.
+    let mut page = Page::new("P");
+    let mut sq = Layer::rectangle(Frame::new(0.0, 0.0, 100.0, 100.0));
+    sq.style.borders.clear();
+    let g = scrawl_core::Gradient {
+        kind: scrawl_core::GradientKind::Angular,
+        stops: vec![
+            scrawl_core::GradientStop { position: 0.0, color: Color::rgba(1.0, 0.0, 0.0, 1.0), swatch: None },
+            scrawl_core::GradientStop { position: 1.0, color: Color::rgba(0.0, 0.0, 1.0, 1.0), swatch: None },
+        ],
+        ..Default::default()
+    };
+    let expect_right = g.color_at(0.25).to_rgba8();
+    sq.style.fills = vec![Fill { fill_type: scrawl_core::FillType::Gradient, gradient: g, ..Fill::solid(Color::BLACK) }];
+    ops::insert_drawn(&mut page, sq);
+    let px = svg_pixels(&page, Rect::new(0.0, 0.0, 100.0, 100.0));
+    let right = px.pixel(95, 50).unwrap();
+    assert!(right.red().abs_diff(expect_right[0]) < 12 && right.blue().abs_diff(expect_right[2]) < 12, "{right:?} vs {expect_right:?}");
+    let top = px.pixel(55, 2).unwrap();
+    assert!(top.red() > 200 && top.blue() < 60, "red at the start: {top:?}");
+
+    // Spread: a sharp shadow grown by 10 shows beyond the shape.
+    let mut page = Page::new("P");
+    let mut sq = Layer::rectangle(Frame::new(30.0, 30.0, 40.0, 40.0));
+    sq.style.borders.clear();
+    sq.style.shadows = vec![scrawl_core::Shadow { offset_x: 0.0, offset_y: 0.0, blur: 0.0, spread: 10.0, ..scrawl_core::Shadow::drop() }];
+    ops::insert_drawn(&mut page, sq);
+    let px = svg_pixels(&page, Rect::new(0.0, 0.0, 100.0, 100.0));
+    assert!(px.pixel(24, 50).unwrap().alpha() > 30, "spread shadow left of the shape");
+    assert_eq!(px.pixel(12, 50).unwrap().alpha(), 0, "but not past the spread");
+}

@@ -10,6 +10,8 @@ image.workspace = true
 png = "0.18"
 pollster = "0.4"
 svg2pdf.workspace = true
+# The same usvg svg2pdf uses, with text (so SVG text imports) and system fonts.
+usvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts"] }
 scrawl-core.workspace = true
 scrawl-text.workspace = true
 vello.workspace = true

@@ -1,8 +1,9 @@
 //! SVG output of page content, for "Copy as SVG" and SVG and PDF export.
 //!
 //! Layers become nested groups with their transforms, so the structure survives. Text is written
-//! as glyph outlines, which look the same everywhere without the fonts. Limits: angular gradients
-//! become linear ones, shadow spread is approximated, and line-end markers are left out.
+//! as glyph outlines, which look the same everywhere without the fonts. SVG has no conic
+//! gradients, so angular gradient fills are drawn as thin wedges of color; angular borders fall
+//! back to a linear gradient.
 
 use std::fmt::Write;
 
@@ -240,15 +241,21 @@ impl Writer<'_> {
     fn shadows(&mut self, l: &Layer, path: &BezPath) {
         for s in l.style.shadows.iter().filter(|s| s.enabled) {
             let id = self.id("shadow");
-            write!(self.defs, r#"<filter id="{id}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="{}"/></filter>"#, num(s.blur / 2.0)).unwrap();
-            let spread = if s.spread > 0.0 {
-                format!(r#" {} stroke-width="{}" stroke-linejoin="round""#, paint_attrs("stroke", s.color), num(s.spread * 2.0))
-            } else {
-                String::new()
+            // Spread grows (or shrinks) the shape before the blur.
+            let morph = match s.spread {
+                v if v > 0.0 => format!(r#"<feMorphology operator="dilate" radius="{}"/>"#, num(v)),
+                v if v < 0.0 => format!(r#"<feMorphology operator="erode" radius="{}"/>"#, num(-v)),
+                _ => String::new(),
             };
             write!(
+                self.defs,
+                r#"<filter id="{id}" x="-100%" y="-100%" width="300%" height="300%">{morph}<feGaussianBlur stdDeviation="{}"/></filter>"#,
+                num(s.blur / 2.0)
+            )
+            .unwrap();
+            write!(
                 self.body,
-                r#"<path d="{}" transform="translate({} {})" {}{spread}{} filter="url(#{id})"/>"#,
+                r#"<path d="{}" transform="translate({} {})" {}{} filter="url(#{id})"/>"#,
                 path.to_svg(),
                 num(s.offset_x),
                 num(s.offset_y),
@@ -272,6 +279,7 @@ impl Writer<'_> {
                 match (fill.fill_type, &fill.image) {
                     (FillType::Image, Some(id)) => self.image_fill(&d, &rule, id, fill.image_mode, fill.image_scale, w, h, &blend),
                     (FillType::Image, None) => {}
+                    (FillType::Gradient, _) if fill.gradient.kind == GradientKind::Angular => self.angular_fill(&d, &rule, &fill.gradient, w, h, &blend),
                     (FillType::Gradient, _) => {
                         let id = self.gradient(&fill.gradient, w, h);
                         write!(self.body, r#"<path d="{d}" fill="url(#{id})"{rule}{blend}/>"#).unwrap();
@@ -288,7 +296,57 @@ impl Writer<'_> {
         }
         for b in l.style.borders.iter().filter(|b| b.enabled && b.thickness > 0.0) {
             self.border(l, &d, &rule, b, closed && !text, w, h);
+            // Arrowheads and other end markers on open paths.
+            let opts = &l.style.border_options;
+            if !closed && !text {
+                let paint = match b.fill_type {
+                    FillType::Gradient => format!("url(#{})", self.gradient(&b.gradient, w, h)),
+                    _ => hex(b.color),
+                };
+                let opacity = if b.color.a < 1.0 && b.fill_type != FillType::Gradient { format!(r#" opacity="{}""#, num(b.color.a as f64)) } else { String::new() };
+                for (shape, how) in crate::marker_shapes(path, b.thickness, opts.start_marker, opts.end_marker) {
+                    let md = shape.to_svg();
+                    let stroke = format!(r#"stroke="{paint}" stroke-width="{}" stroke-linejoin="miter""#, num(b.thickness));
+                    match how {
+                        crate::MarkerPaint::Fill => write!(self.body, r#"<path d="{md}" fill="{paint}"{opacity}/>"#),
+                        crate::MarkerPaint::Stroke => write!(self.body, r#"<path d="{md}" fill="none" {stroke}{opacity}/>"#),
+                        crate::MarkerPaint::Hollow => write!(self.body, r#"<path d="{md}" fill="white" {stroke}{opacity}/>"#),
+                    }
+                    .unwrap();
+                }
+            }
         }
+    }
+
+    /// An angular gradient as thin wedges around the frame's center, each in the gradient's
+    /// color at its angle, clipped to the shape.
+    #[allow(clippy::too_many_arguments)]
+    fn angular_fill(&mut self, d: &str, rule: &str, g: &Gradient, w: f64, h: f64, blend: &str) {
+        const WEDGES: usize = 90;
+        let clip = self.id("clip");
+        write!(self.defs, r#"<clipPath id="{clip}"><path d="{d}"{}/></clipPath>"#, rule.replace("fill-rule", "clip-rule")).unwrap();
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let r = w.hypot(h);
+        write!(self.body, r#"<g clip-path="url(#{clip})"{blend}>"#).unwrap();
+        for i in 0..WEDGES {
+            // Starting at the top, clockwise, as the canvas draws it; a hair of overlap hides seams.
+            let a0 = -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * i as f64 / WEDGES as f64;
+            let a1 = a0 + std::f64::consts::TAU / WEDGES as f64 * 1.02;
+            let c = g.color_at((i as f64 + 0.5) / WEDGES as f64);
+            write!(
+                self.body,
+                r#"<path d="M{} {}L{} {}L{} {}Z" {}/>"#,
+                num(cx),
+                num(cy),
+                num(cx + r * a0.cos()),
+                num(cy + r * a0.sin()),
+                num(cx + r * a1.cos()),
+                num(cy + r * a1.sin()),
+                paint_attrs("fill", c)
+            )
+            .unwrap();
+        }
+        self.body.push_str("</g>");
     }
 
     /// The noise tile as a repeating PNG pattern, at the scale the canvas draws it.

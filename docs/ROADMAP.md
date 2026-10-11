@@ -71,7 +71,7 @@
 - ✅ Export formats per layer (scale, suffix, type) and slices (S): PNG, JPG, WEBP via the headless renderer; SVG via a structure-preserving writer; PDF from that SVG (svg2pdf)
 - ✅ Copy as SVG / CSS; import images and SVG files by drag-and-drop, Insert › Image… (⇧⌘K) or pasting SVG markup
 - ✅ Design-file import (File › Open) and export (File › Save as…): pages, artboards, shapes, paths, text, images, symbols with overrides, shared styles, swatches, library components, export formats. Exports validate against the published file-format schema; imports checked against real saved files and their previews
-- ⬜ SVG: angular gradients, line-end markers and shadow spread are approximated or dropped; SVG text import needs fonts
+- ✅ SVG: angular gradient fills (as wedges), line-end markers, shadow spread (dilate/erode); SVG text imports as outlines using system fonts
 - ⬜ Design files: blurs, noise fills (prototyping links, hotspots and start points round-trip since Milestone 8)
 
 ## Milestone 8 — Prototyping & platform

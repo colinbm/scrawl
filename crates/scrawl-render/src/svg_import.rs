@@ -2,7 +2,7 @@
 //!
 //! Paths become path layers with their fills and strokes (solid or gradient), groups keep their
 //! opacity and blend mode, clip paths become masks, and embedded bitmaps become image layers.
-//! Text needs fonts usvg isn't given here, so it's dropped; outline it before exporting.
+//! Text is laid out with the system's fonts and comes in as glyph outlines.
 
 use scrawl_core::assets::Assets;
 use scrawl_core::kurbo::{Affine, BezPath, Point, Rect, Shape};
@@ -14,7 +14,7 @@ use svg2pdf::usvg::{self, Node, tiny_skia_path::PathSegment};
 /// The layers of an SVG document, in its own coordinates, grouped under one layer named `name`
 /// (or the single top-level layer itself).
 pub fn import_svg(data: &[u8], name: &str, assets: &mut Assets) -> Result<Layer, String> {
-    let tree = usvg::Tree::from_data(data, &usvg::Options::default()).map_err(|e| format!("not a valid SVG: {e}"))?;
+    let tree = usvg::Tree::from_data(data, &options()).map_err(|e| format!("not a valid SVG: {e}"))?;
     let mut layers = group_children(tree.root(), assets);
     let mut layer = match layers.len() {
         0 => return Err("the SVG has no shapes Scrawl can import".into()),
@@ -25,6 +25,17 @@ pub fn import_svg(data: &[u8], name: &str, assets: &mut Assets) -> Result<Layer,
         layer.name = name.to_owned();
     }
     Ok(layer)
+}
+
+/// Parsing options with the system's fonts, loaded once, so text becomes outlines.
+fn options() -> usvg::Options<'static> {
+    static FONTS: std::sync::OnceLock<std::sync::Arc<usvg::fontdb::Database>> = std::sync::OnceLock::new();
+    let fonts = FONTS.get_or_init(|| {
+        let mut db = usvg::fontdb::Database::new();
+        db.load_system_fonts();
+        std::sync::Arc::new(db)
+    });
+    usvg::Options { fontdb: fonts.clone(), ..Default::default() }
 }
 
 fn affine(t: usvg::Transform) -> Affine {
@@ -82,6 +93,12 @@ fn node(n: &Node, assets: &mut Assets) -> Option<Layer> {
             let id = assets.add_image(bytes)?;
             let b = img.abs_bounding_box();
             Layer::image(id, scrawl_core::Frame::new(b.x() as f64, b.y() as f64, b.width() as f64, b.height() as f64))
+        }
+        // Text comes in as its glyph outlines (usvg lays it out with the system's fonts).
+        Node::Text(t) => {
+            let mut layer = group(group_children(t.flattened(), assets))?;
+            layer.name = "Text".into();
+            layer
         }
         _ => return None,
     };
@@ -255,5 +272,17 @@ mod tests {
         let back = import_svg(svg.as_bytes(), "", &mut Assets::default()).unwrap();
         let b = back.bounds_in(Affine::IDENTITY).unwrap();
         assert!((b.x0 - 10.0).abs() < 1.0 && (b.width() - 50.0).abs() < 2.0, "{b:?}");
+    }
+
+    #[test]
+    fn text_imports_as_outlines() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="50"><text x="10" y="30" font-family="Helvetica, Arial, sans-serif" font-size="24">Hello</text></svg>"#;
+        let mut assets = Assets::default();
+        let layer = import_svg(svg, "T", &mut assets).unwrap();
+        let mut paths = 0;
+        layer.walk(&mut |l| paths += usize::from(matches!(l.kind, scrawl_core::LayerKind::Path(_))));
+        assert!(paths >= 1, "glyph outlines: {layer:?}");
+        let b = layer.bounds_in(Affine::IDENTITY).unwrap();
+        assert!(b.width() > 30.0 && b.x0 >= 5.0, "{b:?}");
     }
 }

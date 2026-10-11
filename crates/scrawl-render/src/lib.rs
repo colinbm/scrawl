@@ -504,20 +504,21 @@ fn draw_on_path(
     }
 }
 
-/// Arrowheads and other end markers on open paths.
-#[allow(clippy::too_many_arguments)]
-fn render_markers(
-    scene: &mut Scene,
-    path: &BezPath,
-    t: Affine,
-    width: f64,
-    brush: &Brush,
-    bt: Option<Affine>,
-    start: Marker,
-    end: Marker,
-) {
+/// How a marker shape is painted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkerPaint {
+    /// Filled with the border's paint.
+    Fill,
+    /// Stroked with it, at the border's width.
+    Stroke,
+    /// Filled white, then stroked (open circles and squares hide the line under them).
+    Hollow,
+}
+
+/// The arrowheads and other end markers of an open path, as shapes to paint, in the path's space.
+pub fn marker_shapes(path: &BezPath, width: f64, start: Marker, end: Marker) -> Vec<(BezPath, MarkerPaint)> {
     let segs: Vec<PathSeg> = path.segments().collect();
-    let (Some(first), Some(last)) = (segs.first(), segs.last()) else { return };
+    let (Some(first), Some(last)) = (segs.first(), segs.last()) else { return vec![] };
     // Tangents pointing outwards from the path at each end.
     let tangent = |seg: &PathSeg, at_end: bool| -> Vec2 {
         let d = match seg {
@@ -528,60 +529,51 @@ fn render_markers(
         let d = if at_end { d } else { -d };
         if d.hypot() > 1e-9 { d.normalize() } else { Vec2::new(1.0, 0.0) }
     };
+    let mut out = vec![];
     for (marker, at, dir) in [(start, first.eval(0.0), tangent(first, false)), (end, last.eval(1.0), tangent(last, true))] {
-        draw_marker(scene, marker, at, dir, width, t, brush, bt);
+        let size = (width * 3.0).max(6.0);
+        let normal = Vec2::new(-dir.y, dir.x);
+        let back = at - dir * size;
+        let (left, right) = (back + normal * size * 0.6, back - normal * size * 0.6);
+        let poly = |pts: &[Point], close: bool| {
+            let mut p = BezPath::new();
+            p.move_to(pts[0]);
+            pts[1..].iter().for_each(|&q| p.line_to(q));
+            if close {
+                p.close_path();
+            }
+            p
+        };
+        let square = || {
+            let half = size * 0.5;
+            let pts: Vec<Point> = [(1.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)].iter().map(|&(a, b)| at + dir * half * a + normal * half * b).collect();
+            poly(&pts, true)
+        };
+        match marker {
+            Marker::None => {}
+            Marker::OpenArrow => out.push((poly(&[left, at, right], false), MarkerPaint::Stroke)),
+            Marker::FilledArrow => out.push((poly(&[at + dir * width * 0.5, left, right], true), MarkerPaint::Fill)),
+            Marker::Line => out.push((poly(&[at + normal * size * 0.6, at - normal * size * 0.6], false), MarkerPaint::Stroke)),
+            Marker::OpenCircle => out.push((Circle::new(at, size * 0.5).to_path(0.1), MarkerPaint::Hollow)),
+            Marker::FilledCircle => out.push((Circle::new(at, size * 0.5).to_path(0.1), MarkerPaint::Fill)),
+            Marker::OpenSquare => out.push((square(), MarkerPaint::Hollow)),
+            Marker::FilledSquare => out.push((square(), MarkerPaint::Fill)),
+        }
     }
+    out
 }
 
+/// Arrowheads and other end markers on open paths.
 #[allow(clippy::too_many_arguments)]
-fn draw_marker(scene: &mut Scene, marker: Marker, at: Point, dir: Vec2, width: f64, t: Affine, brush: &Brush, bt: Option<Affine>) {
-    let size = (width * 3.0).max(6.0);
-    let normal = Vec2::new(-dir.y, dir.x);
-    let stroke = stroke_style(width, &Default::default());
-    let back = at - dir * size;
-    let (left, right) = (back + normal * size * 0.6, back - normal * size * 0.6);
-    match marker {
-        Marker::None => {}
-        Marker::OpenArrow => {
-            let mut p = BezPath::new();
-            p.move_to(left);
-            p.line_to(at);
-            p.line_to(right);
-            scene.stroke(&stroke.with_join(vello::kurbo::Join::Miter), t, brush, bt, &p);
-        }
-        Marker::FilledArrow => {
-            let mut p = BezPath::new();
-            p.move_to(at + dir * width * 0.5);
-            p.line_to(left);
-            p.line_to(right);
-            p.close_path();
-            scene.fill(Fill::NonZero, t, brush, bt, &p);
-        }
-        Marker::Line => {
-            scene.stroke(&stroke, t, brush, bt, &Line::new(at + normal * size * 0.6, at - normal * size * 0.6));
-        }
-        Marker::OpenCircle | Marker::FilledCircle => {
-            let c = Circle::new(at, size * 0.5);
-            if marker == Marker::FilledCircle {
-                scene.fill(Fill::NonZero, t, brush, bt, &c);
-            } else {
-                scene.fill(Fill::NonZero, t, peniko::Color::WHITE, None, &c);
-                scene.stroke(&stroke, t, brush, bt, &c);
-            }
-        }
-        Marker::OpenSquare | Marker::FilledSquare => {
-            let half = size * 0.5;
-            let mut p = BezPath::new();
-            for (i, (a, b)) in [(1.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)].iter().enumerate() {
-                let q = at + dir * half * *a + normal * half * *b;
-                if i == 0 { p.move_to(q) } else { p.line_to(q) }
-            }
-            p.close_path();
-            if marker == Marker::FilledSquare {
-                scene.fill(Fill::NonZero, t, brush, bt, &p);
-            } else {
-                scene.fill(Fill::NonZero, t, peniko::Color::WHITE, None, &p);
-                scene.stroke(&stroke, t, brush, bt, &p);
+fn render_markers(scene: &mut Scene, path: &BezPath, t: Affine, width: f64, brush: &Brush, bt: Option<Affine>, start: Marker, end: Marker) {
+    let stroke = stroke_style(width, &Default::default()).with_join(vello::kurbo::Join::Miter);
+    for (shape, paint) in marker_shapes(path, width, start, end) {
+        match paint {
+            MarkerPaint::Fill => scene.fill(Fill::NonZero, t, brush, bt, &shape),
+            MarkerPaint::Stroke => scene.stroke(&stroke, t, brush, bt, &shape),
+            MarkerPaint::Hollow => {
+                scene.fill(Fill::NonZero, t, peniko::Color::WHITE, None, &shape);
+                scene.stroke(&stroke, t, brush, bt, &shape);
             }
         }
     }
