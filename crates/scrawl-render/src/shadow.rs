@@ -1,10 +1,9 @@
 //! Shadows.
 //!
-//! Vello has no general blur filter, so blurred silhouettes of arbitrary shapes are approximated
-//! by stacking bands: copies of the shape dilated or eroded by a range of distances, each at an
-//! alpha chosen so the combined edge follows a Gaussian falloff. Rectangles and circles use
-//! Vello's exact analytic blurred rounded rect instead. A GPU blur pass can replace
-//! [`blurred_silhouette`] later without touching callers.
+//! Rectangles and circles use Vello's exact analytic blurred rounded rect. Other shapes are drawn
+//! as a silhouette and blurred by the GPU blur pass ([`crate::effects`]). Silhouettes too big for
+//! it fall back to stacked bands: copies of the shape dilated or eroded by a range of distances,
+//! each at an alpha chosen so the combined edge follows a Gaussian falloff.
 
 use std::f64::consts::SQRT_2;
 
@@ -13,12 +12,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use vello::peniko::{self, BlendMode, Compose, Fill, Mix};
 
+use crate::effects::Effect;
 use crate::to_peniko;
 
 /// Paints a drop shadow for `layer`, whose geometry is `path` (local space). `parent` maps the
 /// layer's parent space to the target; shadow offsets are in parent space so they don't rotate
 /// with the layer.
-pub fn drop_shadow(scene: &mut Scene, layer: &Layer, path: &BezPath, rule: Fill, parent: Affine, s: &Shadow) {
+pub fn drop_shadow(scene: &mut Scene, layer: &Layer, path: &BezPath, rule: Fill, parent: Affine, s: &Shadow, effects: &mut Vec<Effect>) {
     let local = layer.local_transform();
     let t = parent * Affine::translate((s.offset_x, s.offset_y)) * local;
     let sigma = s.blur / 2.0;
@@ -42,11 +42,11 @@ pub fn drop_shadow(scene: &mut Scene, layer: &Layer, path: &BezPath, rule: Fill,
         vello::kurbo::stroke(path.elements().iter().copied(), &stroke, &Default::default(), 0.05)
     };
     let rule = if layer.is_closed() { rule } else { Fill::NonZero };
-    blurred_silhouette(scene, &silhouette, rule, t, sigma, s.spread, s.color);
+    blurred_silhouette(scene, &silhouette, rule, t, sigma, s.spread, s.color, effects);
 }
 
 /// Paints an inner shadow, clipped to the shape.
-pub fn inner_shadow(scene: &mut Scene, layer: &Layer, path: &BezPath, rule: Fill, parent: Affine, s: &Shadow) {
+pub fn inner_shadow(scene: &mut Scene, layer: &Layer, path: &BezPath, rule: Fill, parent: Affine, s: &Shadow, effects: &mut Vec<Effect>) {
     let t = parent * layer.local_transform();
     let local_offset = {
         // The offset is in parent space; express it in the layer's local space.
@@ -62,7 +62,7 @@ pub fn inner_shadow(scene: &mut Scene, layer: &Layer, path: &BezPath, rule: Fill
     let inverse = Affine::translate(local_offset) * inverse;
 
     scene.push_clip_layer(rule, t, path);
-    blurred_silhouette(scene, &inverse, Fill::EvenOdd, t, sigma, s.spread, s.color);
+    blurred_silhouette(scene, &inverse, Fill::EvenOdd, t, sigma, s.spread, s.color, effects);
     scene.pop_layer();
 }
 
@@ -112,7 +112,49 @@ fn bands(sigma: f64) -> Vec<(f64, f32)> {
 }
 
 /// Fills `path` blurred by `sigma` and grown by `spread`, in `color`.
-fn blurred_silhouette(scene: &mut Scene, path: &BezPath, rule: Fill, t: Affine, sigma: f64, spread: f64, color: scrawl_core::Color) {
+/// A Gaussian-blurred silhouette of `path` grown by `spread`, in `color`. Uses the GPU blur pass
+/// (an [`Effect`]); areas too big for it fall back to stacked bands.
+#[allow(clippy::too_many_arguments)]
+fn blurred_silhouette(scene: &mut Scene, path: &BezPath, rule: Fill, t: Affine, sigma: f64, spread: f64, color: scrawl_core::Color, effects: &mut Vec<Effect>) {
+    let zoom = t.determinant().abs().sqrt();
+    let sigma_px = sigma * zoom;
+    let margin = (3.0 * sigma_px).ceil() + spread.abs() * zoom + 2.0;
+    let px = (t * path.clone()).bounding_box().inflate(margin, margin);
+    let origin = vello::kurbo::Point::new(px.x0.floor(), px.y0.floor());
+    let (w, h) = ((px.x1.ceil() - origin.x).max(1.0) as u32, (px.y1.ceil() - origin.y).max(1.0) as u32);
+    if sigma_px >= 0.5 && w <= crate::effects::MAX_SIDE && h <= crate::effects::MAX_SIDE {
+        // The silhouette, opaque, grown or shrunk by a round stroke, then blurred.
+        let opaque = peniko::Color::new([color.r, color.g, color.b, 1.0]);
+        let to_px = Affine::translate(-origin.to_vec2()) * t;
+        let mut sub = Scene::new();
+        let all = Rect::new(0.0, 0.0, w as f64, h as f64);
+        sub.push_layer(Fill::NonZero, Mix::Normal, 1.0, Affine::IDENTITY, &all);
+        sub.fill(rule, to_px, opaque, None, path);
+        if spread != 0.0 {
+            let stroke = Stroke::new(spread.abs() * 2.0).with_join(vello::kurbo::Join::Round);
+            if spread > 0.0 {
+                sub.stroke(&stroke, to_px, opaque, None, path);
+            } else {
+                sub.push_layer(Fill::NonZero, BlendMode::new(Mix::Normal, Compose::DestOut), 1.0, Affine::IDENTITY, &all);
+                sub.stroke(&stroke, to_px, opaque, None, path);
+                sub.pop_layer();
+            }
+        }
+        sub.pop_layer();
+        // The same silhouette at the same place and size blurs the same: reuse it.
+        let key = crate::effects::debug_key(&[&path.elements(), &rule, &to_px.as_coeffs(), &sigma_px, &spread, &(w, h)]);
+        let effect = Effect { key: Some(key), ..Effect::new(sub, w, h, sigma_px as f32) };
+        scene.push_layer(Fill::NonZero, Mix::Normal, color.a, Affine::IDENTITY, &px.inflate(1.0, 1.0));
+        scene.draw_image(&effect.image, Affine::translate(origin.to_vec2()));
+        scene.pop_layer();
+        effects.push(effect);
+        return;
+    }
+    banded_silhouette(scene, path, rule, t, sigma, spread, color);
+}
+
+/// Bands of dilated and eroded copies approximating a blurred silhouette (see the module docs).
+fn banded_silhouette(scene: &mut Scene, path: &BezPath, rule: Fill, t: Affine, sigma: f64, spread: f64, color: scrawl_core::Color) {
     let opaque = peniko::Color::new([color.r, color.g, color.b, 1.0]);
     let pad = 3.0 * sigma + spread.abs() + 1.0;
     let clip = path.bounding_box().inflate(pad, pad);

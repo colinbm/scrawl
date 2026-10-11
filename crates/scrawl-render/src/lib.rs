@@ -231,7 +231,10 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
                     let depth = std::mem::take(&mut res.depth);
                     render_layer(&mut sub, &plain, Affine::translate(-origin.to_vec2()) * parent, res);
                     res.depth = depth;
-                    let effect = effects::Effect::new(sub, w, h, sigma as f32);
+                    // Keyed by the layer and where it lands in pixels (images by id, so changes
+                    // to an image asset show once its id changes).
+                    let key = effects::debug_key(&[&plain, &(Affine::translate(-origin.to_vec2()) * parent).as_coeffs(), &(w, h)]);
+                    let effect = effects::Effect { key: Some(key), ..effects::Effect::new(sub, w, h, sigma as f32) };
                     scene.draw_image(&effect.image, Affine::translate(origin.to_vec2()));
                     res.effects.push(effect);
                 }
@@ -279,18 +282,18 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
         // A shape group draws its children's combined outline in its own style.
         LayerKind::Group(g) if g.shape => {
             if let Some(path) = layer.combined_path() {
-                render_shape(scene, layer, &path, parent, res.images);
+                render_shape(scene, layer, &path, parent, res.images, &mut res.effects);
             }
         }
         LayerKind::Group(g) => render_children(scene, &g.children, t, res),
         LayerKind::Symbol(s) => render_children(scene, &s.expanded, t, res),
         LayerKind::Text(_) => render_text(scene, layer, parent, res),
-        LayerKind::Image(img) => render_image(scene, layer, &img.image, parent, res.images),
+        LayerKind::Image(img) => render_image(scene, layer, &img.image, parent, res.images, &mut res.effects),
         // Slices only mark an area to export; hotspots an area to click in the preview.
         LayerKind::Slice | LayerKind::Hotspot => {}
         _ => {
             if let Some(path) = layer.local_path() {
-                render_shape(scene, layer, &path, parent, res.images);
+                render_shape(scene, layer, &path, parent, res.images, &mut res.effects);
             }
         }
     }
@@ -305,11 +308,11 @@ use scrawl_core::exportable::paint_outset as max_paint_outset;
 
 /// A bitmap stretched to the frame, with the layer's shadows and borders. Missing images show a
 /// crossed-out placeholder.
-fn render_image(scene: &mut Scene, layer: &Layer, id: &str, parent: Affine, images: &ImageCache) {
+fn render_image(scene: &mut Scene, layer: &Layer, id: &str, parent: Affine, images: &ImageCache, effects: &mut Vec<effects::Effect>) {
     let t = parent * layer.local_transform();
     let rect = layer.frame.local_rect();
     for s in layer.style.shadows.iter().filter(|s| s.enabled) {
-        shadow::drop_shadow(scene, layer, &rect.to_path(0.1), Fill::NonZero, parent, s);
+        shadow::drop_shadow(scene, layer, &rect.to_path(0.1), Fill::NonZero, parent, s, effects);
     }
     match images.get(id) {
         Some(image) => {
@@ -328,7 +331,7 @@ fn render_image(scene: &mut Scene, layer: &Layer, id: &str, parent: Affine, imag
     // Fills and borders paint over the bitmap, as usual for image layers.
     let mut over = layer.clone();
     over.style.shadows.clear();
-    render_shape(scene, &over, &rect.to_path(0.1), parent, images);
+    render_shape(scene, &over, &rect.to_path(0.1), parent, images, effects);
 }
 
 /// Fills `path` with a brush, clipped to `area` when the paint covers only part of the shape.
@@ -344,14 +347,14 @@ fn fill_with(scene: &mut Scene, rule: Fill, t: Affine, brush: &Brush, bt: Option
     }
 }
 
-fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine, images: &ImageCache) {
+fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine, images: &ImageCache, effects: &mut Vec<effects::Effect>) {
     let t = parent * layer.local_transform();
     let rule = fill_rule(layer);
     let (w, h) = (layer.frame.width, layer.frame.height);
     let style = &layer.style;
 
     for s in style.shadows.iter().filter(|s| s.enabled) {
-        shadow::drop_shadow(scene, layer, path, rule, parent, s);
+        shadow::drop_shadow(scene, layer, path, rule, parent, s, effects);
     }
 
     if layer.is_closed() {
@@ -366,7 +369,7 @@ fn render_shape(scene: &mut Scene, layer: &Layer, path: &BezPath, parent: Affine
             }
         }
         for s in style.inner_shadows.iter().filter(|s| s.enabled) {
-            shadow::inner_shadow(scene, layer, path, rule, parent, s);
+            shadow::inner_shadow(scene, layer, path, rule, parent, s, effects);
         }
     }
 
@@ -413,7 +416,7 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resou
     let outlines = if wants_outlines { engine.outlines(layer) } else { None };
     if let Some(path) = &outlines {
         for s in style.shadows.iter().filter(|s| s.enabled) {
-            shadow::drop_shadow(scene, layer, path, Fill::NonZero, parent, s);
+            shadow::drop_shadow(scene, layer, path, Fill::NonZero, parent, s, &mut res.effects);
         }
     }
 
@@ -452,7 +455,7 @@ fn render_text(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Resou
     draw_layout(scene, layout, t, &at, &Brush::Solid(peniko::Color::TRANSPARENT), None, Fill::NonZero.into(), Runs::Colored);
     if let Some(path) = &outlines {
         for s in style.inner_shadows.iter().filter(|s| s.enabled) {
-            shadow::inner_shadow(scene, layer, path, Fill::NonZero, parent, s);
+            shadow::inner_shadow(scene, layer, path, Fill::NonZero, parent, s, &mut res.effects);
         }
     }
     for border in style.borders.iter().filter(|b| b.enabled && b.thickness > 0.0) {

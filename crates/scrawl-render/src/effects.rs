@@ -19,6 +19,26 @@ pub struct Effect {
     /// What the scene is drawn over before blurring: transparent for layer blurs, opaque for
     /// background blurs (whose result must hide what's beneath).
     pub backdrop: vello::peniko::Color,
+    /// Identifies what went into the effect, so an unchanged one reuses last frame's result.
+    /// `None` renders it every time.
+    pub key: Option<u64>,
+}
+
+/// A hash of anything `Debug`, for effect keys, without building the string.
+pub fn debug_key(parts: &[&dyn std::fmt::Debug]) -> u64 {
+    use std::hash::Hasher;
+    struct W(std::collections::hash_map::DefaultHasher);
+    impl std::fmt::Write for W {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.write(s.as_bytes());
+            Ok(())
+        }
+    }
+    let mut w = W(Default::default());
+    for p in parts {
+        let _ = std::fmt::write(&mut w, format_args!("{p:?}|"));
+    }
+    w.0.finish()
 }
 
 impl Effect {
@@ -28,7 +48,7 @@ impl Effect {
         // its size; zeroed memory is cheap.
         let data = Blob::from(vec![0u8; (width * height * 4) as usize]);
         let image = ImageData { data, format: ImageFormat::Rgba8, alpha_type: ImageAlphaType::AlphaPremultiplied, width, height };
-        Self { image, scene, sigma, backdrop: vello::peniko::Color::TRANSPARENT }
+        Self { image, scene, sigma, backdrop: vello::peniko::Color::TRANSPARENT, key: None }
     }
 }
 
@@ -67,6 +87,10 @@ pub struct Blurrer {
     layout: wgpu::BindGroupLayout,
     /// Kept until [`Blurrer::finish`], so overrides stay valid through the main render.
     live: Vec<(ImageData, wgpu::Texture)>,
+    /// Results of keyed effects, reused while they stay the same; dropped once a frame passes
+    /// without them.
+    cache: std::collections::HashMap<u64, (wgpu::Texture, u32, u32)>,
+    used: std::collections::HashSet<u64>,
 }
 
 impl Blurrer {
@@ -113,7 +137,7 @@ impl Blurrer {
             compilation_options: Default::default(),
             cache: None,
         });
-        Self { pipeline, layout, live: vec![] }
+        Self { pipeline, layout, live: vec![], cache: Default::default(), used: Default::default() }
     }
 
     /// Renders and blurs `effects` in order (later ones may show earlier ones' results), and has
@@ -122,6 +146,16 @@ impl Blurrer {
         for e in effects {
             let (w, h) = (e.image.width, e.image.height);
             if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+                continue;
+            }
+            if let Some(key) = e.key
+                && let Some((texture, cw, ch)) = self.cache.get(&key)
+                && (*cw, *ch) == (w, h)
+            {
+                let texture = texture.clone();
+                renderer.override_image(&e.image, Some(wgpu::TexelCopyTextureInfoBase { texture: texture.clone(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }));
+                self.live.push((e.image.clone(), texture));
+                self.used.insert(key);
                 continue;
             }
             let texture = |label, copy: bool| {
@@ -177,6 +211,10 @@ impl Blurrer {
                 &e.image,
                 Some(wgpu::TexelCopyTextureInfoBase { texture: a.clone(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }),
             );
+            if let Some(key) = e.key {
+                self.cache.insert(key, (a.clone(), w, h));
+                self.used.insert(key);
+            }
             self.live.push((e.image.clone(), a));
         }
         Ok(())
@@ -187,5 +225,7 @@ impl Blurrer {
         for (image, _) in self.live.drain(..) {
             renderer.override_image(&image, None);
         }
+        let used = std::mem::take(&mut self.used);
+        self.cache.retain(|k, _| used.contains(k));
     }
 }

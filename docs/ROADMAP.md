@@ -28,13 +28,14 @@
 ## Milestone 3 — Styling
 - ✅ Linear, radial and angular gradients on fills and borders, with a stops editor and on-canvas handles
 - ✅ Paint popover: HSV picker, hex/alpha, per-fill blend modes, document color swatches
-- ✅ Drop shadows and inner shadows (offset, blur, spread). Exact Gaussian for rects/circles; banded approximation for other shapes
+- ✅ Drop shadows and inner shadows (offset, blur, spread)
 - ✅ Border options: dash/gap, caps, joins; start/end markers (arrows, circles, squares, line) on open paths
 - ✅ Layer blend modes (16 modes); "Use as Mask" ⌃⌘M (outline masks clip layers above in the same group)
 - ✅ Headless GPU exporter (`scrawl_render::export`) with pixel tests; whole-app UI tests in egui_kittest
 - ✅ Image layers and image fills (fill, fit, stretch, tile); images stored in the `.scrawl` archive
 - ✅ GPU blur pass: layer (Gaussian) and background blurs, rendered offscreen and blurred by a compute shader; in SVG (layer blur) and design files
-- ⬜ Exact Gaussian shadows for arbitrary shapes via the blur pass (banded approximation still used); motion and zoom blurs
+- ✅ Exact Gaussian drop and inner shadows for any shape via the blur pass, cached across frames (bands only for areas too big for it)
+- ⬜ Motion and zoom blurs
 - ✅ Alpha and luminance masks alongside outline masks, "Ignore underlying mask"; in SVG as `<mask>`, in design files as alpha masks
 - ✅ Noise fills (original, black, white, color; intensity), pattern fills (tiled image fills), gradients blended in sRGB, linear, OKLab or OKLCH (sampled stops for SVG/design files, `in oklab` in CSS)
 
