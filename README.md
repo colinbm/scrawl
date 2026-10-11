@@ -3,7 +3,7 @@
 A cross-platform vector design tool written in Rust, aiming for feature parity with the established professional design tools.
 
 > **Written by AI.** Scrawl's code, tests and documentation were written by Claude (Anthropic's AI model,
-> working in Claude Code), directed and reviewed by Colin Burn-Murdoch.
+> working in Claude Code)
 
 ![Scrawl's editor: layers, canvas with an iPhone artboard and a prototype link, and the inspector](docs/screenshots/editor.png)
 
