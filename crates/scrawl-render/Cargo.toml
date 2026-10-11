@@ -15,6 +15,7 @@ usvg = { version = "0.45.1", default-features = false, features = ["text", "syst
 scrawl-core.workspace = true
 scrawl-text.workspace = true
 vello.workspace = true
+# Rasterizes SVG without the GPU: the app icon, and checking SVG output in tests.
+resvg = { version = "0.45.1", default-features = false, features = ["raster-images"] }
 
 [dev-dependencies]
-resvg = { version = "0.45.1", default-features = false, features = ["raster-images"] }

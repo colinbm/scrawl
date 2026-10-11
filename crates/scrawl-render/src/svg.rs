@@ -518,6 +518,18 @@ fn rule_attr(l: &Layer, name: &str) -> String {
 }
 
 /// A PDF of an SVG document, keeping vectors as vectors.
+/// Renders an SVG to `size`×`size` RGBA pixels (unpremultiplied), scaled to fit.
+pub fn rasterize(svg: &[u8], size: u32) -> Result<Vec<u8>, String> {
+    let tree = resvg::usvg::Tree::from_data(svg, &Default::default()).map_err(|e| e.to_string())?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size).ok_or("bad size")?;
+    let scale = size as f32 / tree.size().width().max(tree.size().height());
+    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    Ok(pixmap.pixels().iter().flat_map(|p| {
+        let c = p.demultiply();
+        [c.red(), c.green(), c.blue(), c.alpha()]
+    }).collect())
+}
+
 pub fn svg_to_pdf(svg: &str) -> Result<Vec<u8>, String> {
     let tree = svg2pdf::usvg::Tree::from_str(svg, &svg2pdf::usvg::Options::default()).map_err(|e| format!("SVG error: {e}"))?;
     svg2pdf::to_pdf(&tree, svg2pdf::ConversionOptions::default(), svg2pdf::PageOptions::default()).map_err(|e| format!("PDF error: {e}"))

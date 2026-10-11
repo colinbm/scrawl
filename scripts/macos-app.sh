@@ -12,6 +12,17 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/scrawl "$app/Contents/MacOS/scrawl"
 
+# The icon, from assets/icon.svg, at every size macOS asks for.
+iconset=target/release/Scrawl.iconset
+rm -rf "$iconset" && mkdir -p "$iconset"
+cargo build -q -p scrawl-render --release --example rasterize
+for size in 16 32 128 256 512; do
+	target/release/examples/rasterize assets/icon.svg "$iconset/icon_${size}x${size}.png" $size
+	target/release/examples/rasterize assets/icon.svg "$iconset/icon_${size}x${size}@2x.png" $((size * 2))
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/Scrawl.icns"
+rm -rf "$iconset"
+
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -27,10 +38,12 @@ cat > "$app/Contents/Info.plist" <<PLIST
 	<key>LSMinimumSystemVersion</key><string>11.0</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
 	<key>NSHighResolutionCapable</key><true/>
+	<key>CFBundleIconFile</key><string>Scrawl</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key><string>Scrawl Document</string>
+			<key>CFBundleTypeIconFile</key><string>Scrawl</string>
 			<key>CFBundleTypeRole</key><string>Editor</string>
 			<key>LSHandlerRank</key><string>Owner</string>
 			<key>LSItemContentTypes</key><array><string>dev.scrawl.document</string></array>

@@ -26,6 +26,15 @@ mod versions;
 mod viewport;
 mod workspace;
 
+/// The app icon, for the Dock and window title bars when Scrawl runs outside its app bundle.
+fn icon() -> egui::IconData {
+    const SIZE: u32 = 256;
+    match scrawl_render::svg::rasterize(include_bytes!("../../../assets/icon.svg"), SIZE) {
+        Ok(rgba) => egui::IconData { rgba, width: SIZE, height: SIZE },
+        Err(_) => egui::IconData::default(),
+    }
+}
+
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(std::path::PathBuf::from).collect();
@@ -35,7 +44,8 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Scrawl")
             .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([900.0, 560.0]),
+            .with_min_inner_size([900.0, 560.0])
+            .with_icon(icon()),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };

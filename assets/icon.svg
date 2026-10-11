@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4C8DFF"/>
+      <stop offset="1" stop-color="#7B3FF2"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.28"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1B0A57" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- The tile, on macOS's icon grid: 824 points square with a 100 point margin. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+
+  <g filter="url(#lift)">
+    <!-- The scrawl: a stroke with a cursive loop. -->
+    <path d="M230 700 C 370 660, 590 500, 560 370 C 540 280, 410 290, 420 400 C 430 510, 620 650, 800 570"
+          fill="none" stroke="#FFFFFF" stroke-width="60" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- One of its points, selected, with its handles (the curve's own control points). -->
+    <line x1="410" y1="290" x2="430" y2="510" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="410" cy="290" r="22" fill="#FFFFFF" stroke="#FFB347" stroke-width="10"/>
+    <circle cx="430" cy="510" r="22" fill="#FFFFFF" stroke="#FFB347" stroke-width="10"/>
+    <rect x="390" y="370" width="60" height="60" rx="10" fill="#FFB347" stroke="#FFFFFF" stroke-width="12"/>
+  </g>
+</svg>
