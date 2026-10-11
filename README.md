@@ -5,6 +5,24 @@ A cross-platform vector design tool written in Rust, aiming for feature parity w
 > **Written by AI.** Scrawl's code, tests and documentation were written by Claude (Anthropic's AI model,
 > working in Claude Code), directed and reviewed by Colin Burn-Murdoch.
 
+![Scrawl's editor: layers, canvas with an iPhone artboard and a prototype link, and the inspector](docs/screenshots/editor.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/points.png" alt="Editing a star's points: one point turned into a curve with its handles"></td>
+    <td width="50%"><img src="docs/screenshots/text.png" alt="Styling part of a text layer while editing it"></td>
+  </tr>
+  <tr>
+    <td align="center">Vector editing: points, curves and handles</td>
+    <td align="center">Rich text: style any part of a text layer</td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/preview.png" width="300" alt="The prototype preview window showing the iPhone artboard"><br>
+  Prototyping: links between artboards, played in a preview window
+</p>
+
 ## Running
 
 ```sh
