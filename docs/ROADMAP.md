@@ -33,7 +33,8 @@
 - ✅ Layer blend modes (16 modes); "Use as Mask" ⌃⌘M (outline masks clip layers above in the same group)
 - ✅ Headless GPU exporter (`scrawl_render::export`) with pixel tests; whole-app UI tests in egui_kittest
 - ✅ Image layers and image fills (fill, fit, stretch, tile); images stored in the `.scrawl` archive
-- ⬜ True GPU blur pass (replace banded shadows; enables layer and background blur)
+- ✅ GPU blur pass: layer (Gaussian) and background blurs, rendered offscreen and blurred by a compute shader; in SVG (layer blur) and design files
+- ⬜ Exact Gaussian shadows for arbitrary shapes via the blur pass (banded approximation still used); motion and zoom blurs
 - ✅ Alpha and luminance masks alongside outline masks, "Ignore underlying mask"; in SVG as `<mask>`, in design files as alpha masks
 - ✅ Noise fills (original, black, white, color; intensity), pattern fills (tiled image fills), gradients blended in sRGB, linear, OKLab or OKLCH (sampled stops for SVG/design files, `in oklab` in CSS)
 
@@ -72,7 +73,7 @@
 - ✅ Copy as SVG / CSS; import images and SVG files by drag-and-drop, Insert › Image… (⇧⌘K) or pasting SVG markup
 - ✅ Design-file import (File › Open) and export (File › Save as…): pages, artboards, shapes, paths, text, images, symbols with overrides, shared styles, swatches, library components, export formats. Exports validate against the published file-format schema; imports checked against real saved files and their previews
 - ✅ SVG: angular gradient fills (as wedges), line-end markers, shadow spread (dilate/erode); SVG text imports as outlines using system fonts
-- ⬜ Design files: blurs, noise fills (prototyping links, hotspots and start points round-trip since Milestone 8)
+- ⬜ Design files: motion and zoom blurs, noise fills (prototyping links, hotspots and start points round-trip since Milestone 8)
 
 ## Milestone 8 — Prototyping & platform
 - ✅ Prototyping: links on any layer (W, or pick in the inspector) to an artboard or Back, with slide animations; hotspots (H); flow start points; links drawn on the canvas (⌃P shows all); fix position when scrolling

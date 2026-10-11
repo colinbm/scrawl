@@ -1,5 +1,6 @@
 //! Builds Vello scenes from Scrawl documents.
 
+pub mod effects;
 pub mod export;
 pub mod images;
 pub mod output;
@@ -49,6 +50,11 @@ pub fn to_mix(b: SBlend) -> Mix {
 struct Resources<'a> {
     text: &'a mut TextEngine,
     images: &'a ImageCache,
+    /// Blurs found so far, for the GPU to apply before the scene renders.
+    effects: Vec<effects::Effect>,
+    /// Layers pushed and not yet popped in the scene being built, so a background blur can close
+    /// them in its copy of what's below.
+    depth: usize,
 }
 
 /// A brush for `paint` on a layer of the given size, plus the brush transform that maps the
@@ -95,8 +101,10 @@ fn fill_rule(layer: &Layer) -> Fill {
 }
 
 /// Appends `page` to `scene`, with `view` mapping page space to target pixels.
-pub fn render_page(scene: &mut Scene, page: &Page, view: Affine, text: &mut TextEngine, images: &ImageCache) {
-    let res = &mut Resources { text, images };
+/// Returns the blurs to apply (see [`effects::Blurrer`]); without them blurred layers draw empty.
+#[must_use]
+pub fn render_page(scene: &mut Scene, page: &Page, view: Affine, text: &mut TextEngine, images: &ImageCache) -> Vec<effects::Effect> {
+    let res = &mut Resources { text, images, effects: vec![], depth: 0 };
     // Artboard drop shadows go underneath everything.
     for layer in page.layers.iter().filter(|l| l.visible && l.is_artboard()) {
         let t = view * layer.local_transform();
@@ -109,12 +117,17 @@ pub fn render_page(scene: &mut Scene, page: &Page, view: Affine, text: &mut Text
         );
     }
     render_children(scene, &page.layers, view, res);
+    std::mem::take(&mut res.effects)
 }
 
 /// Appends `layers` (siblings, bottom to top) to `scene`, with `view` mapping their parent's space
-/// to target pixels. Unlike [`render_page`], artboards get no drop shadow.
-pub fn render_layers(scene: &mut Scene, layers: &[Layer], view: Affine, text: &mut TextEngine, images: &ImageCache) {
-    render_children(scene, layers, view, &mut Resources { text, images });
+/// to target pixels. Unlike [`render_page`], artboards get no drop shadow. `open` counts layers
+/// the caller has pushed on `scene` and not popped (so background blurs can close them).
+#[must_use]
+pub fn render_layers(scene: &mut Scene, layers: &[Layer], view: Affine, text: &mut TextEngine, images: &ImageCache, open: usize) -> Vec<effects::Effect> {
+    let res = &mut Resources { text, images, effects: vec![], depth: open };
+    render_children(scene, layers, view, res);
+    std::mem::take(&mut res.effects)
 }
 
 /// Renders siblings bottom to top. A mask layer masks everything above it in the same parent,
@@ -128,6 +141,7 @@ fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, res: &
         if child.breaks_mask {
             for _ in 0..std::mem::take(&mut clips) {
                 scene.pop_layer();
+                res.depth -= 1;
             }
         }
         render_layer(scene, child, parent, res);
@@ -140,6 +154,7 @@ fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, res: &
                 if let Some(path) = child.local_path() {
                     scene.push_clip_layer(fill_rule(child), parent * child.local_transform(), &path);
                     clips += 1;
+                    res.depth += 1;
                 }
             }
             mode => {
@@ -149,7 +164,9 @@ fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, res: &
                 if let Some(area) = area {
                     let area = area.inflate(2000.0, 2000.0);
                     scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, parent, &area);
+                    res.depth += 1;
                     render_children(scene, masked, parent, res);
+                    res.depth -= 1;
                     if mode == MaskMode::Luminance {
                         scene.push_luminance_mask_layer(Fill::NonZero, 1.0, parent, &area);
                     } else {
@@ -167,6 +184,7 @@ fn render_children(scene: &mut Scene, children: &[Layer], parent: Affine, res: &
     }
     for _ in 0..clips {
         scene.pop_layer();
+        res.depth -= 1;
     }
 }
 
@@ -186,6 +204,62 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
         }
         let pad = max_paint_outset(layer) + 1.0;
         scene.push_layer(Fill::NonZero, to_mix(layer.blend_mode), layer.opacity as f32, parent, &bounds.inflate(pad, pad));
+        res.depth += 1;
+    }
+
+    if let Some(blur) = scrawl_core::Blur::active(&layer.style.blur) {
+        // Blurs work in target pixels: scale the radius by the view's zoom.
+        let zoom = parent.determinant().abs().sqrt();
+        let sigma = blur.radius / 2.0 * zoom;
+        let margin = (sigma * 3.0).ceil() + 2.0;
+        let pixel_box = |r: Rect| {
+            let r = r.inflate(margin, margin);
+            let origin = Point::new(r.x0.floor(), r.y0.floor());
+            (origin, (r.x1.ceil() - origin.x).max(1.0) as u32, (r.y1.ceil() - origin.y).max(1.0) as u32)
+        };
+        match blur.kind {
+            scrawl_core::BlurKind::Layer => {
+                // The layer as it'd draw (its group already applies opacity and blending), blurred.
+                if let Some(b) = layer.bounds_in(parent) {
+                    let pad = max_paint_outset(layer) * zoom;
+                    let (origin, w, h) = pixel_box(b.inflate(pad, pad));
+                    let mut plain = layer.clone();
+                    plain.style.blur = None;
+                    plain.opacity = 1.0;
+                    plain.blend_mode = SBlend::Normal;
+                    let mut sub = Scene::new();
+                    let depth = std::mem::take(&mut res.depth);
+                    render_layer(&mut sub, &plain, Affine::translate(-origin.to_vec2()) * parent, res);
+                    res.depth = depth;
+                    let effect = effects::Effect::new(sub, w, h, sigma as f32);
+                    scene.draw_image(&effect.image, Affine::translate(origin.to_vec2()));
+                    res.effects.push(effect);
+                }
+                if needs_group {
+                    scene.pop_layer();
+                    res.depth -= 1;
+                }
+                return;
+            }
+            scrawl_core::BlurKind::Background => {
+                // What's already painted below, blurred, inside the layer's shape; the layer
+                // then draws over it as usual.
+                if let Some(path) = layer.local_path() {
+                    let (origin, w, h) = pixel_box((t * path.clone()).bounding_box());
+                    let mut sub = Scene::new();
+                    sub.append(scene, Some(Affine::translate(-origin.to_vec2())));
+                    for _ in 0..res.depth {
+                        sub.pop_layer();
+                    }
+                    // Where nothing's beneath (bare canvas), the glass frosts white, like an artboard.
+                    let effect = effects::Effect { backdrop: peniko::Color::WHITE, ..effects::Effect::new(sub, w, h, sigma as f32) };
+                    scene.push_clip_layer(fill_rule(layer), t, &path);
+                    scene.draw_image(&effect.image, Affine::translate(origin.to_vec2()));
+                    scene.pop_layer();
+                    res.effects.push(effect);
+                }
+            }
+        }
     }
 
     match &layer.kind {
@@ -194,10 +268,12 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
             scene.fill(Fill::NonZero, t, to_peniko(ab.background.unwrap_or(Color::WHITE)), None, &rect);
             if ab.clip_content {
                 scene.push_clip_layer(Fill::NonZero, t, &rect);
+                res.depth += 1;
             }
             render_children(scene, &ab.children, t, res);
             if ab.clip_content {
                 scene.pop_layer();
+                res.depth -= 1;
             }
         }
         // A shape group draws its children's combined outline in its own style.
@@ -221,6 +297,7 @@ fn render_layer(scene: &mut Scene, layer: &Layer, parent: Affine, res: &mut Reso
 
     if needs_group {
         scene.pop_layer();
+        res.depth -= 1;
     }
 }
 

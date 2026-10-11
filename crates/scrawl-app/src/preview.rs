@@ -196,6 +196,7 @@ fn stage(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
     let viewport = Vec2::new(w, view_h);
     let scene = &mut preview.scene;
     scene.reset();
+    let mut effects = vec![];
     scene.push_clip_layer(vello::peniko::Fill::NonZero, pixels, &Rect::new(0.0, 0.0, w, view_h));
     let clip = Rect::new(0.0, 0.0, w, view_h);
     match preview.player.transition.and_then(|t| Some((t, prototype::find_artboard(doc, t.from)?.1))) {
@@ -206,19 +207,19 @@ fn stage(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
                 sides.reverse();
             }
             let [(below, b_off, b_scroll), (above, a_off, a_scroll)] = sides;
-            draw_artboard(scene, below, pixels * Affine::translate(b_off), b_scroll, &mut app.text, &app.images);
+            effects.extend(draw_artboard(scene, below, pixels * Affine::translate(b_off), b_scroll, &mut app.text, &app.images, 1));
             // Dissolves fade whichever is on top.
             let fade = frames.top_alpha < 1.0;
             if fade {
                 scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::Mix::Normal, frames.top_alpha as f32, pixels, &clip);
             }
-            draw_artboard(scene, above, pixels * Affine::translate(a_off), a_scroll, &mut app.text, &app.images);
+            effects.extend(draw_artboard(scene, above, pixels * Affine::translate(a_off), a_scroll, &mut app.text, &app.images, 1 + usize::from(fade)));
             if fade {
                 scene.pop_layer();
             }
             ui.ctx().request_repaint();
         }
-        _ => draw_artboard(scene, artboard, pixels, preview.player.scroll, &mut app.text, &app.images),
+        _ => effects.extend(draw_artboard(scene, artboard, pixels, preview.player.scroll, &mut app.text, &app.images, 1)),
     }
     // The overlay, fading in over a dimmed artboard.
     if let (Some((o, opened)), Some(at)) = (overlay, overlay_at) {
@@ -228,12 +229,12 @@ fn stage(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
         }
         scene.fill(vello::peniko::Fill::NonZero, pixels, vello::peniko::Color::new([0.0, 0.0, 0.0, 0.35 * k as f32]), None, &clip);
         scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::Mix::Normal, k as f32, pixels, &clip);
-        draw_artboard(scene, o, pixels * Affine::translate(at), 0.0, &mut app.text, &app.images);
+        effects.extend(draw_artboard(scene, o, pixels * Affine::translate(at), 0.0, &mut app.text, &app.images, 2));
         scene.pop_layer();
     }
     scene.pop_layer();
     let gpu = app.gpu.as_mut().expect("ensured above");
-    if let Some(tex) = gpu.render(&rs, Slot::Preview, scene, pw, ph, vello::peniko::Color::new([0.094, 0.094, 0.094, 1.0])) {
+    if let Some(tex) = gpu.render(&rs, Slot::Preview, scene, &effects, pw, ph, vello::peniko::Color::new([0.094, 0.094, 0.094, 1.0])) {
         let uv = ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         ui.painter().image(tex, rect, uv, Color32::WHITE);
     }
@@ -257,7 +258,8 @@ fn stage(app: &mut ScrawlApp, ui: &mut egui::Ui, now: f64) {
 
 /// Renders `artboard` with its top-left at the origin of `view`, scrolled by `scroll`. Children
 /// fixed to the viewport don't scroll and draw on top.
-fn draw_artboard(scene: &mut vello::Scene, artboard: &Layer, view: Affine, scroll: f64, text: &mut scrawl_render::TextEngine, images: &scrawl_render::ImageCache) {
+#[must_use]
+fn draw_artboard(scene: &mut vello::Scene, artboard: &Layer, view: Affine, scroll: f64, text: &mut scrawl_render::TextEngine, images: &scrawl_render::ImageCache, open: usize) -> Vec<scrawl_render::effects::Effect> {
     let mut flowing = artboard.clone();
     flowing.frame.x = 0.0;
     flowing.frame.y = -scroll;
@@ -271,6 +273,7 @@ fn draw_artboard(scene: &mut vello::Scene, artboard: &Layer, view: Affine, scrol
     // Over white, so a see-through background doesn't show the other artboard of a transition.
     let backdrop = Rect::new(0.0, -scroll, artboard.frame.width, artboard.frame.height - scroll);
     scene.fill(vello::peniko::Fill::NonZero, view, vello::peniko::Color::WHITE, None, &backdrop);
-    scrawl_render::render_layers(scene, std::slice::from_ref(&flowing), view, text, images);
-    scrawl_render::render_layers(scene, &fixed, view, text, images);
+    let mut effects = scrawl_render::render_layers(scene, std::slice::from_ref(&flowing), view, text, images, open);
+    effects.extend(scrawl_render::render_layers(scene, &fixed, view, text, images, open));
+    effects
 }

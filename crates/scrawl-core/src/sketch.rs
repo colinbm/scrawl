@@ -388,6 +388,12 @@ impl Importer {
                 .collect(),
             shadows: list(v, "shadows").iter().map(shadow).collect(),
             inner_shadows: list(v, "innerShadows").iter().map(shadow).collect(),
+            // Gaussian (0) and background (3) blurs; motion and zoom blurs aren't modelled.
+            blur: v.get("blur").filter(|b| flag(b, "isEnabled") && matches!(int(b, "type"), 0 | 3)).map(|b| crate::Blur {
+                enabled: true,
+                kind: if int(b, "type") == 3 { crate::BlurKind::Background } else { crate::BlurKind::Layer },
+                radius: num_or(b, "radius", 10.0),
+            }),
             border_options: BorderOptions {
                 dash: list(opts, "dashPattern").iter().filter_map(Value::as_f64).collect(),
                 cap: match int(opts, "lineCapStyle") {
@@ -934,7 +940,15 @@ impl Exporter {
             "startMarkerType": marker(o.start_marker),
             "miterLimit": 10,
             "windingRule": 1,
-            "blur": { "_class": "blur", "isEnabled": false, "center": "{0.5, 0.5}", "motionAngle": 0, "radius": 10, "saturation": 1, "type": 0 },
+            "blur": {
+                "_class": "blur",
+                "isEnabled": crate::Blur::active(&s.blur).is_some(),
+                "center": "{0.5, 0.5}",
+                "motionAngle": 0,
+                "radius": s.blur.map_or(10.0, |b| b.radius),
+                "saturation": 1,
+                "type": if s.blur.is_some_and(|b| b.kind == crate::BlurKind::Background) { 3 } else { 0 },
+            },
             "borderOptions": {
                 "_class": "borderOptions",
                 "isEnabled": true,
@@ -1349,6 +1363,19 @@ mod tests {
         assert_eq!(b.runs.len(), 1, "{:?}", b.runs);
         assert_eq!((b.runs[0].start, b.runs[0].end), (a.runs[0].start, a.runs[0].end), "UTF-16 offsets map back to bytes");
         assert_eq!(b.runs[0].style, a.runs[0].style);
+    }
+
+    #[test]
+    fn blurs_round_trip() {
+        let mut doc = Document::default();
+        for kind in [crate::BlurKind::Layer, crate::BlurKind::Background] {
+            let mut l = Layer::rectangle(crate::Frame::new(0.0, 0.0, 10.0, 10.0));
+            l.style.blur = Some(crate::Blur { enabled: true, kind, radius: 12.0 });
+            doc.pages[0].layers.push(l);
+        }
+        let back = import(&export(&doc).unwrap()).unwrap();
+        let blurs: Vec<_> = back.pages[0].layers.iter().map(|l| l.style.blur).collect();
+        assert_eq!(blurs, doc.pages[0].layers.iter().map(|l| l.style.blur).collect::<Vec<_>>());
     }
 
     #[test]

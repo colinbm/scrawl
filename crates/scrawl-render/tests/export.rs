@@ -304,3 +304,42 @@ fn svg_keeps_markers_angular_gradients_and_spread() {
     assert!(px.pixel(24, 50).unwrap().alpha() > 30, "spread shadow left of the shape");
     assert_eq!(px.pixel(12, 50).unwrap().alpha(), 0, "but not past the spread");
 }
+
+#[test]
+fn layer_and_background_blurs() {
+    let Some(mut ex) = exporter() else { return };
+    // A red square with a 10-point layer blur: its edge softens, its middle stays red.
+    let mut page = Page::new("P");
+    let mut sq = Layer::rectangle(Frame::new(40.0, 40.0, 40.0, 40.0));
+    sq.style.borders.clear();
+    sq.style.fills = vec![Fill::solid(Color::rgba(1.0, 0.0, 0.0, 1.0))];
+    sq.style.blur = Some(scrawl_core::Blur { enabled: true, kind: scrawl_core::BlurKind::Layer, radius: 10.0 });
+    ops::insert_drawn(&mut page, sq);
+    let img = ex.render_page(&page, Rect::new(0.0, 0.0, 120.0, 120.0), 1.0, peniko::Color::TRANSPARENT).unwrap();
+    let a = |x, y| px(&img, x, y)[3];
+    assert!(a(60, 60) > 240, "middle: {}", a(60, 60));
+    assert!(a(40, 60) > 60 && a(40, 60) < 200, "edge is soft: {}", a(40, 60));
+    assert!(a(34, 60) > 5, "blur spills outside: {}", a(34, 60));
+    assert!(a(5, 60) < 3, "but not far: {}", a(5, 60));
+
+    // Stripes under a frosted rectangle: sharp beside it, smoothed beneath it.
+    let mut page = Page::new("P");
+    for i in 0..12 {
+        let mut s = Layer::rectangle(Frame::new(i as f64 * 10.0, 0.0, 5.0, 100.0));
+        s.style.borders.clear();
+        s.style.fills = vec![Fill::solid(Color::rgba(0.0, 0.0, 0.0, 1.0))];
+        ops::insert_drawn(&mut page, s);
+    }
+    let mut glass = Layer::rectangle(Frame::new(60.0, 0.0, 60.0, 100.0));
+    glass.style.borders.clear();
+    glass.style.fills = vec![Fill::solid(Color::rgba(1.0, 1.0, 1.0, 0.1))];
+    glass.style.blur = Some(scrawl_core::Blur { enabled: true, kind: scrawl_core::BlurKind::Background, radius: 16.0 });
+    ops::insert_drawn(&mut page, glass);
+    let img = ex.render_page(&page, Rect::new(0.0, 0.0, 120.0, 100.0), 1.0, peniko::Color::WHITE).unwrap();
+    let spread = |x0: u32| {
+        let v: Vec<u8> = (x0..x0 + 20).map(|x| px(&img, x, 50)[0]).collect();
+        v.iter().max().unwrap() - v.iter().min().unwrap()
+    };
+    assert!(spread(10) > 200, "sharp stripes: {}", spread(10));
+    assert!(spread(80) < 60, "blurred beneath the glass: {}", spread(80));
+}

@@ -1439,3 +1439,24 @@ fn preview_overlays_open_and_close() {
     assert!(player.overlay.is_none());
     assert_eq!(player.current, phone);
 }
+
+#[test]
+fn blurs_from_the_inspector_render_on_the_canvas() {
+    let Some(mut h) = harness() else { return };
+    h.run();
+    let star = select(&mut h, "Star");
+    h.get_by_label("Add blur").click();
+    h.run();
+    let blur = h.state().front().page().find(star).unwrap().style.blur.expect("added");
+    assert_eq!((blur.kind, blur.enabled), (scrawl_core::BlurKind::Layer, true));
+    // Frost the card over the stripes behind it.
+    let card = layer_named(&h, "Card").id;
+    if let Some(l) = h.state_mut().front_mut().page_mut().find_mut(card) {
+        l.style.fills = vec![scrawl_core::Fill::solid(scrawl_core::Color::rgba(1.0, 1.0, 1.0, 0.4))];
+        l.style.blur = Some(scrawl_core::Blur { kind: scrawl_core::BlurKind::Background, ..Default::default() });
+        l.frame.y = 420.0;
+    }
+    h.run();
+    assert!(h.query_by_label("BLUR").is_some());
+    save(&mut h, "blurs");
+}

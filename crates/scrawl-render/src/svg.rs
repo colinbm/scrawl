@@ -186,6 +186,12 @@ impl Writer<'_> {
         if let Some(b) = blend_css(l.blend_mode) {
             write!(self.body, r#" style="mix-blend-mode:{b}""#).unwrap();
         }
+        // A layer blur is an SVG filter; SVG has nothing for background blurs.
+        if let Some(blur) = scrawl_core::Blur::active(&l.style.blur).filter(|b| b.kind == scrawl_core::BlurKind::Layer) {
+            let id = self.id("blur");
+            write!(self.defs, r#"<filter id="{id}" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="{}"/></filter>"#, num(blur.radius / 2.0)).unwrap();
+            write!(self.body, r#" filter="url(#{id})""#).unwrap();
+        }
         self.body.push('>');
         let rect = l.frame.local_rect();
         match &l.kind {

@@ -21,6 +21,7 @@ pub enum Slot {
 pub struct VelloCanvas {
     renderer: Renderer,
     targets: [Option<Target>; 2],
+    blurrer: scrawl_render::effects::Blurrer,
 }
 
 impl VelloCanvas {
@@ -33,16 +34,19 @@ impl VelloCanvas {
             },
         )
         .map_err(|e| format!("failed to create Vello renderer: {e}"))?;
-        Ok(Self { renderer, targets: [None, None] })
+        let blurrer = scrawl_render::effects::Blurrer::new(&rs.device);
+        Ok(Self { renderer, targets: [None, None], blurrer })
     }
 
     /// Renders `scene` at `width`×`height` physical pixels into `slot`'s texture and returns the
     /// egui texture showing it.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         rs: &RenderState,
         slot: Slot,
         scene: &Scene,
+        effects: &[scrawl_render::effects::Effect],
         width: u32,
         height: u32,
         background: peniko::Color,
@@ -52,12 +56,19 @@ impl VelloCanvas {
         }
         self.ensure_target(rs, slot, width, height);
         let target = self.targets[slot as usize].as_ref()?;
+        let (view, id) = (target.view.clone(), target.id);
+        // Blurs render offscreen first; their results stand in for placeholder images.
+        if let Err(e) = self.blurrer.prepare(&rs.device, &rs.queue, &mut self.renderer, effects) {
+            log::error!("{e}");
+        }
         let params = RenderParams { base_color: background, width, height, antialiasing_method: AaConfig::Area };
-        if let Err(e) = self.renderer.render_to_texture(&rs.device, &rs.queue, scene, &target.view, &params) {
+        let result = self.renderer.render_to_texture(&rs.device, &rs.queue, scene, &view, &params);
+        self.blurrer.finish(&mut self.renderer);
+        if let Err(e) = result {
             log::error!("canvas render failed: {e}");
             return None;
         }
-        Some(target.id)
+        Some(id)
     }
 
     fn ensure_target(&mut self, rs: &RenderState, slot: Slot, width: u32, height: u32) {

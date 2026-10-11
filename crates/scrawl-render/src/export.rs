@@ -15,6 +15,7 @@ pub struct Exporter {
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: Renderer,
+    blurrer: crate::effects::Blurrer,
 }
 
 /// Straight (non-premultiplied) RGBA8 pixels, row-major.
@@ -42,7 +43,8 @@ impl Exporter {
             RendererOptions { antialiasing_support: AaSupport::area_only(), num_init_threads: None, ..Default::default() },
         )
         .map_err(|e| format!("failed to create renderer: {e}"))?;
-        Ok(Self { text: crate::TextEngine::new(), images: Default::default(), device, queue, renderer })
+        let blurrer = crate::effects::Blurrer::new(&device);
+        Ok(Self { text: crate::TextEngine::new(), images: Default::default(), device, queue, renderer, blurrer })
     }
 
     /// Renders `area` (page space) of `page` at `scale` pixels per unit over `background`.
@@ -51,11 +53,19 @@ impl Exporter {
         let height = (area.height() * scale).ceil().max(1.0) as u32;
         let mut scene = Scene::new();
         let view = Affine::scale(scale) * Affine::translate(-area.origin().to_vec2());
-        crate::render_page(&mut scene, page, view, &mut self.text, &self.images);
-        self.render_scene(&scene, width, height, background)
+        let effects = crate::render_page(&mut scene, page, view, &mut self.text, &self.images);
+        self.render_scene(&scene, &effects, width, height, background)
     }
 
-    pub fn render_scene(&mut self, scene: &Scene, width: u32, height: u32, background: peniko::Color) -> Result<Image, String> {
+    /// Renders `scene`, applying its blur `effects` first.
+    pub fn render_scene(&mut self, scene: &Scene, effects: &[crate::effects::Effect], width: u32, height: u32, background: peniko::Color) -> Result<Image, String> {
+        self.blurrer.prepare(&self.device, &self.queue, &mut self.renderer, effects)?;
+        let result = self.render_plain(scene, width, height, background);
+        self.blurrer.finish(&mut self.renderer);
+        result
+    }
+
+    fn render_plain(&mut self, scene: &Scene, width: u32, height: u32, background: peniko::Color) -> Result<Image, String> {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("export target"),

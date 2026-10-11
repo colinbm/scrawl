@@ -315,11 +315,38 @@ fn layer_properties(app: &mut ScrawlApp, ui: &mut Ui, layer: &mut Layer) {
     if !layer.is_artboard() && styled && !layer.is_symbol_instance() && !slice {
         shared_style_row(app, ui, layer);
         style_sections(app, ui, layer);
+        blur_section(ui, &mut layer.style.blur);
     }
     if !matches!(layer.kind, LayerKind::Hotspot) {
         export_section(app, ui, layer);
     }
     prototype_section(app, ui, layer);
+}
+
+/// A Gaussian blur of the layer or of what's behind it.
+fn blur_section(ui: &mut Ui, blur: &mut Option<scrawl_core::Blur>) {
+    list_header(ui, "Blur", || {
+        if blur.is_none() {
+            *blur = Some(scrawl_core::Blur::default());
+        }
+    });
+    let mut remove = false;
+    if let Some(b) = blur {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut b.enabled, "");
+            for kind in scrawl_core::BlurKind::ALL {
+                ui.selectable_value(&mut b.kind, kind, kind.label());
+            }
+            remove = icons::small_button(ui, Icon::Minus, "Remove blur").clicked();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Radius");
+            ui.add(egui::Slider::new(&mut b.radius, 0.0..=100.0).max_decimals(1));
+        });
+    }
+    if remove {
+        *blur = None;
+    }
 }
 
 fn boolean_row(ui: &mut Ui, op: &mut scrawl_core::ops::BooleanOp) {

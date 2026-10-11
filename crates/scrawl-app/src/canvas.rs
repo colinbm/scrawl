@@ -1062,11 +1062,11 @@ fn paint_canvas(app: &mut ScrawlApp, ui: &egui::Ui, rect: ERect) {
     let view = Affine::scale(ppp as f64) * app.viewport().transform();
     app.images.load(&app.doc.assets);
     let page = app.doc.page(app.page).unwrap_or(&app.doc.pages[0]);
-    scrawl_render::render_page(&mut app.scene, page, view, &mut app.text, &app.images);
+    let effects = scrawl_render::render_page(&mut app.scene, page, view, &mut app.text, &app.images);
 
     let bg = canvas_background(ui);
     let gpu = app.gpu.as_mut().expect("initialized above");
-    if let Some(tex) = gpu.render(&rs, crate::gpu::Slot::Canvas, &app.scene, w, h, bg) {
+    if let Some(tex) = gpu.render(&rs, crate::gpu::Slot::Canvas, &app.scene, &effects, w, h, bg) {
         let uv = ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         ui.painter().image(tex, rect, uv, Color32::WHITE);
     }

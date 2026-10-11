@@ -18,6 +18,52 @@ pub struct Style {
     pub inner_shadows: Vec<Shadow>,
     /// Border options shared by all borders.
     pub border_options: BorderOptions,
+    /// A Gaussian blur of the layer itself, or of what's behind it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur: Option<Blur>,
+}
+
+/// What a blur applies to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BlurKind {
+    /// The layer itself.
+    #[default]
+    Layer,
+    /// What's behind the layer, inside its shape (frosted glass).
+    Background,
+}
+
+impl BlurKind {
+    pub const ALL: [Self; 2] = [Self::Layer, Self::Background];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Layer => "Gaussian",
+            Self::Background => "Background",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Blur {
+    pub enabled: bool,
+    pub kind: BlurKind,
+    /// In points: about twice the Gaussian's standard deviation.
+    pub radius: f64,
+}
+
+impl Default for Blur {
+    fn default() -> Self {
+        Self { enabled: true, kind: BlurKind::Layer, radius: 10.0 }
+    }
+}
+
+impl Blur {
+    /// The blur in effect, if any.
+    pub fn active(blur: &Option<Blur>) -> Option<Blur> {
+        blur.filter(|b| b.enabled && b.radius > 0.0)
+    }
 }
 
 impl Style {
@@ -71,7 +117,9 @@ impl Style {
             .filter(|s| s.enabled)
             .map(|s| s.offset_x.abs().max(s.offset_y.abs()) + s.blur * 1.5 + s.spread.max(0.0))
             .fold(0.0, f64::max);
-        self.border_outset().max(shadows)
+        // A layer blur spreads it out by about three standard deviations.
+        let blur = Blur::active(&self.blur).filter(|b| b.kind == BlurKind::Layer).map_or(0.0, |b| b.radius * 1.5);
+        self.border_outset().max(shadows) + blur
     }
 }
 
