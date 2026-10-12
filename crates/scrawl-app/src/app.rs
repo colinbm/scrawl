@@ -19,6 +19,11 @@ use crate::viewport::Viewport;
 /// Prefix identifying Scrawl layers on the system clipboard.
 const CLIPBOARD_TAG: &str = "scrawl-layers";
 
+/// The preview saved in each file for Finder and Quick Look is rendered to fit this box, in pixels.
+const FILE_PREVIEW: (f64, f64) = (1024.0, 1024.0);
+/// Behind previews of the document: the light canvas gray.
+pub const PREVIEW_BACKGROUND: vello::peniko::Color = vello::peniko::Color::new([0.93, 0.93, 0.94, 1.0]);
+
 pub struct ScrawlApp {
     /// Distinguishes this document's windows from other documents'.
     pub uid: u64,
@@ -427,7 +432,8 @@ impl ScrawlApp {
         if let Some(dir) = path.parent() {
             self.doc.refresh_library_paths(dir);
         }
-        match io::save(&self.doc, path) {
+        let preview = self.file_preview();
+        match io::save_with_preview(&self.doc, preview.as_deref(), path) {
             Ok(()) => {
                 self.saved = self.doc.clone();
                 self.file_path = Some(path.to_path_buf());
@@ -439,6 +445,14 @@ impl ScrawlApp {
                 false
             }
         }
+    }
+
+    /// The PNG saved in the file for Finder and Quick Look, if the document has anything to show.
+    fn file_preview(&mut self) -> Option<Vec<u8>> {
+        self.exporter().ok()?;
+        let ex = self.exporter.as_mut()?;
+        let img = scrawl_render::output::preview(ex, &self.doc, FILE_PREVIEW, PREVIEW_BACKGROUND).ok()?;
+        scrawl_render::output::encode(&img, scrawl_core::exportable::FileFormat::Png).ok()
     }
 
     // ---- Edit --------------------------------------------------------------------------------

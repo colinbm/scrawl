@@ -1,6 +1,8 @@
 #!/bin/sh
 # Builds target/release/Scrawl.app: the release binary in an app bundle that declares Scrawl's
-# document type, so Finder opens .scrawl files with it (double-click, Open With, the Dock icon).
+# document type, so Finder opens .scrawl files with it (double-click, Open With, the Dock icon),
+# and Quick Look extensions (macos/quicklook) that show the preview saved in each file as its
+# Finder thumbnail and space-bar preview.
 # Copy the app to /Applications to make it the default for .scrawl files.
 set -eu
 cd "$(dirname "$0")/.."
@@ -79,8 +81,53 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 
 plutil -lint "$app/Contents/Info.plist" >/dev/null
+
+# Quick Look extensions: quicklook_extension NAME POINT CLASS FRAMEWORK SOURCE [ATTRIBUTES]
+quicklook_extension() {
+	appex="$app/Contents/PlugIns/Scrawl$1.appex"
+	mkdir -p "$appex/Contents/MacOS"
+	swiftc -O -parse-as-library -application-extension -module-name "Scrawl$1" \
+		-target "$(uname -m)-apple-macos12.0" -framework "$4" \
+		-Xlinker -e -Xlinker _NSExtensionMain \
+		macos/quicklook/ScrawlPreview.swift "macos/quicklook/$5" -o "$appex/Contents/MacOS/Scrawl$1"
+	cat > "$appex/Contents/Info.plist" <<EXT
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key><string>Scrawl$1</string>
+	<key>CFBundleDisplayName</key><string>Scrawl $1</string>
+	<key>CFBundleIdentifier</key><string>dev.scrawl.Scrawl.$1</string>
+	<key>CFBundleExecutable</key><string>Scrawl$1</string>
+	<key>CFBundlePackageType</key><string>XPC!</string>
+	<key>CFBundleShortVersionString</key><string>$version</string>
+	<key>CFBundleVersion</key><string>$version</string>
+	<key>LSMinimumSystemVersion</key><string>12.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key><string>$2</string>
+		<key>NSExtensionPrincipalClass</key><string>$3</string>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>QLSupportedContentTypes</key><array><string>dev.scrawl.document</string></array>
+			${6:-}
+		</dict>
+	</dict>
+</dict>
+</plist>
+EXT
+	plutil -lint "$appex/Contents/Info.plist" >/dev/null
+	codesign --force --sign - --entitlements macos/quicklook/extension.entitlements "$appex"
+}
+quicklook_extension Thumbnail com.apple.quicklook.thumbnail ThumbnailProvider QuickLookThumbnailing ThumbnailProvider.swift \
+	'<key>QLThumbnailMinimumDimension</key><integer>0</integer>'
+quicklook_extension Preview com.apple.quicklook.preview PreviewProvider QuickLookUI PreviewProvider.swift \
+	'<key>QLIsDataBasedPreview</key><true/>'
+
 # Ad-hoc signing, so macOS will launch it.
 codesign --force --sign - "$app" 2>/dev/null || true
 # Tell Launch Services about the document types.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" 2>/dev/null || true
+# And Quick Look about the extensions.
+pluginkit -a "$app/Contents/PlugIns/"*.appex 2>/dev/null || true
 echo "Built $app"

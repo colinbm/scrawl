@@ -1,5 +1,7 @@
-//! The `.scrawl` file format: a zip archive holding `meta.json`, `document.json`, and the images
-//! the document uses under `images/`, named by asset id.
+//! The `.scrawl` file format: a zip archive holding `meta.json`, `document.json`, the images
+//! the document uses under `images/`, named by asset id, and optionally `preview.png`, a picture
+//! of the first page for Finder and Quick Look. The preview is stored uncompressed, so readers
+//! that only want it (the Quick Look extensions) can slice it straight out of the archive.
 
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
@@ -15,6 +17,7 @@ pub const FORMAT_VERSION: u32 = 1;
 const META: &str = "meta.json";
 const DOCUMENT: &str = "document.json";
 const IMAGES: &str = "images/";
+pub const PREVIEW: &str = "preview.png";
 
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
@@ -35,6 +38,11 @@ struct Meta {
 }
 
 pub fn to_bytes(doc: &Document) -> Result<Vec<u8>, FileError> {
+    to_bytes_with_preview(doc, None)
+}
+
+/// [`to_bytes`], with `preview` (PNG) for Finder and Quick Look.
+pub fn to_bytes_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FileError> {
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let meta = Meta { format_version: FORMAT_VERSION, app_version: env!("CARGO_PKG_VERSION").into() };
@@ -50,6 +58,10 @@ pub fn to_bytes(doc: &Document) -> Result<Vec<u8>, FileError> {
             zip.start_file(format!("{IMAGES}{id}"), stored)?;
             zip.write_all(bytes)?;
         }
+    }
+    if let Some(png) = preview {
+        zip.start_file(PREVIEW, stored)?;
+        zip.write_all(png)?;
     }
     Ok(zip.finish()?.into_inner())
 }
@@ -83,9 +95,14 @@ fn read_entry(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<Vec<u8>
 }
 
 pub fn save(doc: &Document, path: &Path) -> Result<(), FileError> {
+    save_with_preview(doc, None, path)
+}
+
+/// [`save`], with `preview` (PNG) for Finder and Quick Look.
+pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>, path: &Path) -> Result<(), FileError> {
     // Write to a sibling temp file then rename, so a failed save never clobbers the original.
     let tmp = path.with_extension(format!("{FILE_EXTENSION}.tmp"));
-    std::fs::write(&tmp, to_bytes(doc)?)?;
+    std::fs::write(&tmp, to_bytes_with_preview(doc, preview)?)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -127,6 +144,20 @@ mod tests {
         assert_eq!(back.assets.len(), 1, "unused images aren't saved");
         assert_eq!(&back.assets.get(&id).unwrap()[..], &png[..]);
         assert_eq!(back.pages, doc.pages);
+    }
+
+    #[test]
+    fn preview_is_stored_uncompressed() {
+        let doc = Document::default();
+        let png = b"not really a png".to_vec();
+        let bytes = to_bytes_with_preview(&doc, Some(&png)).unwrap();
+        let mut zip = ZipArchive::new(Cursor::new(&bytes[..])).unwrap();
+        let entry = zip.by_name(PREVIEW).unwrap();
+        assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
+        let start = entry.data_start().unwrap() as usize;
+        assert_eq!(&bytes[start..start + png.len()], &png[..]);
+        drop(entry);
+        assert_eq!(from_bytes(&bytes).unwrap(), doc, "the preview doesn't change the document");
     }
 
     #[test]

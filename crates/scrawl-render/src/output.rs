@@ -22,6 +22,16 @@ pub fn export_layer(ex: &mut Exporter, doc: &Document, page: &Page, id: LayerId,
     }
 }
 
+/// A picture of `doc`'s first page, fitted to `fit` pixels, for version thumbnails and Finder.
+/// The document's instances and text should be up to date.
+pub fn preview(ex: &mut Exporter, doc: &Document, fit: (f64, f64), background: peniko::Color) -> Result<Image, String> {
+    let page = doc.pages.first().ok_or("no pages")?;
+    let area = page.content_bounds().ok_or("the page is empty")?;
+    let scale = (fit.0 / area.width().max(1.0)).min(fit.1 / area.height().max(1.0));
+    ex.images.load(&doc.assets);
+    ex.render_page(page, area.inflate(8.0 / scale, 8.0 / scale), scale, background)
+}
+
 /// Encodes rendered pixels as PNG, JPEG (over white, which has no alpha) or lossless WebP.
 pub fn encode(img: &Image, format: FileFormat) -> Result<Vec<u8>, String> {
     let rgba = image::RgbaImage::from_raw(img.width, img.height, img.pixels.clone()).ok_or("bad image size")?;

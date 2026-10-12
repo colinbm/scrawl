@@ -201,13 +201,8 @@ pub fn show(app: &mut ScrawlApp, ctx: &egui::Context) {
 
 /// A small rendering of `doc`'s first page.
 fn thumbnail(app: &mut ScrawlApp, doc: &Document) -> Option<egui::ColorImage> {
-    let page = doc.pages.first()?;
-    let area = page.content_bounds()?;
-    let scale = (THUMB.0 / area.width().max(1.0)).min(THUMB.1 / area.height().max(1.0));
     let ex = app.exporter().ok()?;
-    ex.images.load(&doc.assets);
-    let bg = vello::peniko::Color::new([0.93, 0.93, 0.94, 1.0]);
-    let img = ex.render_page(page, area.inflate(8.0 / scale, 8.0 / scale), scale, bg).ok()?;
+    let img = scrawl_render::output::preview(ex, doc, THUMB, crate::app::PREVIEW_BACKGROUND).ok()?;
     Some(egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.pixels))
 }
 

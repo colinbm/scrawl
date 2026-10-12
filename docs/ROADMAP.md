@@ -86,7 +86,7 @@
 - ✅ Prototyping: overlays (click outside or Back closes), dissolve and push animations, links to artboards on other pages
 - ✅ Prototyping: layers fixed while scrolling at any depth; a phone device frame in the preview
 - ✅ Prototyping in design files: animation codes per the format's schema; overlays and dissolve/push kept in the layer's plugin data, exported as the nearest supported animation
-- ✅ macOS documents: an app bundle (`scripts/macos-app.sh`) that owns `.scrawl` files; opening from Finder and the Dock; the title bar's document icon and edited dot; system recent documents; versions in the system's version store, so they follow moved and renamed files
+- ✅ macOS documents: an app bundle (`scripts/macos-app.sh`) that owns `.scrawl` files; opening from Finder and the Dock; the title bar's document icon and edited dot; system recent documents; versions in the system's version store, so they follow moved and renamed files; Finder thumbnails and Quick Look previews, from a picture of the first page saved in each file
 - ⬜ Native menus on Windows/Linux (in-window menu bar there for now); the system's own Browse All Versions screen (needs AppKit's document classes)
 - ✅ Plugin API: commands that run on open/save/selection events; file access through dialogs; network access with per-host permissions
 - ⬜ Plugin UI panels
