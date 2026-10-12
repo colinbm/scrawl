@@ -1,0 +1,32 @@
+# Pushing a v* tag builds a universal Scrawl.app and publishes it as a GitHub release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/macos-app.sh --universal
+      - name: Zip
+        run: ditto -c -k --keepParent target/release/Scrawl.app "Scrawl-$GITHUB_REF_NAME-macOS.zip"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "Scrawl-$GITHUB_REF_NAME-macOS.zip" \
+            --title "Scrawl $GITHUB_REF_NAME" --notes-file - <<'NOTES'
+          Scrawl.app for macOS 11 or later, Apple silicon and Intel.
+
+          Unzip it and move Scrawl.app to Applications. It isn't notarized, so the first time
+          macOS will refuse to open it: open System Settings → Privacy & Security and choose
+          Open Anyway, or run `xattr -dr com.apple.quarantine /Applications/Scrawl.app`.
+          NOTES

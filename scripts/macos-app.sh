@@ -4,15 +4,22 @@
 # and Quick Look extensions (macos/quicklook) that show the preview saved in each file as its
 # Finder thumbnail and space-bar preview.
 # Copy the app to /Applications to make it the default for .scrawl files.
+# With --universal, the app runs natively on both Apple silicon and Intel Macs (for releases).
 set -eu
 cd "$(dirname "$0")/.."
 
-cargo build -p scrawl-app --release
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/scrawl-app/Cargo.toml | head -1)
+if [ "${1:-}" = --universal ]; then archs="arm64 x86_64"; else archs=$(uname -m); fi
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 app=target/release/Scrawl.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/scrawl "$app/Contents/MacOS/scrawl"
+bins=
+for arch in $archs; do
+	triple=$(echo "$arch" | sed 's/arm64/aarch64/')-apple-darwin
+	cargo build -p scrawl-app --release --target "$triple"
+	bins="$bins target/$triple/release/scrawl"
+done
+lipo -create $bins -output "$app/Contents/MacOS/scrawl"
 
 # The icon, from assets/icon.svg, at every size macOS asks for.
 iconset=target/release/Scrawl.iconset
@@ -86,10 +93,15 @@ plutil -lint "$app/Contents/Info.plist" >/dev/null
 quicklook_extension() {
 	appex="$app/Contents/PlugIns/Scrawl$1.appex"
 	mkdir -p "$appex/Contents/MacOS"
-	swiftc -O -parse-as-library -application-extension -module-name "Scrawl$1" \
-		-target "$(uname -m)-apple-macos12.0" -framework "$4" \
-		-Xlinker -e -Xlinker _NSExtensionMain \
-		macos/quicklook/ScrawlPreview.swift "macos/quicklook/$5" -o "$appex/Contents/MacOS/Scrawl$1"
+	bins=
+	for arch in $archs; do
+		swiftc -O -parse-as-library -application-extension -module-name "Scrawl$1" \
+			-target "$arch-apple-macos12.0" -framework "$4" \
+			-Xlinker -e -Xlinker _NSExtensionMain \
+			macos/quicklook/ScrawlPreview.swift "macos/quicklook/$5" -o "target/release/Scrawl$1-$arch"
+		bins="$bins target/release/Scrawl$1-$arch"
+	done
+	lipo -create $bins -output "$appex/Contents/MacOS/Scrawl$1"
 	cat > "$appex/Contents/Info.plist" <<EXT
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
