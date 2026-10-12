@@ -1,4 +1,11 @@
 # Pushing a v* tag builds a universal Scrawl.app and publishes it as a GitHub release.
+# With the signing secrets set it's signed with a Developer ID and notarized, so it opens
+# without Gatekeeper warnings; without them it's signed ad hoc.
+#   MACOS_CERTIFICATE           base64 of the Developer ID Application certificate, exported as .p12
+#   MACOS_CERTIFICATE_PASSWORD  the .p12's password
+#   APPLE_API_KEY               an App Store Connect API key (.p8 contents), for notarization
+#   APPLE_API_KEY_ID            its key ID
+#   APPLE_API_ISSUER            its issuer ID
 name: Release
 
 on:
@@ -11,22 +18,61 @@ permissions:
 jobs:
   macos:
     runs-on: macos-latest
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
     steps:
       - uses: actions/checkout@v4
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+          identity=$(security find-identity -v -p codesigning "$keychain" | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
       - run: scripts/macos-app.sh --universal
+
+      - name: Notarize
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          echo "$APPLE_API_KEY" > "$RUNNER_TEMP/api_key.p8"
+          ditto -c -k --keepParent target/release/Scrawl.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
+            --key "$RUNNER_TEMP/api_key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"
+          xcrun stapler staple target/release/Scrawl.app
+          rm "$RUNNER_TEMP/api_key.p8"
+
       - name: Zip
         run: ditto -c -k --keepParent target/release/Scrawl.app "Scrawl-$GITHUB_REF_NAME-macOS.zip"
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "Scrawl-$GITHUB_REF_NAME-macOS.zip" \
-            --title "Scrawl $GITHUB_REF_NAME" --notes-file - <<'NOTES'
-          Scrawl.app for macOS 11 or later, Apple silicon and Intel.
-
-          Unzip it and move Scrawl.app to Applications. It isn't notarized, so the first time
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            install="Unzip it and move Scrawl.app to Applications."
+          else
+            install="Unzip it and move Scrawl.app to Applications. It isn't notarized, so the first time
           macOS will refuse to open it: open System Settings → Privacy & Security and choose
-          Open Anyway, or run `xattr -dr com.apple.quarantine /Applications/Scrawl.app`.
-          NOTES
+          Open Anyway, or run \`xattr -dr com.apple.quarantine /Applications/Scrawl.app\`."
+          fi
+          printf 'Scrawl.app for macOS 11 or later, Apple silicon and Intel.\n\n%s\n' "$install" |
+            gh release create "$GITHUB_REF_NAME" "Scrawl-$GITHUB_REF_NAME-macOS.zip" \
+              --title "Scrawl $GITHUB_REF_NAME" --notes-file -

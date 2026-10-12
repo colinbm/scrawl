@@ -5,8 +5,16 @@
 # Finder thumbnail and space-bar preview.
 # Copy the app to /Applications to make it the default for .scrawl files.
 # With --universal, the app runs natively on both Apple silicon and Intel Macs (for releases).
+# SIGN_IDENTITY (e.g. "Developer ID Application: ...") signs it for distribution, with the hardened
+# runtime notarization requires; without it the app is signed ad hoc, which only runs locally.
 set -eu
 cd "$(dirname "$0")/.."
+
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+	sign() { codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$@"; }
+else
+	sign() { codesign --force --sign - "$@"; }
+fi
 
 if [ "${1:-}" = --universal ]; then archs="arm64 x86_64"; else archs=$(uname -m); fi
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -129,15 +137,15 @@ quicklook_extension() {
 </plist>
 EXT
 	plutil -lint "$appex/Contents/Info.plist" >/dev/null
-	codesign --force --sign - --entitlements macos/quicklook/extension.entitlements "$appex"
+	sign --entitlements macos/quicklook/extension.entitlements "$appex"
 }
 quicklook_extension Thumbnail com.apple.quicklook.thumbnail ThumbnailProvider QuickLookThumbnailing ThumbnailProvider.swift \
 	'<key>QLThumbnailMinimumDimension</key><integer>0</integer>'
 quicklook_extension Preview com.apple.quicklook.preview PreviewProvider QuickLookUI PreviewProvider.swift \
 	'<key>QLIsDataBasedPreview</key><true/>'
 
-# Ad-hoc signing, so macOS will launch it.
-codesign --force --sign - "$app" 2>/dev/null || true
+# Signed (ad hoc at least), so macOS will launch it.
+sign "$app"
 # Tell Launch Services about the document types.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" 2>/dev/null || true
 # And Quick Look about the extensions.
